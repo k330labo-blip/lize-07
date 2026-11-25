@@ -49,6 +49,7 @@ import { banKeyFor, matchesBan, isBanned } from "./trunk_ban.js"; // queue0-A bu
 import { createWorkglanceState, noteWorkglance, sampleWorkglance } from "./workglance_math.js"; // POLISH-ANIM-WORKGLANCE-01 (cycle1728, v0.5.19)
 import { notePortalsteady, portalsteadyOffsetsAt, isPortalsteadyActive } from "./portalsteady_math.js";
 import { createSurfacebreathState, stepSurfacebreath, sampleSurfacebreath, applySurfacebreathPitch } from "./surfacebreath_math.js"; // POLISH-ANIM-SURFACEBREATH-01 (cycle1703)
+import { createBubblebreathState, stepBubblebreath } from "./bubblebreath_math.js"; // POLISH-FX-BUBBLEBREATH-01 (cycle1909): 水中滞在中の冷却排気泡 (粒子ID未照合の間は記録のみ・実機確認待ち)
 import { tickToolCheck, createToolCheckState } from "./toolcheck_math.js"; // POLISH-ANIM-TOOLCHECK-01 (cycle1807): 長時間待機中に一度だけ手元の道具を点検する (表示層のみ・実機確認待ち)
 import { createLoadPostureState, noteLoadPosture, sampleLoadPosture } from "./loadposture_math.js";
 import { createPartnerCheckState, notePartnerCheck, partnerCheckOffset } from "./partnercheck_math.js"; // POLISH-ANIM-PARTNERCHECK-01 (cycle1850): 主人被弾の辺で無事確認の視線 (表示層のみ・実機確認待ち)
@@ -426,6 +427,7 @@ function buildContext(bot, owner) {
   noteStepupTick(bot, dim, r, c); // POLISH-ANIM-STEPUP-01 (cycle1603)
   notePortalsteadyTick(bot, dim, r, c); // POLISH-ANIM-PORTALSTEADY-01 (cycle1640)
   noteSurfacebreathTick(bot, r, c); // POLISH-ANIM-SURFACEBREATH-01 (cycle1703)
+  noteBubblebreathTick(bot, r, c); // POLISH-FX-BUBBLEBREATH-01 (cycle1909)
   noteToolCheckTick(bot, r, c); // POLISH-ANIM-TOOLCHECK-01 (cycle1807)
   noteLoadPostureTick(bot, r, c); // POLISH-ANIM-LOADPOSTURE-01 (cycle1832)
   // 溶岩・暗さ・地下
@@ -1727,13 +1729,19 @@ let surveyRR = 0; // 調査する区画の巡回カウンタ (今いる区画を
 const regionOf = (x, z) => ({ rx: Math.floor(x / REGION_SIZE), rz: Math.floor(z / REGION_SIZE) });
 const surveyKeyOf = (dimId, rx, rz) => `${dimId}:${rx},${rz}`;
 function surveyFresh(sv) { return !!sv && Date.now() - sv.at < SURVEY_TTL_MS; }
-function surveyDone(sv) { return surveyFresh(sv) && sv.doneMask === 0xffff; }
+// F1分離 (cycle1909): surveyDone は「調べ終えた事実」のラッチ述語。鮮度は含めない。
+// ヒットの新しさは surveyFresh / hintFresh 側が従来どおり at+TTL で判定する (読み手は分離済み)。
+function surveyDone(sv) { return !!sv && sv.doneMask === 0xffff && sv.doneAt != null; }
+// 完了の書き込みはこの1箇所に寄せる: doneMask と doneAt と at を同一 now で書く。
+function markSurveyDone(sv) { const now = Date.now(); sv.doneMask = 0xffff; sv.doneAt = now; sv.at = now; }
 function surveyAvailable() { return !surveyBroken && !!mcServer.BlockVolume; }
 function requestSurvey(dimId, rx, rz, prio = 1) {
   if (!surveyAvailable()) return null;
   const key = surveyKeyOf(dimId, rx, rz);
   let sv = surveys.get(key);
-  if (!sv || !surveyFresh(sv)) { sv = { dim: dimId, rx, rz, at: Date.now(), doneMask: 0, fails: 0, hits: {}, wantAt: Date.now() }; surveys.set(key, sv); }
+  if (!sv) { sv = { dim: dimId, rx, rz, at: Date.now(), doneMask: 0, doneAt: null, fails: 0, hits: {}, wantAt: Date.now() }; surveys.set(key, sv); }
+  else if (!surveyFresh(sv) && !surveyDone(sv)) { sv.doneMask = 0; sv.doneAt = null; sv.fails = 0; sv.hits = {}; sv.units = undefined; sv.nextIdx = 0; sv.at = Date.now(); }
+  // ラッチ済み sv は失効しても作り直さない: doneMask/doneAt/hits は保持し、wantAt/prio のみ更新する。
   sv.wantAt = Date.now(); sv.prio = prio;
   if (surveys.size > 400) { const old = [...surveys.entries()].sort((a, b) => (a[1].wantAt || 0) - (b[1].wantAt || 0)).slice(0, 100); for (const [k] of old) surveys.delete(k); }
   return sv;
@@ -1813,7 +1821,7 @@ system.runInterval(() => {
     const ms = Date.now() - t0;
     if (ms > 25) surveySlowUntil = Date.now() + ms * 2; // 処理落ち防止: 重かった分だけ次を遅らせる
     sv.nextIdx = (idx + 1) % 16;
-    if (res === "done") { sv.doneMask |= (1 << idx); sv.at = Date.now(); }
+    if (res === "done") { sv.doneMask |= (1 << idx); sv.at = Date.now(); if (sv.doneMask === 0xffff && sv.doneAt == null) sv.doneAt = sv.at; }
     else if (res === "partial") { sv.at = Date.now(); } // B-prime: progress refreshes freshness only
     else if (res === "error") { sv.fails++; if (sv.fails > 40) { surveyBroken = true; console.warn("[LIZE] chunk survey disabled (getBlocks keeps failing)"); } }
     // unloaded は次の tick に別のチャンクを試す (リゼが近づけば読み込まれる)
@@ -2870,7 +2878,7 @@ function tickMission(bot, owner, ctx, scan) {
       const ex = r.exploreRegion;
       if (cur && ex && ex.rx === rg.rx && ex.rz === rg.rz && Math.hypot(bot.location.x - ex.x, bot.location.z - ex.z) < 12) {
         if (!r.exploreArrivedAt) r.exploreArrivedAt = Date.now();
-        else if (Date.now() - r.exploreArrivedAt > 20000 && cur.doneMask !== 0xffff) { cur.doneMask = 0xffff; cur.at = Date.now(); noteFail(bot, "survey:region_incomplete", new Error(`${rg.rx},${rg.rz}`)); }
+        else if (Date.now() - r.exploreArrivedAt > 20000 && cur.doneMask !== 0xffff) { markSurveyDone(cur); noteFail(bot, "survey:region_incomplete", new Error(`${rg.rx},${rg.rz}`)); }
       } else r.exploreArrivedAt = 0;
       if (step && (step.type === "gather_block" || step.type === "side_collect") && !ft.found) {
         regionSearch = true;
@@ -2958,7 +2966,7 @@ function startBuild(bot, owner, r, name, cells, origin, gatherFirst) {
   for (const cell of cells) { if (cell.skipCount) continue; const item = cell.item || resolveMaterialItem(cell.material); if (item) summary[item] = (summary[item] || 0) + 1; }
   const missing = computeMissing(bot, owner, summary);
   r.buildPlan = { name, cells, origin: { x: Math.floor(origin.x), y: Math.floor(origin.y), z: Math.floor(origin.z) }, dim: (() => { try { return owner?.dimension?.id || null; } catch { return null; } })(), idx: 0, placed: 0, skipped: [], stage: gatherFirst && missing.length ? "gather" : "build", missing, missingIdx: 0 }; // buildPlan次元ガード (cycle0821): 原点の次元は主人 (原点=主人位置) の完全IDで記録する
-  r.buildStallKey = null; r.buildStallSince = 0; r.buildStallBest = null; r.buildDangerSince = null; r.buildDangerNoted = false; r.buildDimSince = null; r.buildDimNoted = false; r.buildProgressAt = Date.now(); r.buildProgressIdx = 0; r.buildProgressPlaced = 0; // 基礎 R-3 (v0.4.81, cycle0417-a04): 前の建築の stall/危険時計を持ち越さない + BUILD-HOLD-NOEXIT (cycle1343): 無進捗時計の起点
+  r.buildStallKey = null; r.buildStallSince = 0; r.buildStallBest = null; r.buildDangerSince = null; r.buildDangerNoted = false; r.buildDimSince = null; r.buildDimNoted = false; r.buildProgressAt = Date.now(); r.buildProgressIdx = 0; r.buildProgressPlaced = 0; r.buildGatherProgIdx = 0; r.buildGatherProgInv = 0; // 基礎 R-3 (v0.4.81, cycle0417-a04): 前の建築の stall/危険時計を持ち越さない + BUILD-HOLD-NOEXIT (cycle1343): 無進捗時計の起点 + GATHER-NOEXIT snapshot
   if (r.buildPlan.stage === "gather") { say(owner, bot, `承知しました。${name}ですね。材料が${missing.length}種、足りません。先に集めてきます`, true); startNextGather(bot, owner, r); }
   else say(owner, bot, `承知しました。${name}を建てます。場所は、あなたの今の位置です`, true);
 }
@@ -2970,6 +2978,27 @@ function startNextGather(bot, owner, r) {
   startMission(bot, owner, r, { kind: "gather", target: miss.item, amount: miss.amount, constraints: { hostiles: "avoid" }, sideTasks: [], returnTo: "owner", legsOnly: true }, false, { noLongTask: true }); // BLD-01 (cycle1133): legsOnly で完了時の全量納品を止め、集めた材料をリゼが保持したまま build へ進む
 }
 function advanceBuildGather(bot, owner, r) { const bp = r.buildPlan; if (!bp || bp.stage !== "gather") return; bp.missingIdx++; startNextGather(bot, owner, r); }
+// GATHER-NOEXIT (cycle1850-a07 -> cycle1909): gather 相にも無進捗の最終出口を持たせる。
+// tickBuild の時計 (buildProgressAt) は startBuild が gather でも立てるが読み手が build 相にしか無く、
+// 通常 suspend (cannot_recover 以外) では再開・期限の担い手も無いため gather 相が恒久化した。
+// 進捗 = missingIdx の増加 or 現在の対象材料の所持数増加 (減少は snapshot 追随のみ、tickBuild と同型)。
+function tickGatherNoProgress(bot, owner, r) {
+  const bp = r.buildPlan; if (!bp || bp.stage !== "gather") return false;
+  const nowG = Date.now();
+  const miss = bp.missing?.[bp.missingIdx];
+  let invN = 0; try { invN = miss ? (countInv(bot)[miss.item] || 0) : 0; } catch {}
+  if (r.buildProgressAt == null) { r.buildProgressAt = nowG; r.buildGatherProgIdx = bp.missingIdx; r.buildGatherProgInv = invN; return false; }
+  if (bp.missingIdx > (r.buildGatherProgIdx ?? 0) || invN > (r.buildGatherProgInv ?? 0)) { r.buildProgressAt = nowG; r.buildGatherProgIdx = bp.missingIdx; r.buildGatherProgInv = invN; return false; }
+  if (nowG - r.buildProgressAt > BUILD_NO_PROGRESS_TIMEOUT_MS) {
+    const dying = r.mission;
+    const folded = foldGatherBuildPlan(bot, owner, r, "gather_no_progress", dying) || foldGatherBuildPlan(bot, owner, r, "gather_no_progress", null);
+    if (folded && dying && dying.order?.legsOnly === true && dying.order?.target === miss?.item) { r.mission = null; clearPlanRecords(r); persistMission(bot, r, true); }
+    return folded;
+  }
+  if (bp.missingIdx !== (r.buildGatherProgIdx ?? 0)) { r.buildGatherProgIdx = bp.missingIdx; r.buildGatherProgInv = invN; }
+  else if (invN < (r.buildGatherProgInv ?? 0)) r.buildGatherProgInv = invN;
+  return false;
+}
 function tickBuild(bot, owner, r, ctx) {
   const bp = r.buildPlan; if (!bp || bp.stage !== "build") return false;
   if (!bp.dim) { try { bp.dim = bot.dimension.id; } catch {} } // buildPlan次元ガード (cycle0821): dim 欠落の計画は現在次元を採用して捨てない (移行形)
@@ -3102,6 +3131,17 @@ function noteSurfacebreathTick(bot, r, c) {
   } catch {}
 }
 // POLISH-ANIM-TOOLCHECK-01 (cycle1807): 連続待機45秒で一度だけ手元へ視線を落とす。待機の実測は「作業系が無く受動行動で、位置が1.5マス以内に留まっている」ことで数える (主人の不動時間や目標固定時間の流用はしない)。核は不変式のため返り値 state を必ず保存し直し、呼び出しはこの feeder 1か所だけ (表示層のみ・実機確認待ち)
+// POLISH-FX-BUBBLEBREATH-01 (cycle1909): 水中滞在中の冷却排気泡。水中判定の正は bot.isInWater。
+// 粒子ID未照合の間は spawnParticle を呼ばず r.lastBubbleBreath への記録のみ (表示層のみ・実機確認待ち)
+function noteBubblebreathTick(bot, r, c) {
+  try {
+    if (!bot || !r) return;
+    if (!r.bubblebreathState) r.bubblebreathState = createBubblebreathState();
+    let inWater; try { inWater = bot.isInWater; } catch { inWater = undefined; }
+    const res = stepBubblebreath(r.bubblebreathState, { inWater, danger: !!(c?.danger && c.danger.count > 0), falling: r.selfFalling === true, portalSteadyActive: isPortalsteadyActive(r.portalsteadyState, Date.now()) }, Date.now());
+    if (res.fired) r.lastBubbleBreath = { at: Date.now(), count: r.bubblebreathState.fireCount, submergedMs: res.submergedMs };
+  } catch {}
+}
 function noteToolCheckTick(bot, r, c) {
   try {
     if (!bot || !r) return;
@@ -3270,6 +3310,7 @@ system.runInterval(() => {
     // キュー0副次 R1 (cycle1421): 単発ミッションの toolNeed は昇格接続が消費の入口になる (実装は tickLongTask 内の1か所のまま)
     if (!consumed && !r.longtask && r.toolNeed && tickToolPrepPromote(bot, p, r)) consumed = true;
     if (r.longtask && tickLongTask(bot, p, r, ctx)) consumed = true;
+    if (!consumed && r.buildPlan && r.buildPlan.stage === "gather" && tickGatherNoProgress(bot, p, r)) consumed = true; // GATHER-NOEXIT: suspended でも評価されるよう active ゲートの外・前
     if (r.mission && r.mission.status === "active") {
       const hm = r.mission.order.constraints.hostiles;
       const suppressed = hm === "ignore" && move && ["guard", "zap", "flee"].includes(move.act) && ctx.self.hpPct >= 0.25;
