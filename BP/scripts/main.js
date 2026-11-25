@@ -64,6 +64,8 @@ import { createSnowtreadState, noteSnowtread, snowtreadCurrentOffset, applySnowt
 import { createStepupState, noteStepup as noteStepupState, sampleStepup } from "./stepup_math.js";
 import { banKeyFor, matchesBan, isBanned } from "./trunk_ban.js"; // queue0-A bug2 (cycle1728, v0.5.19): trunk-unit ban
 import { createTakeBanState, recordTakeBan, isTakeBanned, pruneTakeBans } from "./take_ban_math.js"; // TR2136-01 (cycle2200): 回収全量失敗の実行側見切り
+import { createWorkBanState, recordWorkBan, isWorkBanned, pruneWorkBans } from "./work_ban_math.js"; // cycle0832 F5: work層の見切り ban (hold枯渇後に到達不能候補を選び直す無限ループの是正)
+import { createOreSpotState, noteOreSpot, sampleOreSpot } from "./orespot_math.js"; // POLISH-ANIM-ORESPOT-01 (cycle0832): 貴重鉱石への二度見 (表示層のみ・実機確認待ち)
 import { createWorkglanceState, noteWorkglance, sampleWorkglance } from "./workglance_math.js"; // POLISH-ANIM-WORKGLANCE-01 (cycle1728, v0.5.19)
 import { createCatchsightState, noteCatchsight, sampleCatchsight } from "./catchsight_math.js";
 import { createRainShelterState, noteRainShelter, sampleRainShelter } from "./rainshelter_math.js"; // POLISH-ANIM-RAINSHELTER-01 (cycle2231): 持続雨の待機中に屋根方向へ視線を寄せる (表示層のみ・実機確認待ち) // POLISH-ANIM-CATCHSIGHT-01 (cycle2200): 主人が投げた物の追視 (表示層のみ・実機確認待ち)
@@ -544,6 +546,7 @@ function buildContext(bot, owner) {
   noteWarmhandsTick(bot, r, c); // POLISH-ANIM-WARMHANDS-01 (cycle0740)
   try { r.villagerCand = villagerCand; r.villagerScanOk = scanOk; } catch {}
   noteVillagergreetTick(bot, r, c); // POLISH-ANIM-VILLAGERGREET-01 (cycle0855)
+  noteOrespotTick(bot, r, c); // POLISH-ANIM-ORESPOT-01 (cycle0832)
   noteIdleTick(bot, r, c); // POLISH-ANIM-IDLE-01 (cycle2020)
   noteWakestretchTick(bot, r, c); // POLISH-ANIM-WAKESTRETCH-01 (cycle0005)
   noteLoadPostureTick(bot, r, c); // POLISH-ANIM-LOADPOSTURE-01 (cycle1832)
@@ -655,19 +658,21 @@ function buildContext(bot, owner) {
   if (Date.now() - r.percAt > 4000 || !r.perc) {
     r.percAt = Date.now(); r.percTargets = {};
     const pcOpps = [];
-    const pc = { tree: -1, ore: -1, crop: -1, stone: -1, oreValuable: false, nearCraft: false, nearFurnace: false, nearHeat: false, nearMachine: false, nearBed: false, darkness: false, shrieker: false, failedCells: 0, totalCells: 245 };
+    const pc = { tree: -1, ore: -1, crop: -1, cropYoung: -1, stone: -1, oreValuable: false, nearCraft: false, nearFurnace: false, nearHeat: false, nearMachine: false, nearBed: false, darkness: false, shrieker: false, failedCells: 0, totalCells: 245 };
     const selD = { tree: -1, ore: -1, stone: -1, crop: -1 }; // forbids G6-c (cycle0628): 候補選出専用の距離 (統計 pc.* と分ける。禁止候補が距離だけ更新して非禁止候補を塞ぐ事故を防ぐ)
     const forbT = (tid) => { try { return isForbiddenWorkTarget(r.sessionForbids, tid, dropOfWorkTarget); } catch { return false; } };
+    const wbanned = (loc, tid) => { try { return isWorkBanned(r.workBan, loc, tid, Date.now()); } catch { return false; } }; // cycle0832 F5: work層 ban 中セルは選出から外す (統計 pc.* は維持し次点が載る形)
     const bx = Math.floor(bot.location.x), by = Math.floor(bot.location.y), bz = Math.floor(bot.location.z);
     for (let dx = -3; dx <= 3; dx++) for (let dy = -2; dy <= 2; dy++) for (let dz = -3; dz <= 3; dz++) {
       let b = null; try { b = dim.getBlock({ x: bx + dx, y: by + dy, z: bz + dz }); } catch {}
       if (!b) { pc.failedCells++; continue; } const tid = b.typeId; const dd = Math.hypot(dx, dy, dz);
-      if (tid.includes("_log") || tid.includes("_wood") || tid.includes("_stem")) { if (pc.tree < 0 || dd < pc.tree) pc.tree = dd; if (!forbT(tid) && (selD.tree < 0 || dd < selD.tree)) { selD.tree = dd; r.percTargets.tree = { x: b.location.x, y: b.location.y, z: b.location.z, typeId: tid }; } }
-      else if (tid.includes("_ore") || tid === "minecraft:ancient_debris") { if (VALUABLE_ORES.has(tid)) pc.oreValuable = true; if (pc.ore < 0 || dd < pc.ore) pc.ore = dd; if (!forbT(tid) && (selD.ore < 0 || dd < selD.ore)) { selD.ore = dd; r.percTargets.ore = { x: b.location.x, y: b.location.y, z: b.location.z, typeId: tid }; } }
-      else if (NATURAL_STONE.has(tid)) { if (pc.stone < 0 || dd < pc.stone) pc.stone = dd; if (!forbT(tid) && (selD.stone < 0 || dd < selD.stone)) { selD.stone = dd; r.percTargets.stone = { x: b.location.x, y: b.location.y, z: b.location.z, typeId: tid }; } }
+      if (tid.includes("_log") || tid.includes("_wood") || tid.includes("_stem")) { if (pc.tree < 0 || dd < pc.tree) pc.tree = dd; if (!forbT(tid) && !wbanned(b.location, tid) && (selD.tree < 0 || dd < selD.tree)) { selD.tree = dd; r.percTargets.tree = { x: b.location.x, y: b.location.y, z: b.location.z, typeId: tid }; } }
+      else if (tid.includes("_ore") || tid === "minecraft:ancient_debris") { if (VALUABLE_ORES.has(tid)) pc.oreValuable = true; if (pc.ore < 0 || dd < pc.ore) pc.ore = dd; if (!forbT(tid) && !wbanned(b.location, tid) && (selD.ore < 0 || dd < selD.ore)) { selD.ore = dd; r.percTargets.ore = { x: b.location.x, y: b.location.y, z: b.location.z, typeId: tid }; } }
+      else if (NATURAL_STONE.has(tid)) { if (pc.stone < 0 || dd < pc.stone) pc.stone = dd; if (!forbT(tid) && !wbanned(b.location, tid) && (selD.stone < 0 || dd < selD.stone)) { selD.stone = dd; r.percTargets.stone = { x: b.location.x, y: b.location.y, z: b.location.z, typeId: tid }; } }
       else if (Object.prototype.hasOwnProperty.call(CROP_MATURITY_MAX, tid)) {
         let g = null; try { g = b.permutation?.getState("growth") ?? b.permutation?.getState("age"); } catch {}
-        if (isCropMature(tid, g)) { if (pc.crop < 0 || dd < pc.crop) pc.crop = dd; if (!forbT(tid) && (selD.crop < 0 || dd < selD.crop)) { selD.crop = dd; r.percTargets.crop = { x: b.location.x, y: b.location.y, z: b.location.z, typeId: tid }; } }
+        if (isCropMature(tid, g)) { if (pc.crop < 0 || dd < pc.crop) pc.crop = dd; if (!forbT(tid) && !wbanned(b.location, tid) && (selD.crop < 0 || dd < selD.crop)) { selD.crop = dd; r.percTargets.crop = { x: b.location.x, y: b.location.y, z: b.location.z, typeId: tid }; } }
+        else if (pc.cropYoung < 0 || dd < pc.cropYoung) pc.cropYoung = dd; // cycle0832 F2: 未成熟株 (growth読取不能も存在は確定としてこちらへ) を成熟と分けて数える
       }
       if (/flower/.test(tid) || tid === "minecraft:snow_layer" || tid === "minecraft:short_grass" || tid === "minecraft:tall_grass" || tid === "minecraft:fern" || tid === "minecraft:sugar_cane") pcOpps.push({ kind: "block", typeId: tid, pos: { x: b.location.x, y: b.location.y, z: b.location.z } }); // 基礎 N2 (v0.4.65): サトウキビも side 採取の機会に載せる (side_tasks の現行IDと対)
       if (tid === "minecraft:crafting_table") { pc.nearCraft = true; try { if (wm?.recordWorkstation) wm.recordWorkstation(b.location, dim.id, tid); } catch {} }
@@ -684,7 +689,7 @@ function buildContext(bot, owner) {
   }
   if (r.perc) {
     c.x.nearestTreeDist = r.perc.tree; c.x.nearestOreDist = r.perc.ore; c.x.cropReadyDist = r.perc.crop; c.x.nearestStoneDist = r.perc.stone; c.x.oreValuable = !!r.perc.oreValuable;
-    c.x.nearCraft = r.perc.nearCraft; c.x.nearFurnace = r.perc.nearFurnace; c.x.nearHeat = !!r.perc.nearHeat; c.x.nearMachine = r.perc.nearMachine; c.x.nearCrop = r.perc.crop >= 0; c.x.cropMature = r.perc.crop >= 0; c.x.shriekerNear = !!r.perc.shrieker; c.x.nearBed = !!r.perc.nearBed;
+    c.x.nearCraft = r.perc.nearCraft; c.x.nearFurnace = r.perc.nearFurnace; c.x.nearHeat = !!r.perc.nearHeat; c.x.nearMachine = r.perc.nearMachine; c.x.nearCrop = r.perc.crop >= 0 || (r.perc.cropYoung ?? -1) >= 0; c.x.cropMature = r.perc.crop >= 0; c.x.cropYoungDist = r.perc.cropYoung ?? -1; // cycle0832 F2: nearCrop と cropMature の同値供給を分離 (未成熟畑ルール群の到達不能を解消) c.x.shriekerNear = !!r.perc.shrieker; c.x.nearBed = !!r.perc.nearBed;
     const dark = (c.owner.underground || c.env.isNight) && !r.perc.nearFurnace;
     c.x.lightLevel = c.owner.underground ? 5 : c.env.isNight ? 7 : 13;
     c.x.darkness = dark && c.x.lightLevel <= 7;
@@ -997,6 +1002,8 @@ function startWork(bot, r, target, opts = {}) {
       if (y !== target.y) target = { ...target, y };
     } catch {}
   }
+  // cycle0832 F5: work層 ban 中の対象は立てない (hold枯渇で見切った到達不能候補の再選出ループを断つ)
+  try { if (isWorkBanned(r.workBan, target, target.typeId, Date.now())) { r.lastWorkReject = { reason: "WORK_BANNED", typeId: target.typeId, at: Date.now() }; return false; } } catch {}
   // 同じ対象なら進捗を保持する。脳tickごとに作り直すと left がリセットされ永遠に割り切れない（実害バグ）
   if (r.work && r.work.typeId === target.typeId && r.work.loc.x === target.x && r.work.loc.y === target.y && r.work.loc.z === target.z) return true;
   // v0.4.76 遮蔽除去: 先掘り中は主対象 (main) が一致すれば先掘り対象の進捗を保持する
@@ -1103,7 +1110,7 @@ function noteWorkHold(bot, r, w, why) {
     if (wh.lastAt && now > wh.lastAt) wh.totalMs += Math.min(now - wh.lastAt, 2000);
     wh.lastAt = now;
     if (!wh.noted) { wh.noted = true; noteFail(bot, "work:hold", new Error(key)); }
-    if (wh.totalMs > 30000) { noteFail(bot, "work:hold_exhausted", new Error(key)); return false; }
+    if (wh.totalMs > 30000) { noteFail(bot, "work:hold_exhausted", new Error(key)); try { if (!r.workBan) r.workBan = createWorkBanState(); const bt = w.main || w; recordWorkBan(r.workBan, bt.loc || bt, bt.typeId, now); pruneWorkBans(r.workBan, now); } catch {} return false; } // cycle0832 F5: 枯渇時に主対象 (遮蔽セルでなく w.main) を60秒 ban
   } catch {}
   return true;
 }
@@ -3824,6 +3831,25 @@ function noteVillagergreetTick(bot, r, c) {
     if (out?.fired) r.lastVillagerGreet = { at: Date.now(), villagerId: cand?.id || null };
   } catch {}
 }
+// POLISH-ANIM-ORESPOT-01 (cycle0832): 通りがかりの貴重鉱石へ一度だけする二度見 (表示層のみ・実機確認待ち)
+// feeder は既存知覚 (percTargets.ore + perc.oreValuable) だけを使い、新規走査はしない
+function noteOrespotTick(bot, r, c) {
+  try {
+    if (!bot || !r) return;
+    if (!r.orespotState) r.orespotState = createOreSpotState();
+    const t = (r.perc?.oreValuable && r.percTargets?.ore) ? r.percTargets.ore : null;
+    let cellKey = null, relYaw = null, relPitch = null, isWork = false;
+    if (t) {
+      cellKey = `${t.x},${t.y},${t.z}:${t.typeId}`;
+      try { const gr = gazeRotation(bot.location, { x: t.x + 0.5, y: t.y + 0.5, z: t.z + 0.5 }); const cur = bot.getRotation(); relYaw = ((gr.y - (cur?.y || 0) + 540) % 360) - 180; relPitch = gr.x - (cur?.x || 0); } catch {}
+      if (r.work && r.work.loc.x === t.x && r.work.loc.y === t.y && r.work.loc.z === t.z) isWork = true;
+    }
+    let inWater = false; try { inWater = !!bot.isInWater; } catch {}
+    const suppressed = !!((c?.danger?.count ?? 0) > 0) || r.selfFalling === true || inWater;
+    const out = noteOreSpot(r.orespotState, { cellKey, relYawDeg: relYaw, relPitchDeg: relPitch, isCurrentWorkTarget: isWork, scanOk: !!r.perc, suppressed }, Date.now());
+    if (out) r.lastOreSpot = { at: Date.now(), cellKey: out.cellKey };
+  } catch {}
+}
 function applyGaze(bot, owner, ctx, scan) {
   try { const bv = typeof bot.isValid === "function" ? bot.isValid() : bot.isValid; if (bot.isValid !== undefined && !bv) return; if (owner) { const ov = typeof owner.isValid === "function" ? owner.isValid() : owner.isValid; if (owner.isValid !== undefined && !ov) return; } } catch { return; }
   // POLISH-ANIM-OWNERRETURN-01 (cycle1923): 主人の距離遷移だけを発火源にする feeder (表示層のみ・実機確認待ち)
@@ -3913,6 +3939,7 @@ function applyGaze(bot, owner, ctx, scan) {
     if (rot && r.nightwatchState) { try { const nw = sampleNightwatch(r.nightwatchState, Date.now()); if (nw.active) rot = { ...rot, y: rot.y + nw.yawDeg, x: applyNightwatchPitch(rot.x, Date.now() - (r.nightwatchState.startedAtMs || Date.now())) }; } catch {} } // POLISH-ANIM-NIGHTWATCH-01 (cycle0340): 重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot && r.xpglanceState) { try { const xs = sampleXpGlance(r.xpglanceState, Date.now()); if (xs.active) { const bl = blendXpGlanceGaze({ yawDeg: rot.y, pitchDeg: rot.x }, xs); if (bl) rot = { ...rot, y: bl.yawDeg, x: bl.pitchDeg }; } } catch {} } // POLISH-ANIM-XPGLANCE-01 (cycle0628): 重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot && r.villagergreetState) { try { const vg = sampleVillagergreet(r.villagergreetState, Date.now()); if (vg.active) rot = { ...rot, y: rot.y + vg.yawDeg, x: rot.x + vg.pitchDeg }; } catch {} } // POLISH-ANIM-VILLAGERGREET-01 (cycle0855): 重畳の最下位 (表示層のみ・実機確認待ち)
+    if (rot && r.orespotState) { try { const os2 = sampleOreSpot(r.orespotState, Date.now()); if (os2.active) rot = { ...rot, y: rot.y + os2.yawDeg, x: rot.x + os2.pitchDeg }; } catch {} } // POLISH-ANIM-ORESPOT-01 (cycle0832): 重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot) { try { bot.setRotation(rot); } catch {} }
   }
   if (gz.say && Math.random() < 0.4) sayAmbient(owner, bot, gz.say);

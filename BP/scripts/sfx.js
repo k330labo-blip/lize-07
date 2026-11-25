@@ -153,10 +153,10 @@ export function materialOfTypeId(typeId) {
   if (id === "web" || id === "cobweb" || id === "fire" || id === "soul_fire" || id === "portal" || id === "end_portal" || id === "end_gateway" || id === "bubble_column" || id === "structure_void") return null; // 2b (cycle0537 a08 N1): 無音であるべき形が stone へ落ちていた是正 (完全一致のみ)
   if (id.includes("glass")) return "glass";                               // 3
   if (GLASSLIKE_IDS.has(id)) return "glass";                              // 3b (a11): 発光ガラス系
-  if (id.endsWith("_leaves")) return "grass";                             // 4: 葉は草系
+  if (id.endsWith("_leaves") || id === "leaves" || id === "leaves2") return "grass"; // 4: 葉は草系 (cycle0832 a11 A1: レガシー素形 leaves/leaves2 も同素材)
   if (GRASS_IDS.has(id)) return "grass";                                 // 5: 土は grass グループ
   // 5b (cycle0922): 植物は grass。flower_pot は土器なので _flower の対象外に明示する
-  if (id !== "flower_pot" && (PLANT_IDS.has(id) || id.endsWith("_sapling") || id.endsWith("_flower") || id.endsWith("_mushroom"))) return "grass";
+  if (id !== "flower_pot" && (PLANT_IDS.has(id) || id === "sapling" || id === "flower" || id === "tallgrass" || id === "mushroom" || id.endsWith("_sapling") || id.endsWith("_flower") || id.endsWith("_mushroom"))) return "grass"; // cycle0832 a11 A1: レガシー素形 sapling/flower/tallgrass/mushroom
   if (id === "sand" || id === "red_sand" || id === "suspicious_sand"
       || id === "concrete_powder" || id.endsWith("_concrete_powder")) return "sand";   // 6 (+a11 powder。硬化 *_concrete は stone のまま)
   if (id === "gravel" || id === "suspicious_gravel") return "gravel";     // 7
@@ -193,7 +193,7 @@ export function materialOfTypeId(typeId) {
   if (speciesPart(NETHER_SPECIES, id)) return "stem";
   // 20: 木系
   if (WOODWORK_IDS.has(id) || speciesPart(WOOD_SPECIES, id)
-      || id.endsWith("_log") || id.endsWith("_wood") || id.endsWith("_planks")
+      || id.endsWith("_log") || id.endsWith("_wood") || id.endsWith("_planks") || id === "log" || id === "log2" || id === "planks" || id === "double_wooden_slab" // cycle0832 a11 A1: レガシー素形 log/log2/planks/double_wooden_slab
       || id.includes("bamboo")
       || ((id.includes("door") || id.includes("trapdoor") || id.includes("fence"))
           && !id.includes("iron"))) return "wood";

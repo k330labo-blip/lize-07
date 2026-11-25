@@ -297,6 +297,11 @@ function amountValue(numTok, unit) {
   if (n == null) return null;
   return unit === "スタック" ? n * 64 : n;
 }
+// cycle0832 R1 (Phase5): N5 不要の gap 構成判定。距離 (文字数) ゲートは数量サフィックス
+// 「3個は」等で常に外れ否定が反転したため、gap が「数量サフィックス＋係助詞・強調のみ」で
+// 構成される場合に通過させる (語彙は AMOUNT_RE / amountNear と統一。新規の独自表は作らない)。
+const N5_GAP_RE = /^を?(?:(?:\d+|[一二三四五六七八九十]+)\s*(?:個|本|枚|つ|体|匹|スタック|組|セット|箱)|半スタック)?\s*(?:は|が|も)?(?:もう|なんか)?$/;
+function n5GapOk(text, hit, idx) { try { const gap = text.slice(hit.end, idx); if (gap.length <= 2) return true; return N5_GAP_RE.test(gap); } catch { return false; } }
 // メンションの前後から数量を探す（「ダイヤ10個」「ダイヤを10個」「10個のダイヤ」）
 function amountNear(text, hit) {
   const after = text.slice(hit.end, hit.end + 10);
@@ -466,7 +471,7 @@ const chain = [anchorHit];
 for (let i = ai; i > 0; i--) {
 const prev = sorted[i - 1], curr = sorted[i];
 let gap = text.slice(prev.end, curr.start);
-gap = gap.replace(/^\d+(?:個|体|本|枚)/, "");
+gap = gap.replace(/^(?:\d+|[一二三四五六七八九十]+)\s*(?:個|体|本|枚|つ|匹|スタック|組|セット|箱)/, "").replace(/^半スタック/, ""); // cycle0832 R1-F2: 数量語彙を AMOUNT_RE 系へ統一 (漢字数字・スタック・「つ」で第1項が漏れる部分反転の是正)
 if (!gap) break;
 if (!/^(?:も|と|や|とか|、|・|は|が|を)+$/.test(gap)) break;
 chain.unshift(prev);
@@ -576,7 +581,7 @@ const idx = text.indexOf(marker, from);
 if (idx < 0) break;
 from = idx + marker.length;
 const hit = nearestHitBefore(hits.filter((h) =>!done.has(h)), idx);
-if (hit && idx - hit.end <= 2) {
+if (hit && n5GapOk(text, hit, idx)) {
 for (const ch of parallelChainBefore(hits.filter((h) =>!done.has(h)), hit, text)) {
 if (isGenericHostile(ch)) hostileNegated = true;
 const neg = pushNeg("not", ch, null, marker);
