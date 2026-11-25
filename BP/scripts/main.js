@@ -44,7 +44,9 @@ import { createGuardState, decideResteer, recordBlocked, recordResteerApplied, l
 import { createWakestretchState, noteWakestretch, wakestretchCurrent, applyWakestretchPitch } from "./wakestretch_math.js"; // POLISH-ANIM-WAKESTRETCH-01 (cycle0005): 長い待機明けの小さな伸び (表示層のみ・実機確認待ち)
 import { createOwnerfalltrackState, noteOwnerfalltrack, ownerfalltrackCurrent } from "./ownerfalltrack_math.js"; // POLISH-ANIM-OWNERFALLTRACK-01 (cycle0033): owner fall gaze tracking (display only)
 import { createFallLandState, onVerticalStep, falllandCurrent } from "./fallland_math.js";
-import { createRoutecheckState, noteRoutecheck, sampleRoutecheck } from "./routecheck_math.js"; // POLISH-ANIM-ROUTECHECK-01 (cycle0117): 長距離移動中の進路確認 (表示層のみ・実機確認待ち) // POLISH-ANIM-FALLLAND-01 (cycle0057): 落下ポーズ+着地クッション (表示層のみ・実機確認待ち)
+import { createRoutecheckState, noteRoutecheck, sampleRoutecheck } from "./routecheck_math.js";
+import { createInspectAgg, recordInspectEval } from "./goap_inspect_agg.js"; // Phase6 INSPECT S0-1 (cycle0153): 記録専用カウンタ (挙動不変)
+import { createYieldState, noteYield, sampleYield } from "./yield_math.js"; // POLISH-ANIM-YIELD-01 (cycle0153): 狭い通路での半歩の譲り (表示層のみ・実機確認待ち) // POLISH-ANIM-ROUTECHECK-01 (cycle0117): 長距離移動中の進路確認 (表示層のみ・実機確認待ち) // POLISH-ANIM-FALLLAND-01 (cycle0057): 落下ポーズ+着地クッション (表示層のみ・実機確認待ち)
 import { createHeedState, noteHeed as noteHeedState, sampleHeed } from "./heed_math.js";
 import { createThresholdState, noteThreshold as noteThresholdState, sampleThreshold } from "./threshold_math.js"; // POLISH-ANIM-THRESHOLD-01 (cycle1503): くぐり視線 (表示層のみ・実機確認待ち)
 import { createEdgepeekState, noteEdgepeek as noteEdgepeekState, sampleEdgepeek } from "./edgepeek_math.js";
@@ -2007,6 +2009,7 @@ function lookupSurvey(bot, ids, banKey = null) {
   cands.sort((a, b) => a.d - b.d);
   for (const c of cands.slice(0, 12)) {
     let b = null; try { b = bot.dimension.getBlock(c.loc); } catch {}
+    if (!b) continue; // PK-0117-01 B最小形 (cycle0153): 未読候補はその回だけ不採用 (記録は消さない)
     if (b && b.typeId !== c.id) { const arr = c.sv.hits[c.id]; const i = arr.indexOf(c.loc); if (i >= 0) arr.splice(i, 1); continue; } // もう無い (掘られた等)
     if (b && !cropMatureAt(bot.dimension, c.loc, c.id)) continue; // cycle2311: survey 経由でも未成熟作物は候補にしない (記録は消さない: 成熟すれば候補に戻る)
     return { loc: { ...c.loc }, typeId: c.id };
@@ -2371,6 +2374,7 @@ function ensureStation(bot, r, leg) {
       try { const bc = invOf(bot); let rest = 1; if (bc) rest = addTo(bc, keep, 1); if (rest > 0) dim.spawnItem(new ItemStack(keep, rest), bot.location); } catch {}
       r.placedStation = { ...c, id: need, dim: dim.id };
       try { r.lastPlace = { act: "PLACE", mode: "station", ok: true, reason: null, item: need, at: Date.now() }; commitLastAction(r, r.lastPlace); } catch {}
+      try { sfxDigBreak(dim, { x: c.x + 0.5, y: c.y + 0.5, z: c.z + 0.5 }, id); } catch {} // cycle0153: carve で掘った元ブロックの破壊音 (素材は掘削元 id が正)
       try { sfxPlace(dim, { x: c.x + 0.5, y: c.y + 0.5, z: c.z + 0.5 }, need); } catch {} // POLISH-SND-PLACE-01 (v0.4.90): 設置音 (carve 経路)
       return true;
     } catch (err) { try { const bc = invOf(bot); let rest = 1; if (bc) rest = addTo(bc, need, 1); if (rest > 0) dim.spawnItem(new ItemStack(need, rest), bot.location); } catch {} noteFail(bot, "place:carve_failed", err); return false; }
@@ -3150,6 +3154,8 @@ function tickMission(bot, owner, ctx, scan) {
       try { r.lastPlanInspect = { ...deriveInspectNeeds({ planOk: !!res?.ok, planReason: res?.ok ? null : (res?.reason || null), factStatus: ev?.meta?.factStatus ?? null, stationStatus: ev?.meta?.stationStatus ?? null, firstPre: r.lastPlan?.a1?.pre ?? null, chestObserved: (ev?.meta?.chest && Number.isFinite(ev.meta.chest.observed)) ? ev.meta.chest.observed : null, target: step.target }), planOk: !!res?.ok, at: r.lastPlan.at }; } catch { r.lastPlanInspect = null; }
       // 6-ML INSPECT 層1 (cycle1940): 影記録の直後に source スコープ (via === "inspect_block_near") の need 先頭1件だけ inspectBlockNear へ渡し、EXP 記録を開始する。戻り値は分岐・実行・ゲートに使わない (記録のみ)。chest/station スコープは対象外
       try { const need1 = (r.lastPlanInspect?.needs || []).find((n) => n && n.via === "inspect_block_near" && typeof n.item === "string" && n.item); if (need1) inspectBlockNear(bot, r, need1.item); } catch {}
+      // Phase6 INSPECT S0-1 (cycle0153): 記録専用カウンタ。別 try で1点だけ接続し、戻り値は分岐・計画・ゲートへ渡さない。clearPlanRecords には登録しない (mission 終了で集計が消えないため)
+      try { if (!r.inspectAgg) r.inspectAgg = createInspectAgg(); recordInspectEval(r.inspectAgg, r.lastPlanInspect); } catch {}
     }
   } catch {}
   if (ft.found) { const key = ft.loc ? `${ft.loc.x},${ft.loc.y},${ft.loc.z}` : ""; if (key !== r.mTargetKey) { r.mTargetKey = key; r.mTargetSince = Date.now(); } r.mTargetLoc = ft.loc; r.mTargetType = ft.typeId; r.mTargetEntity = ft.entity || null; r.mTargetKind = ft.kind; }
@@ -3603,6 +3609,8 @@ function applyGaze(bot, owner, ctx, scan) {
     // POLISH-ANIM-PLACESETTLE-01 feeder (cycle2248): lastAction の PLACE 成功 (seq変化) の辺でのみ発火記録 (表示層のみ・実機確認待ち)
     try { const la = r.lastAction; if (la && la.act === "PLACE" && la.ok && la.seq !== r.placesettleSeenSeq) { r.placesettleSeenSeq = la.seq; if (shouldPlacesettle({ placed: true, suppressed: ((ctx?.danger?.count ?? 0) > 0) || r.selfFalling === true || !!bot.isInWater, lastFiredMs: r.placesettleLastAt ?? null, nowMs: Date.now() })) { r.placesettleAnimAt = la.at || Date.now(); r.placesettleLastAt = r.placesettleAnimAt; r.lastPlacesettle = { at: r.placesettleAnimAt, item: la.item || null }; } } } catch {}
     if (rot && isPlacesettleActive(r.placesettleAnimAt, Date.now())) rot = { ...rot, x: applyPlacesettlePitch(rot.x, Date.now() - r.placesettleAnimAt) }; // POLISH-ANIM-PLACESETTLE-01 (cycle2248): 重畳 (表示層のみ・実機確認待ち)
+    // POLISH-ANIM-YIELD-01 feeder (cycle0153): 主人との対向接近を既存観測だけで組み立てる (新規走査は側方2セル×2段のみ)。lateralOffset は実座標へ流さず記録のみ、ヨー/ピッチだけ重畳 (表示層のみ・実機確認待ち)
+    try { if (!r.yieldState) r.yieldState = createYieldState(); const nowY = Date.now(); const dxY = owner.location.x - bot.location.x, dzY = owner.location.z - bot.location.z; const dHY = Math.hypot(dxY, dzY); const approachingY = Number.isFinite(r.yieldLastDist) ? dHY < r.yieldLastDist - 0.005 : false; r.yieldLastDist = dHY; let facingY = 0; try { const oy = owner.getRotation?.().y; const by = rot?.y; if (Number.isFinite(oy) && Number.isFinite(by)) facingY = Math.abs(((oy - by + 540) % 360) - 180); } catch {} let roomYL = false, roomYR = false; try { if (dHY > 0.01) { const ux = dxY / dHY, uz = dzY / dHY; const roomAt = (sx, sz) => { const fx = Math.floor(bot.location.x + sx), fy = Math.floor(bot.location.y), fz = Math.floor(bot.location.z + sz); const free = (b) => !b || (!solidOfTypeId(b.typeId) && !b.isLiquid); return free(bot.dimension.getBlock({ x: fx, y: fy, z: fz })) && free(bot.dimension.getBlock({ x: fx, y: fy + 1, z: fz })); }; roomYL = roomAt(-uz, ux); roomYR = roomAt(uz, -ux); } } catch {} const yEv = noteYield(r.yieldState, { ownerDist: dHY, facingDiffDeg: facingY, approaching: approachingY, roomLeft: roomYL, roomRight: roomYR, working: !!r.work, danger: ((ctx?.danger?.count ?? 0) > 0), falling: r.selfFalling === true, inWater: !!bot.isInWater }, nowY); if (yEv?.fired) r.lastYield = { at: nowY, side: yEv.side, reason: yEv.reason }; } catch {}
     // POLISH-ANIM-CRAFTSETTLE-01 feeder (cycle0141): lastAction の CRAFT/SMELT 成功 (seq変化) の辺でのみ発火記録 (表示層のみ・実機確認待ち)
     try { const la = r.lastAction; if (la && (la.act === "CRAFT" || la.act === "SMELT") && la.ok && la.seq !== r.craftsettleSeenSeq) { r.craftsettleSeenSeq = la.seq; if (shouldCraftsettle({ crafted: true, suppressed: ((ctx?.danger?.count ?? 0) > 0) || r.selfFalling === true || !!bot.isInWater, lastFiredMs: r.craftsettleLastAt ?? null, nowMs: Date.now() })) { r.craftsettleAnimAt = la.at || Date.now(); r.craftsettleLastAt = r.craftsettleAnimAt; r.lastCraftsettle = { at: r.craftsettleAnimAt, item: la.item || null, act: la.act }; } } } catch {}
     if (rot && isCraftsettleActive(r.craftsettleAnimAt, Date.now())) rot = { ...rot, x: applyCraftsettlePitch(rot.x, Date.now() - r.craftsettleAnimAt) }; // POLISH-ANIM-CRAFTSETTLE-01 (cycle0141): 重畳 (表示層のみ・実機確認待ち)
@@ -3632,6 +3640,7 @@ function applyGaze(bot, owner, ctx, scan) {
     if (rot && r.ownerfalltrackState) { try { const oft = ownerfalltrackCurrent(r.ownerfalltrackState, r.ownerfalltrackSample || {}, Date.now()); if (oft.active || oft.pitchDeg || oft.yawOffsetDeg) rot = { ...rot, y: rot.y + (oft.yawOffsetDeg || 0), x: rot.x + (oft.pitchDeg || 0) }; } catch {} } // POLISH-ANIM-OWNERFALLTRACK-01 (cycle0033): lowest overlay (display only) // POLISH-ANIM-WAKESTRETCH-01 (cycle0005): 重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot && r.falllandState) { try { const fl = falllandCurrent(r.falllandState, Date.now()); if (fl.active) { rot = { ...rot, x: rot.x + fl.pitchDeg }; if (fl.mode === "land") r.lastFallLand = { ...(r.lastFallLand || {}), at: Date.now(), mode: "land", landTier: fl.landTier, sink: fl.sink }; } } catch {} } // POLISH-ANIM-FALLLAND-01 (cycle0057): 重畳の最下位 (表示層のみ・実機確認待ち。sink は RP 受け口が無い間は記録のみ)
     if (rot && r.routecheckState) { try { const rc2 = sampleRoutecheck(r.routecheckState, Date.now()); if (rc2.active) rot = { ...rot, x: rot.x + rc2.gazePitchDeg }; } catch {} } // POLISH-ANIM-ROUTECHECK-01 (cycle0117): 重畳の最下位 (表示層のみ・実機確認待ち)
+    if (rot && r.yieldState) { try { const ys = sampleYield(r.yieldState, Date.now()); if (ys.active) rot = { ...rot, y: rot.y + ys.yawDeg, x: rot.x + ys.gazePitchDeg }; } catch {} } // POLISH-ANIM-YIELD-01 (cycle0153): 重畳の最下位 (表示層のみ・実機確認待ち。lateralOffset は実座標へ流さない)
     if (rot) { try { bot.setRotation(rot); } catch {} }
   }
   if (gz.say && Math.random() < 0.4) sayAmbient(owner, bot, gz.say);
