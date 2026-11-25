@@ -149,7 +149,7 @@ export function materialOfTypeId(typeId) {
       || id === "concrete_powder" || id.endsWith("_concrete_powder")) return "sand";   // 6 (+a11 powder。硬化 *_concrete は stone のまま)
   if (id === "gravel" || id === "suspicious_gravel") return "gravel";     // 7
   if (id === "powder_snow") return "powder_snow";                         // 8
-  if (id === "snow" || id === "snow_layer") return "snow";                // 9
+  if (id === "snow" || id === "snow_layer" || id === "snow_block" || id === "top_snow") return "snow"; // 9 (cycle0446: snow_block/top_snow が stone へ落ちていた誤分類を是正)
   if (id.endsWith("_wool") || id.endsWith("_carpet")
       || id.endsWith("_bed") || id.endsWith("_banner")) return "cloth";   // 10 (+a11 bed/banner 全色)
   if (id === "netherite_block") return "netherite";                      // 11a (cycle1303): 完全一致のみ。ancient_debris は巻き込まない

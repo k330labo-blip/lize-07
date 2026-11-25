@@ -80,6 +80,8 @@ import { createLookLeadState, tickLookLead } from "./looklead_math.js"; // POLIS
 import { applySettlePitch, isSettleActive, shouldSettle } from "./settle_math.js"; // POLISH-ANIM-SETTLE-01 (cycle2058): 掘削完了直後の小さな確認視線 (表示層のみ・実機確認待ち)
 import { applyPlacesettlePitch, isPlacesettleActive, shouldPlacesettle } from "./placesettle_math.js"; // POLISH-ANIM-PLACESETTLE-01 (cycle2248): 設置完了直後の小さな確認視線 (表示層のみ・実機確認待ち)
 import { applyCraftsettlePitch, isCraftsettleActive, shouldCraftsettle } from "./craftsettle_math.js"; // POLISH-ANIM-CRAFTSETTLE-01 (cycle0141): 製作/精錬完了直後の小さな確認視線 (表示層のみ・実機確認待ち)
+import { createDeliverGuardState, noteDeliverOutcome, isDeliverCooling } from "./deliver_guard_math.js"; // A18-TR-01 (cycle0446): planner deliver_to_owner 満杯失敗の出口 (連続全滅3回で60秒冷却し他 goal へ譲る)
+import { applyDeliverBowPitch, isDeliverBowActive, shouldDeliverBow } from "./deliverbow_math.js"; // POLISH-ANIM-DELIVERBOW-01 (cycle0446): 手渡し成功直後の小さな会釈 (表示層のみ・実機確認待ち)
 import { collectInvDurability } from "./inv_durability.js"; // cycle2311: 耐久予備ポリシーへの invDurability 供給者
 import { createSwapSoundState, noteHeldItem } from "./swap_sound_math.js"; // POLISH-FX-SWAP-01 (cycle2311): 持ち替え音の発火決定 (記録のみ・実機確認待ち)
 import { createOwnerReturnState, noteOwnerReturn, ownerReturnOffset } from "./ownerreturn_math.js"; // POLISH-ANIM-OWNERRETURN-01 (cycle1923): 帰還の気付き (表示層のみ・実機確認待ち) // POLISH-ANIM-PARTNERCHECK-01 (cycle1850): 主人被弾の辺で無事確認の視線 (表示層のみ・実機確認待ち)
@@ -1250,7 +1252,22 @@ function tickAutonomy(bot, owner, ctx, effMove) {
     case "deposit_at_home": { const h = homeOf(bot); if (h) { r.target = { x: h.x + 0.5, y: h.y + 1, z: h.z + 0.5 }; execArrive(bot, owner, { act: "deposit" }, ctx, null); } break; }
     case "deliver_to_owner": { // cycle1807 U1: 距離・次元ゲート無しの即時転送を是正 (DELIVER_RANGE が単一の正、範囲外は主人へ接近目標を張る)
       let inRange = false; try { inRange = owner.dimension.id === bot.dimension.id && dist(bot.location, owner.location) <= DELIVER_RANGE; } catch {}
-      if (inRange) { const oc = invOf(owner); if (oc) { const res = transferFiltered(bot, oc, null); recordStore(r, "deliver_to_owner", res); } }
+      if (inRange) {
+        // A18-TR-01 (cycle0446): 満杯全滅・inv取得不可の連続失敗に出口を持たせる。冷却中は試行せず主人へ寄るだけにし、他 goal へ譲る
+        try { if (!r.deliverGuard) r.deliverGuard = createDeliverGuardState(); } catch {}
+        if (r.deliverGuard && isDeliverCooling(r.deliverGuard, Date.now())) { try { r.target = behindOf(owner, 2); r.moveAct = "follow"; } catch {} }
+        else {
+          const oc = invOf(owner);
+          if (oc) { const res = transferFiltered(bot, oc, null); recordStore(r, "deliver_to_owner", res);
+            try { const out = noteDeliverOutcome(r.deliverGuard, { moved: res?.moved || 0, failed: !!res?.failed }, Date.now());
+              if (out?.action === "cooldown") noteFail(bot, "planner:deliver_to_owner_full", new Error("owner inventory full"));
+              else if (out?.action === "progress" && shouldDeliverBow({ delivered: true, suppressed: false, lastFiredMs: r.deliverBowLastAt ?? null, nowMs: Date.now() })) { r.deliverBowAt = Date.now(); r.deliverBowLastAt = r.deliverBowAt; r.lastDeliverBow = { at: r.deliverBowAt, moved: res?.moved || 0 }; }
+            } catch {}
+          } else {
+            try { const out = noteDeliverOutcome(r.deliverGuard, { moved: 0, failed: false, invUnavailable: true }, Date.now()); if (out?.action === "cooldown") noteFail(bot, "planner:deliver_to_owner_full", new Error("owner inventory unavailable")); } catch {}
+          }
+        }
+      }
       else { try { r.target = behindOf(owner, 2); r.moveAct = "follow"; } catch {} }
       break; }
     case "explore_nearby": wanderTo(r, bot, owner); break;
@@ -3744,6 +3761,7 @@ function applyGaze(bot, owner, ctx, scan) {
     // POLISH-ANIM-CRAFTSETTLE-01 feeder (cycle0141): lastAction の CRAFT/SMELT 成功 (seq変化) の辺でのみ発火記録 (表示層のみ・実機確認待ち)
     try { const la = r.lastAction; if (la && (la.act === "CRAFT" || la.act === "SMELT") && la.ok && la.seq !== r.craftsettleSeenSeq) { r.craftsettleSeenSeq = la.seq; if (shouldCraftsettle({ crafted: true, suppressed: ((ctx?.danger?.count ?? 0) > 0) || r.selfFalling === true || !!bot.isInWater, lastFiredMs: r.craftsettleLastAt ?? null, nowMs: Date.now() })) { r.craftsettleAnimAt = la.at || Date.now(); r.craftsettleLastAt = r.craftsettleAnimAt; r.lastCraftsettle = { at: r.craftsettleAnimAt, item: la.item || null, act: la.act }; } } } catch {}
     if (rot && isCraftsettleActive(r.craftsettleAnimAt, Date.now())) rot = { ...rot, x: applyCraftsettlePitch(rot.x, Date.now() - r.craftsettleAnimAt) }; // POLISH-ANIM-CRAFTSETTLE-01 (cycle0141): 重畳 (表示層のみ・実機確認待ち)
+    if (rot && isDeliverBowActive(r.deliverBowAt, Date.now())) rot = { ...rot, x: applyDeliverBowPitch(rot.x, Date.now() - r.deliverBowAt) }; // POLISH-ANIM-DELIVERBOW-01 (cycle0446): 手渡し成功直後の会釈 (表示層のみ・実機確認待ち)
     if (rot && r.snowtreadState) { try { const so = snowtreadCurrentOffset(r.snowtreadState); if (so.active) rot = { ...rot, x: applySnowtreadPitch(rot.x, r.snowtreadState.phase) }; } catch {} } // POLISH-ANIM-SNOWTREAD-01 (cycle2333): 重畳 (表示層のみ・実機確認待ち)
     if (rot && isFlinchActive(r.flinchAnimAt, Date.now())) rot = { ...rot, x: applyFlinchPitch(rot.x, Date.now() - r.flinchAnimAt) }; // POLISH-ANIM-FLINCH-01 (cycle1051)
     // POLISH-ANIM-ENDERAVERT-01 (cycle1940): feeder は既存走査 scan.hostiles から最寄りエンダーマンを取る (新規走査なし)。重畳は FLINCH の直下 (表示層のみ・実機確認待ち)
