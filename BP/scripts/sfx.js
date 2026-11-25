@@ -100,6 +100,7 @@ const METAL_IDS = new Set([
   // Tier2: 金属だが拾われていなかったもの
   "iron_bars", "bell", "heavy_weighted_pressure_plate", "light_weighted_pressure_plate",
   "heavy_core", "vault", "trial_spawner", "crafter", "brewing_stand", "tripwire_hook", // cycle1543: 金属筐体・スタンド・仕掛け
+  "iron_golem_statue", // cycle2058 (a13): copper_golem_statue→copper との非対称解消 (stone 落下だった1形)
 ]);
 // Tier2: ガラス音グループだが "glass" を含まない発光系 (sea_lantern は Tier1 とセット)
 const GLASSLIKE_IDS = new Set(["glowstone", "redstone_lamp", "sea_lantern", "beacon"]); // cycle1543: beacon を追加

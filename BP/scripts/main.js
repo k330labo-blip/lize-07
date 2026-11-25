@@ -58,6 +58,7 @@ import { restoreForbids, mergeSessionForbids, serializeForbids } from "./session
 import { createMusicnodState, noteMusicnod, sampleMusicnod } from "./musicnod_math.js"; // POLISH-ANIM-MUSICNOD-01 (cycle2006): 表示層のみ・実機確認待ち
 import { createIdleState, noteIdle, sampleIdle } from "./idle_math.js"; // POLISH-ANIM-IDLE-01 (cycle2020): 待機モーション (表示層のみ・実機確認待ち)
 import { createLookLeadState, tickLookLead } from "./looklead_math.js"; // POLISH-ANIM-LOOKLEAD-01 (cycle2036): 作業対象への視線の先行 (表示層のみ・実機確認待ち)
+import { applySettlePitch, isSettleActive, shouldSettle } from "./settle_math.js"; // POLISH-ANIM-SETTLE-01 (cycle2058): 掘削完了直後の小さな確認視線 (表示層のみ・実機確認待ち)
 import { createOwnerReturnState, noteOwnerReturn, ownerReturnOffset } from "./ownerreturn_math.js"; // POLISH-ANIM-OWNERRETURN-01 (cycle1923): 帰還の気付き (表示層のみ・実機確認待ち) // POLISH-ANIM-PARTNERCHECK-01 (cycle1850): 主人被弾の辺で無事確認の視線 (表示層のみ・実機確認待ち)
 import { deriveInspectNeeds } from "./goap_inspect.js"; // Phase6 UNKNOWN→INSPECT段1 (cycle1850): 影記録。読み手は 6-ML 層1 (cycle1940) で source スコープ限定・記録のみ接続済み // POLISH-ANIM-LOADPOSTURE-01 (cycle1832): 満載が続くと小さく前傾する (表示層のみ・実機確認待ち)
 import { createMoveTracker, moveTrackStep, drainMoveEvents } from "./move_state.js"; // ground-walk Stage 0-B (cycle1703): record-only wiring // POLISH-ANIM-PORTALSTEADY-01 (cycle1640): 次元移動直後の立て直し (表示層のみ・実機確認待ち) // POLISH-ANIM-STEPUP-01 (cycle1603): 1マス段差を上る瞬間の小さな前傾 (表示層のみ・実機確認待ち) // POLISH-ANIM-ICEBALANCE-01 (cycle1543): 氷上のバランス取り (表示層のみ・実機確認待ち)
@@ -2449,7 +2450,7 @@ function tickToolPrepPromote(bot, owner, r) {
     if (remain <= 0) return false;
     const needTotal = countOfGroup(countInv(bot), mo.target) + remain; // leg の need は lt 意味論 (手持ち+不足分、材料不足差し込みの前例)
     const resumeLeg = { type: "gather", item: mo.target, need: needTotal, via: null, yRange: null, depth: mineDepthFor(mo.target), crafts: 0, needs: null, station: null };
-    r.longtask = { target: mo.target, name: mo.name || lname(mo.target), amount: mo.amount, legs: [resumeLeg], legIdx: 0, phase: "legs", returnTo: mo.returnTo || "owner", hostiles: mo.constraints?.hostiles || "avoid", forbiddenTargets: mo.constraints?.forbiddenTargets || [], startedAt: m.startedAt || Date.now(), toolRepairs: r.toolPrepTotal || 0 };
+    r.longtask = { target: mo.target, name: mo.name || lname(mo.target), amount: mo.amount, legs: [resumeLeg], legIdx: 0, phase: "legs", returnTo: mo.returnTo || "owner", hostiles: mo.constraints?.hostiles || "avoid", forbiddenTargets: mo.constraints?.forbiddenTargets || [], startedAt: m.startedAt || Date.now(), toolRepairs: r.toolPrepTotal || 0, toolPrepFails: r.toolPrepFailTotal || 0 }; // cycle2058: 失敗 streak も昇格を跨いで引き継ぐ
     r.mission = null; r.ltLegActive = false; r.mineLeg = null; r.spiral = null;
     persistMission(bot, r, true); saveLongTask(bot, r);
     // toolNeed は消さない: 次 tick の tickLongTask が既存消費点で道具準備 leg を resumeLeg の前へ差し込む
@@ -2511,6 +2512,7 @@ function tickLongTask(bot, owner, r, ctx) {
       say(owner, bot, `長期タスクを中断しました。ツルハシを用意できませんでした`, true); r.longtask = null; saveLongTask(bot, r); return true;
     }
     if (ins) {
+      lt.toolPrepFails = 0; r.toolPrepFailTotal = 0; // 成功で streak を解消する
       lt.toolRepairs = (lt.toolRepairs || 0) + 1;
       r.toolPrepTotal = Math.max(r.toolPrepTotal || 0, lt.toolRepairs); // キュー0副次 R1 (cycle1421): 昇格を跨いでも通算上限が効くよう鏡写しする (追加のみ)
       if (r.mission) { r.mission = null; clearPlanRecords(r); persistMission(bot, r, true); }
@@ -2520,6 +2522,16 @@ function tickLongTask(bot, owner, r, ctx) {
       say(owner, bot, `ツルハシが足りません。${nameOfItem(pickId)}を用意してから続けます`, true);
       return false;
     }
+    // cycle2058 (toolNeed無出口, a01実測/a02設計): !ins の繰り返しでは toolRepairs も legs も増えず上限到達不能だった (5,000サイクル中断0回)。
+    // 失敗専用カウンタ lt.toolPrepFails (成功側へ混ぜない) を3回で終端へ合流させる。鏡 r.toolPrepFailTotal は streak ゆえ代入で揃える。
+    lt.toolPrepFails = (lt.toolPrepFails || 0) + 1; r.toolPrepFailTotal = lt.toolPrepFails;
+    if (lt.toolPrepFails >= 3) {
+      noteFail(bot, "longtask:tool_prep_exhausted", new Error(pickId));
+      say(owner, bot, `長期タスクを中断しました。${nameOfItem(pickId)}を用意する手順が、3回続けて組み立てられませんでした`, true);
+      if (r.mission) { r.mission = null; clearPlanRecords(r); persistMission(bot, r, true); }
+      r.ltLegActive = false; r.mineLeg = null; r.spiral = null; r.longtask = null; saveLongTask(bot, r); return true;
+    }
+    saveLongTask(bot, r);
   }
   if (r.mission) {
     if (r.mission.status === "done") { r.mission = null; clearPlanRecords(r); persistMission(bot, r, true); }
@@ -3258,6 +3270,9 @@ function applyGaze(bot, owner, ctx, scan) {
     // POLISH-ANIM-INSPECT-01 (cycle1003): 検分中はピッチへ見下ろしオフセットを重畳する (消費点はここ1箇所)
     if (rot && isInspectActive(r.inspectAnimAt, Date.now())) rot = { ...rot, x: applyInspectPitch(rot.x, Date.now() - r.inspectAnimAt) };
     if (rot && isNodActive(r.nodAnimAt, Date.now())) rot = { ...rot, x: applyNodPitch(rot.x, Date.now() - r.nodAnimAt) };
+    // POLISH-ANIM-SETTLE-01 feeder (cycle2058): lastAction の BREAK 成功 (seq変化) の辺でのみ発火記録 (表示層のみ・実機確認待ち)
+    try { const la = r.lastAction; if (la && la.act === "BREAK" && la.ok && la.seq !== r.settleSeenSeq) { r.settleSeenSeq = la.seq; if (shouldSettle({ broke: true, suppressed: ((ctx?.danger?.count ?? 0) > 0) || r.selfFalling === true || !!bot.isInWater, lastFiredMs: r.settleLastAt ?? null, nowMs: Date.now() })) { r.settleAnimAt = la.at || Date.now(); r.settleLastAt = r.settleAnimAt; r.lastSettle = { at: r.settleAnimAt, item: la.item || null }; } } } catch {}
+    if (rot && isSettleActive(r.settleAnimAt, Date.now())) rot = { ...rot, x: applySettlePitch(rot.x, Date.now() - r.settleAnimAt) }; // POLISH-ANIM-SETTLE-01 (cycle2058): 重畳 (表示層のみ・実機確認待ち)
     if (rot && isFlinchActive(r.flinchAnimAt, Date.now())) rot = { ...rot, x: applyFlinchPitch(rot.x, Date.now() - r.flinchAnimAt) }; // POLISH-ANIM-FLINCH-01 (cycle1051)
     // POLISH-ANIM-ENDERAVERT-01 (cycle1940): feeder は既存走査 scan.hostiles から最寄りエンダーマンを取る (新規走査なし)。重畳は FLINCH の直下 (表示層のみ・実機確認待ち)
     if (rot) { try { if (!r.enderavertState) r.enderavertState = createEnderavertState(); const em = (scan?.hostiles || []).filter((x) => x.typeId === "minecraft:enderman").sort((a, b) => dist(bot.location, a.location) - dist(bot.location, b.location))[0] || null; const base = { falling: r.selfFalling === true, inWater: !!bot.isInWater, inCombat: gz.gaze === "danger" || gz.gaze === "danger_then_owner", otherOverlayActive: isFlinchActive(r.flinchAnimAt, Date.now()) }; let smp = { hasTarget: false, ...base }; if (em) { const gr = gazeRotation(bot.location, { x: em.location.x, y: em.location.y + 1.4, z: em.location.z }); let ry = ((gr.y - rot.y + 540) % 360) - 180; smp = { hasTarget: true, dist: dist(bot.location, em.location), relYawDeg: ry, ...base }; } const ev = noteEnderavert(r.enderavertState, smp, Date.now()); if (ev && (ev.entered || ev.exited)) r.lastEnderAvert = { at: Date.now(), entered: !!ev.entered, exited: !!ev.exited, reason: ev.reason || null }; const ea = sampleEnderavert(r.enderavertState, Date.now()); if (ea.active) rot = { ...rot, y: rot.y + ea.gazeYawOffsetDeg, x: rot.x + ea.gazePitchDeg }; } catch {} }
