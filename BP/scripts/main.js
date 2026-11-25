@@ -71,6 +71,7 @@ import { notePortalsteady, portalsteadyOffsetsAt, isPortalsteadyActive } from ".
 import { createSurfacebreathState, stepSurfacebreath, sampleSurfacebreath, applySurfacebreathPitch } from "./surfacebreath_math.js"; // POLISH-ANIM-SURFACEBREATH-01 (cycle1703)
 import { createBubblebreathState, stepBubblebreath } from "./bubblebreath_math.js"; // POLISH-FX-BUBBLEBREATH-01 (cycle1909): 水中滞在中の冷却排気泡 (粒子ID未照合の間は記録のみ・実機確認待ち)
 import { tickToolCheck, createToolCheckState } from "./toolcheck_math.js";
+import { createVillagergreetState, noteVillagergreet, sampleVillagergreet } from "./villagergreet_math.js"; // POLISH-ANIM-VILLAGERGREET-01 (cycle0855): 村人とすれ違うときの小さな会釈 (表示層のみ・実機確認待ち)
 import { createWarmhandsState, noteWarmhands, sampleWarmhands } from "./warmhands_math.js"; // POLISH-ANIM-WARMHANDS-01 (cycle0740) // POLISH-ANIM-TOOLCHECK-01 (cycle1807): 長時間待機中に一度だけ手元の道具を点検する (表示層のみ・実機確認待ち)
 import { createLoadPostureState, noteLoadPosture, sampleLoadPosture } from "./loadposture_math.js";
 import { createPartnerCheckState, notePartnerCheck, partnerCheckOffset } from "./partnercheck_math.js";
@@ -163,7 +164,7 @@ function flushFailAgg(bot, r) { try { if (!bot || !r || !r.failAgg) return; cons
 // 6-ML (cycle0710): exp 永続化。failAgg と同型 (dirty は件数+バイト数の簡易スナップショット比較、保存失敗で noteFail を呼ばない=再帰防止)
 function expSnapshot(r) { try { const st = r && r.expStore; if (!st) return ""; return [st.items.length, expBytes(st)].join("|"); } catch { return ""; } }
 function flushExp(bot, r) { try { if (!bot || !r || !r.expStore) return; const snap = expSnapshot(r); if (!snap || snap === r.expSnap) return; const gen = (Number.isInteger(r.expGen) ? r.expGen : 0) + 1; const out = serializeExpStore(r.expStore, { gen }); if (!out) return; const prev = r.expWrites || {}; for (const k of Object.keys(prev)) if (!(k in out.writes)) { try { bot.setDynamicProperty(k, ""); } catch {} } for (const [k, v] of Object.entries(out.writes)) if (k !== "cb_exp") { try { bot.setDynamicProperty(k, v); } catch {} } if (out.writes["cb_exp"]) { try { bot.setDynamicProperty("cb_exp", out.writes["cb_exp"]); } catch {} } r.expGen = gen; r.expWrites = out.writes; r.expSnap = snap; } catch {} }
-function commitLastAction(r, rec) { try { if (!r || !rec) return; r.actionSeq = (r.actionSeq || 0) + 1; r.lastAction = { act: rec.act || null, ok: !!rec.ok, reason: rec.reason || null, item: rec.item || null, at: rec.at || Date.now(), seq: r.actionSeq }; try { r.trace?.record({ k: "result", a: rec.act || null, r: rec.ok ? "ok" : "ng" }); } catch {} try { if (r.failAgg) recordAction(r.failAgg, rec, r.actionSeq); } catch {} try { if (r.expStore) { const er = buildExpFromCommit(rec, expCtxOf(r, rec, { pack: VERSION })); if (er) addExpRecord(r.expStore, er); } } catch {} } catch {} } // 6-ML: result軸の記録 (戻り値は使わない)
+function commitLastAction(r, rec) { try { if (!r || !rec) return; r.actionSeq = (r.actionSeq || 0) + 1; r.lastAction = { act: rec.act || null, ok: !!rec.ok, reason: rec.reason || null, item: rec.item || null, at: rec.at || Date.now(), seq: r.actionSeq }; try { const trec = { k: "result", a: rec.act || null, r: rec.ok ? "ok" : "ng" }; if (!rec.ok && typeof rec.reason === "string" && rec.reason) trec.fr = { w: rec.act || null, m: rec.reason }; r.trace?.record(trec); } catch {} try { if (r.failAgg) recordAction(r.failAgg, rec, r.actionSeq); } catch {} try { if (r.expStore) { const er = buildExpFromCommit(rec, expCtxOf(r, rec, { pack: VERSION })); if (er) addExpRecord(r.expStore, er); } } catch {} } catch {} } // 6-ML: result軸の記録 (戻り値は使わない)
 function recordTake(r, via, o) { try { r.lastTake = { act: "TAKE", via, ok: !!o.ok, reason: o.reason || null, taken: o.taken || 0, partial: !!o.partial, item: o.item || null, at: Date.now() }; commitLastAction(r, r.lastTake); } catch {} }
 function noteTakeFull(bot, r, key, typeId) { const now = Date.now(); if (r.takeFullKey === key && now - (r.takeFullAt || 0) < 60000) return; r.takeFullKey = key; r.takeFullAt = now; noteFail(bot, "bts_take:inventory_full", new Error("inventory full: " + typeId)); }
 function noteTakeBan(r, entityId, typeId) { try { if (!r.takeBan) r.takeBan = createTakeBanState(); recordTakeBan(r.takeBan, entityId, typeId, Date.now()); } catch {} } // TR2136-01 (cycle2200): 記録専用 (noteFail は呼ばない＝失敗ログの二重計上をしない)
@@ -467,6 +468,7 @@ function buildContext(bot, owner) {
   const scan = { hostiles: [], items: [], animals: [], opportunities: [], nearestItem: null, valuableItem: null, foodItem: null, ownerItem: null, nearestHostile: null };
   const flinchCand = []; // POLISH-ANIM-FLINCH-01 (cycle1051): 予兆エンティティ候補 (落雷/点火TNT)
   let xpOrbCand = null; // POLISH-ANIM-XPGLANCE-01 (cycle0628): 既存エンティティ走査で最寄り経験値オーブを拾うだけ (新規走査なし)
+  let villagerCand = null; // POLISH-ANIM-VILLAGERGREET-01 (cycle0855): 既存走査で最寄り村人 (ゾンビ村人は除く) を保持するだけ (新規走査なし)
   const curItemIds = new Set(); // POLISH-ANIM-CATCHSIGHT-01 (cycle2200): アイテム出現の辺検出用 (既存走査の id 集合)
   let deathLoc = null; try { deathLoc = JSON.parse(wdp(`cb_death:${owner.id}`, "null")); } catch {}
   let scanOk = true; // 走査が最後まで回ったか（false＝「何もいない」ではなく「分からない」）
@@ -493,7 +495,7 @@ function buildContext(bot, owner) {
       if (e.typeId === "minecraft:player") { if (d > dangerR || bodies.isBody(e)) continue; if (e.id !== owner.id) { c.x.othersNear = (c.x.othersNear || 0) + 1; c.x.otherDist = Math.min(c.x.otherDist ?? 999, d); } continue; }
       if (e.typeId === "minecraft:lightning_bolt" || e.typeId === "minecraft:tnt") { flinchCand.push({ id: e.id, typeId: e.typeId, horizDist: Math.hypot(e.location.x - bot.location.x, e.location.z - bot.location.z) }); }
       if (e.typeId === "minecraft:xp_orb") { if (!xpOrbCand || d < xpOrbCand.d) xpOrbCand = { id: e.id, d, loc: { x: e.location.x, y: e.location.y, z: e.location.z } }; }
-      if (e.typeId.includes("villager")) { if (d > dangerR) continue; c.x.nearVillage = true; c.x.villagerDist = Math.min(c.x.villagerDist ?? 999, d); continue; }
+      if (e.typeId.includes("villager")) { if (d > dangerR) continue; c.x.nearVillage = true; c.x.villagerDist = Math.min(c.x.villagerDist ?? 999, d); if (!e.typeId.includes("zombie") && (!villagerCand || d < villagerCand.d)) villagerCand = { id: e.id, d, loc: { x: e.location.x, y: e.location.y, z: e.location.z } }; continue; }
       if (["minecraft:sheep", "minecraft:cow", "minecraft:pig", "minecraft:chicken"].includes(e.typeId)) { scan.animals.push(e); scan.opportunities.push({ kind: "entity", typeId: e.typeId, pos: { x: e.location.x, y: e.location.y, z: e.location.z }, id: e.id }); continue; }
       const isHostile = GVC_HOSTILE_SET.has(e.typeId) || (() => { try { return e.getComponent("minecraft:type_family")?.hasTypeFamily("monster"); } catch { return false; } })();
       if (isHostile) {
@@ -540,6 +542,8 @@ function buildContext(bot, owner) {
   noteBubblebreathTick(bot, r, c); // POLISH-FX-BUBBLEBREATH-01 (cycle1909)
   noteToolCheckTick(bot, r, c); // POLISH-ANIM-TOOLCHECK-01 (cycle1807)
   noteWarmhandsTick(bot, r, c); // POLISH-ANIM-WARMHANDS-01 (cycle0740)
+  try { r.villagerCand = villagerCand; r.villagerScanOk = scanOk; } catch {}
+  noteVillagergreetTick(bot, r, c); // POLISH-ANIM-VILLAGERGREET-01 (cycle0855)
   noteIdleTick(bot, r, c); // POLISH-ANIM-IDLE-01 (cycle2020)
   noteWakestretchTick(bot, r, c); // POLISH-ANIM-WAKESTRETCH-01 (cycle0005)
   noteLoadPostureTick(bot, r, c); // POLISH-ANIM-LOADPOSTURE-01 (cycle1832)
@@ -3356,7 +3360,7 @@ function tickMission(bot, owner, ctx, scan) {
       try { const nr = needRemainOf(Math.max(1, step.need || 1), step.have || 0); r.lastPlan.needRemain = nr; const firstId = Array.isArray(r.lastPlan.steps) && r.lastPlan.steps.length ? r.lastPlan.steps[0] : null; const sig = computePlanSig({ missionId: m?.id ?? "m", stepIndex: m?.currentStep ?? 0, stepType: step.type, target: step.target, need: Math.max(1, step.need || 1), goalKey: r.lastPlan.goalKey, firstStep: firstId }); r.lastPlan.sig = sig; let planCandKey = null; try { const pcand = selectWithdrawCandidate({ stepType: step.type, detour: m?.detour, blockedStatus: m?.blocked, need: step?.need, have: step?.have, now: r.lastPlan.at, cooldownUntil: r.withdrawCooldownUntil || 0, item: step.target, logBlockIds: LOG_BLOCK_IDS, containers, selfPos: bot.location, dim: bot.dimension.id, blockedKeys: (r.withdrawBlocked instanceof Set || Array.isArray(r.withdrawBlocked)) ? r.withdrawBlocked : [], stepIndex: m?.currentStep }); planCandKey = candKeyForFirstStep({ firstStep: firstId, stepTarget: step.target, stepIndex: m?.currentStep, cand: pcand }); } catch { planCandKey = null; } r.lastPlan.candKey = planCandKey; const fNow = Date.now(); const fv = revalidateFull(r.lastPlan, r.lastGoal?.key ?? null, fNow, { sig, needRemain: nr, candKey: planCandKey, stepTarget: step.target, safety: { missionActive: true, stepType: step.type, detour: !!m?.detour, mineLeg: !!r.mineLeg, invKnown: ctx.x?.obs ? ctx.x.obs.inv === "ok" : ctx.x?.invOk !== false, invFull: !!ctx.inv?.full, selfHpPct: ctx.self?.hpPct ?? null, targetKnown: ft.found ? true : ((ft.detail?.state || "absent") === "absent"), foundTarget: !!ft.found } }); const fvv = fv?.verdict || "unknown"; r.lastPlanRevalFull = { verdict: fvv, reason: fv?.reason || null, firstStep: fv?.firstStep ?? null, at: fNow, checks: fv?.checks ?? null, ...(fvv === "allow" ? { scope: "plan_identity_full_at_plan_time" } : {}) }; } catch { r.lastPlanRevalFull = null; }
       // Phase4 cb_trace plan配線 (v0.4.57): 影評価が揃った時点で計画要約を記録のみ (分岐・実行は不変、読み手は表示専用)。
       // 器側 dedup は末尾1件との比較のみで result/fail の挟み込みに弱いため、接続側にも seen キー (g|p|r) を持ち、記録成功時のみ前進させる (cycle2153-a02)
-      try { const pev = mapPlanEvent(r.lastPlan, r.lastGoal); if (pev) { const pk = `${pev.g || ""}|${pev.p || ""}|${pev.r || ""}`; if (r.tracePlanSeen !== pk && r.trace?.record(pev)) r.tracePlanSeen = pk; } } catch {}
+      try { const pev = mapPlanEvent(r.lastPlan, r.lastGoal); if (pev) { const pk = `${pev.g || ""}|${pev.p || ""}|${pev.r || ""}|${pev.fr?.m || ""}`; if (r.tracePlanSeen !== pk && r.trace?.record(pev)) r.tracePlanSeen = pk; } } catch {} // Phase4 trace R2 (cycle0855): seen キーへ plan 失敗理由を含める
       // Phase4 failAgg U1 R-1 影読み手 (cycle1421, a05設計): failRate の初の判断側読み手。ただし本段は記録のみ (shadow) で、計画・分岐には使わない。
       // 試行0の Action は載せない (未実測を 0% と誤読させない)。消費への昇格は次段でブレンド式と一緒に判断する
       try { if (r.failAgg) { const rates = {}; for (const ak of ["BREAK", "PLACE", "TAKE", "STORE", "WITHDRAW", "CRAFT", "SMELT"]) { const fr = failRate(r.failAgg, ak); if (fr && fr.trials > 0) rates[ak] = fr; } r.lastFailBlend = { at: Date.now(), rates, shadow: true }; } } catch {}
@@ -3806,6 +3810,20 @@ function noteWarmhandsTick(bot, r, c) {
     if (out?.fired) r.lastWarmhands = { at: now, fired: true, armPitchDeg: -30 };
   } catch {}
 }
+// POLISH-ANIM-VILLAGERGREET-01 (cycle0855): 村人とすれ違うときの小さな会釈 (表示層のみ・実機確認待ち)
+// feeder は既存エンティティ走査の最寄り村人候補 (r.villagerCand) だけを使い、新規走査はしない (方式B: cycle0855-a10)
+function noteVillagergreetTick(bot, r, c) {
+  try {
+    if (!bot || !r) return;
+    if (!r.villagergreetState) r.villagergreetState = createVillagergreetState();
+    const cand = r.villagerCand || null;
+    let relYaw = null;
+    if (cand) { try { const gr = gazeRotation(bot.location, { x: cand.loc.x, y: cand.loc.y + 1.4, z: cand.loc.z }); const cur = bot.getRotation(); relYaw = ((gr.y - (cur?.y || 0) + 540) % 360) - 180; } catch {} }
+    let inWater = false; try { inWater = !!bot.isInWater; } catch {}
+    const out = noteVillagergreet(r.villagergreetState, { villagerId: cand ? cand.id : null, villagerDist: cand ? cand.d : null, villagerRelYawDeg: relYaw, scanOk: r.villagerScanOk === true, danger: !!((c?.danger?.count ?? 0) > 0), working: !!r.work || !!r.mission || !!r.longtask || !!r.buildPlan, falling: r.selfFalling === true, inWater }, Date.now());
+    if (out?.fired) r.lastVillagerGreet = { at: Date.now(), villagerId: cand?.id || null };
+  } catch {}
+}
 function applyGaze(bot, owner, ctx, scan) {
   try { const bv = typeof bot.isValid === "function" ? bot.isValid() : bot.isValid; if (bot.isValid !== undefined && !bv) return; if (owner) { const ov = typeof owner.isValid === "function" ? owner.isValid() : owner.isValid; if (owner.isValid !== undefined && !ov) return; } } catch { return; }
   // POLISH-ANIM-OWNERRETURN-01 (cycle1923): 主人の距離遷移だけを発火源にする feeder (表示層のみ・実機確認待ち)
@@ -3894,6 +3912,7 @@ function applyGaze(bot, owner, ctx, scan) {
     if (rot && r.darkentryState && darkEntryActive(r.darkentryState, Date.now())) { try { const deo = darkEntryOffset(Date.now() - r.darkentryState.activeFromMs); if (deo) rot = { ...rot, y: rot.y + deo.yawDeg, x: Math.min(75, Math.max(-60, rot.x + deo.pitchDeg)) }; } catch {} } // POLISH-ANIM-DARKENTRY-01 (cycle0423): 重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot && r.nightwatchState) { try { const nw = sampleNightwatch(r.nightwatchState, Date.now()); if (nw.active) rot = { ...rot, y: rot.y + nw.yawDeg, x: applyNightwatchPitch(rot.x, Date.now() - (r.nightwatchState.startedAtMs || Date.now())) }; } catch {} } // POLISH-ANIM-NIGHTWATCH-01 (cycle0340): 重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot && r.xpglanceState) { try { const xs = sampleXpGlance(r.xpglanceState, Date.now()); if (xs.active) { const bl = blendXpGlanceGaze({ yawDeg: rot.y, pitchDeg: rot.x }, xs); if (bl) rot = { ...rot, y: bl.yawDeg, x: bl.pitchDeg }; } } catch {} } // POLISH-ANIM-XPGLANCE-01 (cycle0628): 重畳の最下位 (表示層のみ・実機確認待ち)
+    if (rot && r.villagergreetState) { try { const vg = sampleVillagergreet(r.villagergreetState, Date.now()); if (vg.active) rot = { ...rot, y: rot.y + vg.yawDeg, x: rot.x + vg.pitchDeg }; } catch {} } // POLISH-ANIM-VILLAGERGREET-01 (cycle0855): 重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot) { try { bot.setRotation(rot); } catch {} }
   }
   if (gz.say && Math.random() < 0.4) sayAmbient(owner, bot, gz.say);
@@ -4432,6 +4451,9 @@ function startOrderFromParser(p, bot, r, o) {
   const mo = parserOrderToMission(o);
   if (!mo.target) { say(p, bot, "対象が分かりませんでした。素材の名前を入れて、もう一度どうぞ", true); return; }
   if (r.mission && r.mission.status === "active") { say(p, bot, "今の指示の途中です。やめるなら「やめて」と言ってください", true); return; }
+  // forbids G5-b (cycle0855): 混在注文の negations もセッション禁止へ記録する (単独 forbid・clarify 除外と統一する裁定)。
+  // 肯定対象自身は parserOrderToMission と同じく除外する (自己禁止の防止)。記録は mission が実際に始まる直前でのみ行う。
+  if ((o.negations || []).length) { try { recordSessionForbids(bot, r, { negations: (o.negations || []).filter((n) => { const nid = n?.target?.item || n?.target?.block || n?.target?.entity; return nid && nid !== mo.target; }) }); } catch {} }
   startMission(bot, p, r, mo);
 }
 

@@ -85,17 +85,21 @@ export function mapGoalEvent(src) {
 // r.lastPlan / r.lastGoal (v0.4.24 形) -> plan イベント材料。
 // g の優先順: lastGoal.key -> lastPlan.goalKey -> null (直前値の引き継ぎはしない: TRC-05)
 // gate 群 (GateP3/RevalP4/RevalFull/Unified 等)・snap・a1・sig・needRemain・candKey は入れない。
+export const PLAN_FAIL_LABEL = "plan:no_plan"; // Phase4 trace R2 (cycle0855): plan 失敗理由の固定ラベル (reason 本文で変えない)
 export function mapPlanEvent(lastPlan, lastGoal) {
   try {
     if (!lastPlan || typeof lastPlan !== "object") return null;
     const p = planSummary(lastPlan.steps);
-    if (p == null) return null;
-    return {
+    const failReason = lastPlan.ok === false && typeof lastPlan.reason === "string" && lastPlan.reason ? lastPlan.reason : null;
+    if (p == null && !failReason) return null;
+    const ev = {
       k: "plan",
       g: asStr(lastGoal?.key) ?? asStr(lastPlan.goalKey),
       p,
       r: lastPlan.ok === true ? "ok" : lastPlan.ok === false ? "ng" : null,
     };
+    if (failReason) ev.fr = { w: PLAN_FAIL_LABEL, m: asStr(failReason, TRACE_MSG_MAX) };
+    return ev;
   } catch { return null; }
 }
 
@@ -313,7 +317,7 @@ export function createTrace(adapter, options = {}) {
       // TRC-04/01: goal/plan は直前と k/g/p/a 同一なら畳む。fail/result/replan/act は畳まない。
       if (rec.k === "goal" || rec.k === "plan") {
         const last = state.items[state.items.length - 1];
-        if (last && last.k === rec.k && last.g === rec.g && last.p === rec.p && last.a === rec.a) return null;
+        if (last && last.k === rec.k && last.g === rec.g && last.p === rec.p && last.a === rec.a && (rec.k !== "plan" || (last.fr?.m ?? null) === (rec.fr?.m ?? null))) return null; // Phase4 trace R2 (cycle0855): plan は理由違いを畳まない
       }
       state.items.push(rec); state.seq += 1; dirty = true;
       enforceLimits();
