@@ -262,6 +262,18 @@ export function fuelUnitsNeeded(lackOps, burn) {
  * - full なレコードは既定では集計する（在庫の取り出しは可能）が、
  *   excludeFull:true では fullSkipped に数えて外す。
  */
+// cycle2020 鮮度ゲート第1段: 単一ヘルパーへ集約 (先例 withdraw_candidate / goap_revalidate と同作法)。
+// ct が存在するのに有限数でない場合は t へ落とさず不採用 (破損の隠蔽を止める)。
+// 未来スタンプ (age<0) は clock skew として stale と同格。ct 欠落時の t フォールバックは後方互換として残す (全廃は第2段)。
+function freshStamp(rec, now, freshMs) {
+  let stamp;
+  if (rec?.ct !== undefined) { if (!isNum(rec.ct)) return null; stamp = rec.ct; }
+  else stamp = rec?.t;
+  if (!isNum(stamp)) return null;
+  const age = now - stamp;
+  if (age < 0 || age > freshMs) return null;
+  return stamp;
+}
 export function aggregateChestCounts(containers, opts = {}) {
   const now = isNum(opts?.now) ? opts.now : Date.now();
   const freshMs = isNum(opts?.freshMs) ? opts.freshMs : CHEST_FRESH_MS;
@@ -270,8 +282,8 @@ export function aggregateChestCounts(containers, opts = {}) {
   let observed = 0, unobserved = 0, stale = 0, fullSkipped = 0;
   for (const rec of containers ?? []) {
     if (!rec || typeof rec !== "object") continue;
-    const stamp = isNum(rec.ct) ? rec.ct : rec.t; // N1 (v0.4.18): contents 専用時刻 ct 優先、欠落時は t (後方互換)
-    if (!isNum(stamp) || now - stamp > freshMs) { stale++; continue; }
+    const stamp = freshStamp(rec, now, freshMs); // N1 (v0.4.18) + cycle2020 第1段: freshStamp が単一の正
+    if (stamp === null) { stale++; continue; }
     if (opts?.excludeFull && rec.full) { fullSkipped++; continue; }
     const contents = rec.contents ?? rec.items;
     if (!contents || typeof contents !== "object") { unobserved++; continue; }
@@ -305,8 +317,8 @@ export function eligibleChestDist(containers, item, selfPos, opts = {}) {
   let best = null;
   for (const rec of containers ?? []) {
     if (!rec || typeof rec !== "object") continue;
-    const stamp = isNum(rec.ct) ? rec.ct : rec.t;
-    if (!isNum(stamp) || now - stamp > freshMs) continue;
+    const stamp = freshStamp(rec, now, freshMs);
+    if (stamp === null) continue;
     if (opts?.excludeFull && rec.full) continue;
     const contents = rec.contents ?? rec.items;
     if (!contents || typeof contents !== "object") continue;

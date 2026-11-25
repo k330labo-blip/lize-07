@@ -56,6 +56,7 @@ import { createPartnerCheckState, notePartnerCheck, partnerCheckOffset } from ".
 import { createEnderavertState, noteEnderavert, sampleEnderavert } from "./enderavert_math.js"; // POLISH-ANIM-ENDERAVERT-01 (cycle1940): 表示層のみ・実機確認待ち
 import { restoreForbids, mergeSessionForbids } from "./session_forbids.js"; // Phase5 (cycle1923): sessionForbids の復元純粋核 / 読み手R1 (cycle2006)
 import { createMusicnodState, noteMusicnod, sampleMusicnod } from "./musicnod_math.js"; // POLISH-ANIM-MUSICNOD-01 (cycle2006): 表示層のみ・実機確認待ち
+import { createIdleState, noteIdle, sampleIdle } from "./idle_math.js"; // POLISH-ANIM-IDLE-01 (cycle2020): 待機モーション (表示層のみ・実機確認待ち)
 import { createOwnerReturnState, noteOwnerReturn, ownerReturnOffset } from "./ownerreturn_math.js"; // POLISH-ANIM-OWNERRETURN-01 (cycle1923): 帰還の気付き (表示層のみ・実機確認待ち) // POLISH-ANIM-PARTNERCHECK-01 (cycle1850): 主人被弾の辺で無事確認の視線 (表示層のみ・実機確認待ち)
 import { deriveInspectNeeds } from "./goap_inspect.js"; // Phase6 UNKNOWN→INSPECT段1 (cycle1850): 影記録。読み手は 6-ML 層1 (cycle1940) で source スコープ限定・記録のみ接続済み // POLISH-ANIM-LOADPOSTURE-01 (cycle1832): 満載が続くと小さく前傾する (表示層のみ・実機確認待ち)
 import { createMoveTracker, moveTrackStep, drainMoveEvents } from "./move_state.js"; // ground-walk Stage 0-B (cycle1703): record-only wiring // POLISH-ANIM-PORTALSTEADY-01 (cycle1640): 次元移動直後の立て直し (表示層のみ・実機確認待ち) // POLISH-ANIM-STEPUP-01 (cycle1603): 1マス段差を上る瞬間の小さな前傾 (表示層のみ・実機確認待ち) // POLISH-ANIM-ICEBALANCE-01 (cycle1543): 氷上のバランス取り (表示層のみ・実機確認待ち)
@@ -202,7 +203,7 @@ function rt(bot) {
     nav: null, navDim: null, navMode: "direct", mission: undefined, missionKills: 0, deliveredFlag: false, conv: null, fallbackStreak: 0, lastCtx: null, lastChatAt: 0, lastPraiseAt: 0, lastDangerAt: 0, sideState: { cooldowns: {}, now: 0 }, sideTask: null, mTargetLoc: null, mTargetType: null, mTargetEntity: null, mTargetKind: null, mFound: false, mAtReturn: false, mScan: null, percOpps: [], buildPlan: null, hyst: null, suspendNotified: false, usedHonesty: [],
     lastAmbientAt: 0, equipCore: null, equipRestored: false, equipChanged: null, equipChangedAt: 0, equipFromOwner: false, justHealedAt: 0, lastAmmoCount: 0, lastHealCount: 0,
     // v0.3.9: 飛行・目標固定・ウォッチドッグ
-    fly: null, flyDim: null, flyMode: "ground", ownerPosCache: null, moveTracker: null, moveDim: null, moveState: null, moveEvents: [], surfacebreathState: null, workglanceState: null, workglanceSeenAt: 0, toolcheckState: null, loadpostureState: null, partnercheckState: null, ownerreturnState: null, idleSinceMs: null, idleAnchor: null, toolcheckSample: null, mTargetKey: "", mTargetSince: 0, mLastHave: -1, mBanKey: "", mBanUntil: 0, watchHist: [], watchAt: 0, lastHopAt: 0,
+    fly: null, flyDim: null, flyMode: "ground", ownerPosCache: null, moveTracker: null, moveDim: null, moveState: null, moveEvents: [], surfacebreathState: null, workglanceState: null, workglanceSeenAt: 0, toolcheckState: null, loadpostureState: null, partnercheckState: null, ownerreturnState: null, idleState: null, lastIdle: null, idleSinceMs: null, idleAnchor: null, toolcheckSample: null, mTargetKey: "", mTargetSince: 0, mLastHave: -1, mBanKey: "", mBanUntil: 0, watchHist: [], watchAt: 0, lastHopAt: 0,
     // v0.4.0: 長期自律タスク
     longtask: undefined, ltLegActive: false, mineLeg: null, mineDir: null, spiral: null,
     // v0.4.1: 失敗記録・装備破損の監視
@@ -439,6 +440,7 @@ function buildContext(bot, owner) {
   noteSurfacebreathTick(bot, r, c); // POLISH-ANIM-SURFACEBREATH-01 (cycle1703)
   noteBubblebreathTick(bot, r, c); // POLISH-FX-BUBBLEBREATH-01 (cycle1909)
   noteToolCheckTick(bot, r, c); // POLISH-ANIM-TOOLCHECK-01 (cycle1807)
+  noteIdleTick(bot, r, c); // POLISH-ANIM-IDLE-01 (cycle2020)
   noteLoadPostureTick(bot, r, c); // POLISH-ANIM-LOADPOSTURE-01 (cycle1832)
   // 溶岩・暗さ・地下
   try {
@@ -3180,6 +3182,19 @@ function noteToolCheckTick(bot, r, c) {
     if (out.fired) r.lastToolCheck = { at: now, idleMs, armPitchDeg: -28 }; // 腕ピッチは RP 受け口が無い間は記録のみ
   } catch {}
 }
+// POLISH-ANIM-IDLE-01 (cycle2020): 待機3秒から持続する待機モーション。待機の実測は noteToolCheckTick が維持する r.idleSinceMs を流用し新規観測は作らない。
+// bodyY/傾けは受け口未整備の間 r.lastIdle 記録のみ、視線 (pitch) だけ applyGaze 最下位へ重畳する (表示層のみ・実機確認待ち)
+function noteIdleTick(bot, r, c) {
+  try {
+    if (!bot || !r) return;
+    if (!r.idleState) r.idleState = createIdleState();
+    const now = Date.now();
+    let inWater = false; try { inWater = !!bot.isInWater; } catch {}
+    const rec = noteIdle(r.idleState, { idle: r.idleSinceMs != null, mode: "owner_wait", overlayActive: r.toolcheckSample?.active === true, inCombat: !!(c?.danger && c.danger.count > 0), falling: r.selfFalling === true, inWater }, now);
+    const s = sampleIdle(r.idleState, now);
+    if (s.active || rec?.entered) r.lastIdle = { atMs: now, mode: s.mode, bodyYOffsetBlocks: s.bodyYOffsetBlocks, headTiltDeg: s.headTiltDeg, gazePitchDeg: s.gazePitchDeg, entered: !!rec?.entered };
+  } catch {}
+}
 // POLISH-ANIM-LOADPOSTURE-01 (cycle1832): 所持スロット占有率が 0.85 以上で3秒続くと前傾する。供給は既存の所持観測 (invOf) のみ・表示層のみ・実機確認待ち
 function noteLoadPostureTick(bot, r, c) {
   try {
@@ -3247,6 +3262,7 @@ function applyGaze(bot, owner, ctx, scan) {
     if (rot && r.loadpostureState) { const lp = sampleLoadPosture(r.loadpostureState, Date.now()); if (lp.active) rot = { ...rot, x: rot.x + lp.pitchDeg }; } // POLISH-ANIM-LOADPOSTURE-01 (cycle1832): ピッチ重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot && r.partnercheckState) { const pc = partnerCheckOffset(r.partnercheckState, Date.now()); if (pc.active) rot = { ...rot, y: rot.y + pc.yawDeg, x: rot.x + pc.pitchDeg }; } if (rot && r.ownerreturnState) { const orc = ownerReturnOffset(r.ownerreturnState, Date.now()); if (orc.active) rot = { ...rot, y: rot.y + orc.yawDeg, x: rot.x + orc.pitchDeg }; } // POLISH-ANIM-OWNERRETURN-01 (cycle1923): 重畳の最下位 (表示層のみ・実機確認待ち) // POLISH-ANIM-PARTNERCHECK-01 (cycle1850): 重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot && r.musicnodState) { const mn = sampleMusicnod(r.musicnodState, Date.now()); if (mn.active) rot = { ...rot, x: rot.x + mn.gazePitchDeg }; } // POLISH-ANIM-MUSICNOD-01 (cycle2006): 重畳の最下位 (表示層のみ・実機確認待ち、近傍滞在が代理条件)
+    if (rot && r.idleState) { const idl = sampleIdle(r.idleState, Date.now()); if (idl.active) rot = { ...rot, y: rot.y + idl.gazeYawRelDeg, x: rot.x + idl.gazePitchDeg }; } // POLISH-ANIM-IDLE-01 (cycle2020): 重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot) { try { bot.setRotation(rot); } catch {} }
   }
   if (gz.say && Math.random() < 0.4) sayAmbient(owner, bot, gz.say);
