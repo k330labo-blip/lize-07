@@ -101,9 +101,10 @@ const METAL_IDS = new Set([
   "iron_bars", "bell", "heavy_weighted_pressure_plate", "light_weighted_pressure_plate",
   "heavy_core", "vault", "trial_spawner", "crafter", "brewing_stand", "tripwire_hook", // cycle1543: 金属筐体・スタンド・仕掛け
   "iron_golem_statue", // cycle2058 (a13): copper_golem_statue→copper との非対称解消 (stone 落下だった1形)
+  "ominous_vault", "ominous_trial_spawner", // cycle0252: 基礎形 vault/trial_spawner と同素材 (不吉変種の非対称解消)
 ]);
 // Tier2: ガラス音グループだが "glass" を含まない発光系 (sea_lantern は Tier1 とセット)
-const GLASSLIKE_IDS = new Set(["glowstone", "redstone_lamp", "sea_lantern", "beacon"]); // cycle1543: beacon を追加
+const GLASSLIKE_IDS = new Set(["glowstone", "redstone_lamp", "lit_redstone_lamp", "sea_lantern", "beacon"]); // cycle1543: beacon を追加 / cycle0252: lit_redstone_lamp は基礎形と同素材
 
 // cycle0922 (a05): 植物集合。作物茎・コケ絨毯もここで grass に確定させ、_stem/_carpet の先取り誤分類を解消する
 const PLANT_IDS = new Set([

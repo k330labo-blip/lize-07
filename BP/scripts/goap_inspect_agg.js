@@ -124,6 +124,50 @@ export function summarizeInspectAgg(agg) {
   } catch { return empty; }
 }
 
+// Phase6 INSPECT S0-1.5 (cycle0252): 集計の表示整形 (純粋・例外安全・入力不変)。
+// 読み手は main のメニュー selection 6 の表示1点のみ。判断・計画・ゲートには使わない。
+// evals===0 では何も出さない (未観測を発火0%と誤読させない)。率は null の節を省略する。各行160字上限。
+export function formatInspectSummaryLines(sum) {
+  try {
+    if (!isObj(sum)) return [];
+    const ev = finiteAt(sum.evals); if (ev == null || ev <= 0) return [];
+    const fires = finiteAt(sum.fires) || 0;
+    const pct = (v) => (typeof v === "number" && Number.isFinite(v)) ? `${(v * 100).toFixed(1)}%` : null;
+    const win = isObj(sum.window) ? sum.window : {};
+    const elapsed = (finiteAt(win.firstAt) != null && finiteAt(win.lastAt) != null) ? Math.max(0, Math.round((win.lastAt - win.firstAt) / 1000)) : null;
+    const fr = pct(sum.fireRate);
+    const l1 = `§7（INSPECT集計（記録）: 評価${Math.floor(ev)} / 発火${Math.floor(fires)}${fr ? `（${fr}）` : ""} / 需要${Math.floor(finiteAt(sum.needEvents) || 0)}件${elapsed != null ? ` / 窓${elapsed}秒` : ""}）§r`;
+    const bs = isObj(sum.byScope) ? sum.byScope : {}, es = isObj(sum.evalsWithScope) ? sum.evalsWithScope : {};
+    const l2 = `§7（INSPECT対象（記録）: source ${Math.floor(finiteAt(bs.source) || 0)}（評価${Math.floor(finiteAt(es.source) || 0)}）/ chest ${Math.floor(finiteAt(bs.chest) || 0)}（評価${Math.floor(finiteAt(es.chest) || 0)}）/ station ${Math.floor(finiteAt(bs.station) || 0)}（評価${Math.floor(finiteAt(es.station) || 0)}））§r`;
+    const lines = [l1, l2];
+    if (fires > 0) {
+      const rr = pct(sum.repeatRate);
+      const mx = isObj(sum.max) ? sum.max : null;
+      const ov = Math.floor(finiteAt(sum.overflowFires) || 0);
+      const kh = Math.floor(finiteAt(sum.keyHits) || 0);
+      let parts3 = [`種別${Math.floor(finiteAt(sum.distinctKeys) || 0)}`, `ヒット${kh}`];
+      if (rr) parts3.push(`反復率${rr}`);
+      if (mx && typeof mx.key === "string") parts3.push(`最多 ${mx.key}×${Math.floor(finiteAt(mx.n) || 0)}`);
+      if (ov > 0) parts3.push(`上限超過${ov}`);
+      let l3 = `§7（INSPECT反復（記録）: ${parts3.join(" / ")}）§r`;
+      if (l3.length > 160 && ov > 0) { parts3 = parts3.filter((s) => !s.startsWith("上限超過")); l3 = `§7（INSPECT反復（記録）: ${parts3.join(" / ")}）§r`; }
+      if (l3.length > 160) { parts3 = parts3.filter((s) => !s.startsWith("ヒット")); l3 = `§7（INSPECT反復（記録）: ${parts3.join(" / ")}）§r`; }
+      if (l3.length > 160) l3 = l3.slice(0, 160);
+      lines.push(l3);
+      const fp = isObj(sum.firesByPlan) ? sum.firesByPlan : {};
+      const skips = isObj(sum.bySkipWhy) ? Object.entries(sum.bySkipWhy).filter(([, n]) => typeof n === "number" && n > 0).sort((a, b) => (b[1] - a[1]) || (a[0] < b[0] ? -1 : 1)) : [];
+      if (fires > 0 || skips.length) {
+        const build4 = (ns) => `§7（INSPECT内訳（記録）: 計画ok ${Math.floor(finiteAt(fp.ok) || 0)}・ng ${Math.floor(finiteAt(fp.ng) || 0)}${ns.length ? ` / スキップ ${ns.map(([k, n]) => `${k}×${Math.floor(n)}`).join("、")}` : ""}）§r`;
+        let l4 = build4(skips.slice(0, 2));
+        if (l4.length > 160) l4 = build4(skips.slice(0, 1));
+        if (l4.length > 160) l4 = l4.slice(0, 160);
+        lines.push(l4);
+      }
+    }
+    return lines.map((l) => (l.length > 160 ? l.slice(0, 160) : l));
+  } catch { return []; }
+}
+
 export function runInspectAggSelfTests() {
   let pass = 0, fail = 0; const failures = [];
   const ok = (name, cond) => { if (cond) pass++; else { fail++; failures.push(name); } };

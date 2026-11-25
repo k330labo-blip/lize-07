@@ -44,8 +44,9 @@ import { createGuardState, decideResteer, recordBlocked, recordResteerApplied, l
 import { createWakestretchState, noteWakestretch, wakestretchCurrent, applyWakestretchPitch } from "./wakestretch_math.js"; // POLISH-ANIM-WAKESTRETCH-01 (cycle0005): 長い待機明けの小さな伸び (表示層のみ・実機確認待ち)
 import { createOwnerfalltrackState, noteOwnerfalltrack, ownerfalltrackCurrent } from "./ownerfalltrack_math.js"; // POLISH-ANIM-OWNERFALLTRACK-01 (cycle0033): owner fall gaze tracking (display only)
 import { createFallLandState, onVerticalStep, falllandCurrent } from "./fallland_math.js";
+import { createLandEnvState, noteLandEnv, landEnvCurrent } from "./land02_math.js"; // POLISH-ANIM-LAND-02 (cycle0252): 着地表現の環境差 (記録のみ先行・実機確認待ち)
 import { createRoutecheckState, noteRoutecheck, sampleRoutecheck } from "./routecheck_math.js";
-import { createInspectAgg, recordInspectEval } from "./goap_inspect_agg.js"; // Phase6 INSPECT S0-1 (cycle0153): 記録専用カウンタ (挙動不変)
+import { createInspectAgg, recordInspectEval, summarizeInspectAgg, formatInspectSummaryLines } from "./goap_inspect_agg.js"; // Phase6 INSPECT S0-1 (cycle0153): 記録専用カウンタ (挙動不変) / S0-1.5 (cycle0252): 表示読み手
 import { stashWorkProgress, takeStashedLeft, clearStashFor } from "./work_stash_math.js"; // A06-03 (cycle0224): r.work 差替で失われる掘削進捗の退避/復元 (純粋核)
 import { createCombatEndState, noteCombatEnd, sampleCombatEnd } from "./combatend_math.js"; // POLISH-ANIM-COMBATEND-01 (cycle0224): 戦闘終了確定時の息継ぎ (表示層のみ・実機確認待ち)
 import { createYieldState, noteYield, sampleYield } from "./yield_math.js"; // POLISH-ANIM-YIELD-01 (cycle0153): 狭い通路での半歩の譲り (表示層のみ・実機確認待ち) // POLISH-ANIM-ROUTECHECK-01 (cycle0117): 長距離移動中の進路確認 (表示層のみ・実機確認待ち) // POLISH-ANIM-FALLLAND-01 (cycle0057): 落下ポーズ+着地クッション (表示層のみ・実機確認待ち)
@@ -1007,12 +1008,14 @@ function workStandPoint(bot, loc) {
 function noteWorkHold(bot, r, w, why) {
   try {
     const now = Date.now();
-    const key = `${w.loc.x},${w.loc.y},${w.loc.z}|${w.typeId}|${why}`;
+    // WORKHOLD-KEYFLAP 是正 (cycle0252): 累計キーはセル+typeId (branchhold 是正と同型)。why は同一セルでも隣接読取の成否や呼出点の違いで揺らぎ、キーに含めると累計が毎回リセットされ30秒見切りが到達不能になるため診断用に wh.lastWhy へ保持するだけにする。加算も間隔2000ms以上の丸ごと破棄から1回最大2000msのキャップ加算へ是正する。
+    const key = `${w.loc.x},${w.loc.y},${w.loc.z}|${w.typeId}`;
     if (!r.workHoldLeg || r.workHoldLeg.key !== key) r.workHoldLeg = { key, totalMs: 0, lastAt: now, left: w.left, noted: false };
     const wh = r.workHoldLeg;
+    wh.lastWhy = why || wh.lastWhy || "";
     if (w.left < wh.left) wh.totalMs = 0;
     wh.left = w.left;
-    if (wh.lastAt && now - wh.lastAt < 2000 && now > wh.lastAt) wh.totalMs += now - wh.lastAt;
+    if (wh.lastAt && now > wh.lastAt) wh.totalMs += Math.min(now - wh.lastAt, 2000);
     wh.lastAt = now;
     if (!wh.noted) { wh.noted = true; noteFail(bot, "work:hold", new Error(key)); }
     if (wh.totalMs > 30000) { noteFail(bot, "work:hold_exhausted", new Error(key)); return false; }
@@ -1906,7 +1909,10 @@ function requestSurvey(dimId, rx, rz, prio = 1) {
   const key = surveyKeyOf(dimId, rx, rz);
   let sv = surveys.get(key);
   if (!sv) { sv = { dim: dimId, rx, rz, at: Date.now(), doneMask: 0, doneAt: null, fails: 0, hits: {}, wantAt: Date.now() }; surveys.set(key, sv); }
-  else if (!surveyFresh(sv) && !surveyDone(sv)) { sv.doneMask = 0; sv.doneAt = null; sv.fails = 0; sv.hits = {}; sv.seen = {}; sv.units = undefined; sv.nextIdx = 0; sv.at = Date.now(); } // survey 案R (cycle2036): seen も hits と対で初期化
+  else if (!surveyFresh(sv) && !surveyDone(sv)) { // SURVEY-PARTIAL-UNLOADED-RESET 是正 (cycle0252 案A): 部分進捗 (doneMask!=0) かヒットがある区画は鮮度切れで消さず at だけ打ち直す (調べた事実は鮮度と分離)。hits/seen は対で保持し units も保持する。陳腐ヒットの誤誘導は lookupSurvey の実ブロック再検証で止まる
+    if (sv.doneMask !== 0 || (sv.hits && Object.keys(sv.hits).length > 0)) { sv.at = Date.now(); }
+    else { sv.doneMask = 0; sv.doneAt = null; sv.fails = 0; sv.hits = {}; sv.seen = {}; sv.units = undefined; sv.nextIdx = 0; sv.at = Date.now(); } // survey 案R (cycle2036): seen も hits と対で初期化
+  }
   // ラッチ済み sv は失効しても作り直さない: doneMask/doneAt/hits は保持し、wantAt/prio のみ更新する。
   sv.wantAt = Date.now(); sv.prio = prio;
   if (surveys.size > 400) { const old = pickSurveyEvictions([...surveys.entries()], 100, Date.now(), SURVEY_TTL_MS); for (const [k] of old) surveys.delete(k); } // survey 案C (cycle2006): 複合削除キー (survey_evict.js)
@@ -2093,7 +2099,7 @@ function exitTunnelIfNeeded(bot, r) {
           const now = Date.now(), key = `${cand.x},${cand.y},${cand.z}`;
           if (!r.tunnelExitHold || r.tunnelExitHold.key !== key) r.tunnelExitHold = { key, totalMs: 0, lastAt: now, noted: false };
           const th = r.tunnelExitHold;
-          if (th.lastAt && now - th.lastAt < 2000 && now > th.lastAt) th.totalMs += now - th.lastAt;
+          if (th.lastAt && now > th.lastAt) th.totalMs += Math.min(now - th.lastAt, 2000); // TUNNEL-EXIT-HOLD-SPARSE-DISCARD 是正 (cycle0252): 間隔2000ms以上の丸ごと破棄をキャップ加算へ (holdHeld 是正と同型)
           th.lastAt = now;
           if (!th.noted) { th.noted = true; noteFail(bot, "tunnel:exit_hold", new Error(key)); }
           if (th.totalMs > 30000) { noteFail(bot, "tunnel:exit_hold_exhausted", new Error(key)); r.tunnelPath = []; r.tunnelExiting = false; r.tunnelExitHold = null; }
@@ -3650,6 +3656,7 @@ function applyGaze(bot, owner, ctx, scan) {
     if (rot && r.wakestretchState) { try { const wk = wakestretchCurrent(r.wakestretchState, Date.now()); if (wk.active) rot = { ...rot, y: rot.y + wk.yawDeg, x: applyWakestretchPitch(rot.x, Date.now() - (r.wakestretchState.startedAtMs || Date.now())) }; } catch {} }
     if (rot && r.ownerfalltrackState) { try { const oft = ownerfalltrackCurrent(r.ownerfalltrackState, r.ownerfalltrackSample || {}, Date.now()); if (oft.active || oft.pitchDeg || oft.yawOffsetDeg) rot = { ...rot, y: rot.y + (oft.yawOffsetDeg || 0), x: rot.x + (oft.pitchDeg || 0) }; } catch {} } // POLISH-ANIM-OWNERFALLTRACK-01 (cycle0033): lowest overlay (display only) // POLISH-ANIM-WAKESTRETCH-01 (cycle0005): 重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot && r.falllandState) { try { const fl = falllandCurrent(r.falllandState, Date.now()); if (fl.active) { rot = { ...rot, x: rot.x + fl.pitchDeg }; if (fl.mode === "land") r.lastFallLand = { ...(r.lastFallLand || {}), at: Date.now(), mode: "land", landTier: fl.landTier, sink: fl.sink }; } } catch {} } // POLISH-ANIM-FALLLAND-01 (cycle0057): 重畳の最下位 (表示層のみ・実機確認待ち。sink は RP 受け口が無い間は記録のみ)
+    if (rot && r.falllandState) { try { const fl2 = falllandCurrent(r.falllandState, Date.now()); if (fl2.active && fl2.mode === "land") { if (!r.land02State) r.land02State = createLandEnvState(); let cat02 = null; try { const gb2 = bot.dimension.getBlock({ x: Math.floor(bot.location.x), y: Math.floor(bot.location.y) - 1, z: Math.floor(bot.location.z) }); if (gb2) cat02 = materialOfTypeId(gb2.typeId); } catch {} const adj02 = noteLandEnv(r.land02State, { tier: fl2.landTier, category: cat02, nowMs: Date.now() }); if (adj02) r.lastLand02 = { at: Date.now(), tier: adj02.tier, cls: adj02.cls, known: adj02.known, sink: adj02.sink, pitchDeg: adj02.pitchDeg, durationMs: adj02.durationMs }; } } catch {} } // POLISH-ANIM-LAND-02 (cycle0252): 着地の環境差は記録のみ (表示への適用は FALLLAND との二重適用を避けるため次段・実機確認待ち)
     if (rot && r.routecheckState) { try { const rc2 = sampleRoutecheck(r.routecheckState, Date.now()); if (rc2.active) rot = { ...rot, x: rot.x + rc2.gazePitchDeg }; } catch {} } // POLISH-ANIM-ROUTECHECK-01 (cycle0117): 重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot && r.yieldState) { try { const ys = sampleYield(r.yieldState, Date.now()); if (ys.active) rot = { ...rot, y: rot.y + ys.yawDeg, x: rot.x + ys.gazePitchDeg }; } catch {} } // POLISH-ANIM-YIELD-01 (cycle0153): 重畳の最下位 (表示層のみ・実機確認待ち。lateralOffset は実座標へ流さない)
     if (rot && r.combatendState) { try { const ce = sampleCombatEnd(r.combatendState, Date.now()); if (ce.active) { rot = { ...rot, x: rot.x + ce.pitchDeg }; r.lastCombatEnd = { ...(r.lastCombatEnd || {}), armPitchDeg: ce.armPitchDeg }; } } catch {} } // POLISH-ANIM-COMBATEND-01 (cycle0224): 重畳の最下位 (表示層のみ・実機確認待ち。腕ピッチは記録のみ)
@@ -3947,6 +3954,7 @@ function openMenu(p, bot) {
       if (r.failCount > 0) { const recent = (r.failLog || []).slice(-3).map((f) => f.where).join("、"); p.sendMessage(`§7（記録：失敗 ${r.failCount}件記録あり。直近：${recent}）§r`); }
       try { const tLines = formatTraceSummaryLines(r.trace?.summarize?.()); for (const tl of tLines) p.sendMessage(tl); } catch {} // Phase4 表示 U1 (cycle2239): 直近の判断（記録）を最大2行だけ表示。表示のみで判断には使わない
       try { const fLines = formatFailSummaryLines(r.failAgg); for (const fl of fLines) p.sendMessage(fl); } catch {} // Phase4 S3a: 失敗傾向の表示。読み手はこの表示経路のみで、判断には使わない
+      try { const iLines = formatInspectSummaryLines(summarizeInspectAgg(r.inspectAgg)); for (const il of iLines) p.sendMessage(il); } catch {} // Phase6 INSPECT S0-1.5 (cycle0252): 集計の表示読み手はこの1点のみ。判断・計画・ゲートには使わない
     }
     if (res.selection === 7) { wdps(`cb_savedinv:${p.id}`, JSON.stringify(serializeInv(bot))); const ec = equipCoreOf(bot, r); if (ec) { try { wdps(`cb_saved_equip:${p.id}`, ec.serialize()); } catch {} } try { flushFailAgg(bot, r); } catch {} try { flushExp(bot, r); } catch {} try { bodies.release(r); } catch {} /* 6-ML: 消滅前 flush 相乗り */ try { bot.remove(); } catch {} bots.delete(bot.id); } // S3b: 消滅前に failAgg を flush (実体がある selection 7 が実効箇所。メインループの不在検出箇所は entity が無く flush 不能)
     if (res.selection === 8) {
