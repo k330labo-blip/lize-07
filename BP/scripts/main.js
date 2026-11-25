@@ -50,7 +50,9 @@ import { createWorkglanceState, noteWorkglance, sampleWorkglance } from "./workg
 import { notePortalsteady, portalsteadyOffsetsAt, isPortalsteadyActive } from "./portalsteady_math.js";
 import { createSurfacebreathState, stepSurfacebreath, sampleSurfacebreath, applySurfacebreathPitch } from "./surfacebreath_math.js"; // POLISH-ANIM-SURFACEBREATH-01 (cycle1703)
 import { tickToolCheck, createToolCheckState } from "./toolcheck_math.js"; // POLISH-ANIM-TOOLCHECK-01 (cycle1807): 長時間待機中に一度だけ手元の道具を点検する (表示層のみ・実機確認待ち)
-import { createLoadPostureState, noteLoadPosture, sampleLoadPosture } from "./loadposture_math.js"; // POLISH-ANIM-LOADPOSTURE-01 (cycle1832): 満載が続くと小さく前傾する (表示層のみ・実機確認待ち)
+import { createLoadPostureState, noteLoadPosture, sampleLoadPosture } from "./loadposture_math.js";
+import { createPartnerCheckState, notePartnerCheck, partnerCheckOffset } from "./partnercheck_math.js"; // POLISH-ANIM-PARTNERCHECK-01 (cycle1850): 主人被弾の辺で無事確認の視線 (表示層のみ・実機確認待ち)
+import { deriveInspectNeeds } from "./goap_inspect.js"; // Phase6 UNKNOWN→INSPECT段1 (cycle1850): 影記録のみ (読み手なし) // POLISH-ANIM-LOADPOSTURE-01 (cycle1832): 満載が続くと小さく前傾する (表示層のみ・実機確認待ち)
 import { createMoveTracker, moveTrackStep, drainMoveEvents } from "./move_state.js"; // ground-walk Stage 0-B (cycle1703): record-only wiring // POLISH-ANIM-PORTALSTEADY-01 (cycle1640): 次元移動直後の立て直し (表示層のみ・実機確認待ち) // POLISH-ANIM-STEPUP-01 (cycle1603): 1マス段差を上る瞬間の小さな前傾 (表示層のみ・実機確認待ち) // POLISH-ANIM-ICEBALANCE-01 (cycle1543): 氷上のバランス取り (表示層のみ・実機確認待ち)
 import { materialOfTypeId } from "./sfx.js"; // cycle1543: ICEBALANCE の足元カテゴリ供給 (分類の単一の正は sfx.js) // POLISH-ANIM-EDGEPEEK-01 (cycle1518): 段差手前の覗き込み視線 (表示層のみ・実機確認待ち) // POLISH-ANIM-HEED-01 (cycle1443): 主人の発言の辺で頭だけを向ける (表示層のみ・実機確認待ち) // 要望バッチB (v0.4.90): 螺旋階段の純粋幾何
 import { pickaxeItemForLevel } from "./bootstrap.js"; // cycle0942: toolNeed 消費点の等級→ツルハシ決定
@@ -194,7 +196,7 @@ function rt(bot) {
     nav: null, navDim: null, navMode: "direct", mission: undefined, missionKills: 0, deliveredFlag: false, conv: null, fallbackStreak: 0, lastCtx: null, lastChatAt: 0, lastPraiseAt: 0, lastDangerAt: 0, sideState: { cooldowns: {}, now: 0 }, sideTask: null, mTargetLoc: null, mTargetType: null, mTargetEntity: null, mTargetKind: null, mFound: false, mAtReturn: false, mScan: null, percOpps: [], buildPlan: null, hyst: null, suspendNotified: false, usedHonesty: [],
     lastAmbientAt: 0, equipCore: null, equipRestored: false, equipChanged: null, equipChangedAt: 0, equipFromOwner: false, justHealedAt: 0, lastAmmoCount: 0, lastHealCount: 0,
     // v0.3.9: 飛行・目標固定・ウォッチドッグ
-    fly: null, flyDim: null, flyMode: "ground", ownerPosCache: null, moveTracker: null, moveDim: null, moveState: null, moveEvents: [], surfacebreathState: null, workglanceState: null, workglanceSeenAt: 0, toolcheckState: null, loadpostureState: null, idleSinceMs: null, idleAnchor: null, toolcheckSample: null, mTargetKey: "", mTargetSince: 0, mLastHave: -1, mBanKey: "", mBanUntil: 0, watchHist: [], watchAt: 0, lastHopAt: 0,
+    fly: null, flyDim: null, flyMode: "ground", ownerPosCache: null, moveTracker: null, moveDim: null, moveState: null, moveEvents: [], surfacebreathState: null, workglanceState: null, workglanceSeenAt: 0, toolcheckState: null, loadpostureState: null, partnercheckState: null, idleSinceMs: null, idleAnchor: null, toolcheckSample: null, mTargetKey: "", mTargetSince: 0, mLastHave: -1, mBanKey: "", mBanUntil: 0, watchHist: [], watchAt: 0, lastHopAt: 0,
     // v0.4.0: 長期自律タスク
     longtask: undefined, ltLegActive: false, mineLeg: null, mineDir: null, spiral: null,
     // v0.4.1: 失敗記録・装備破損の監視
@@ -2075,7 +2077,7 @@ function startMission(bot, owner, r, mo, announce = true, opts = {}) {
   return m;
 }
 // Phase3 stale是正 F2 (v0.4.22, cycle1301 A05/A16): ミッション終了・差替時に計画系レコードを無効化する。残留した allow を将来の読み手が使う事故を防ぐ (記録の掃除のみ、分岐には使わない)。
-function clearPlanRecords(r) { try { r.toolNeed = null; r.lastPlan = null; r.lastPlanGate = null; r.lastPlanGateP3 = null; r.lastPlanRevalP4 = null; r.lastPlanGateUnified = null; r.lastPlanRevalFull = null; r.lastPlanRevalAdopt = null; r.lastPlanRevalFullAdopt = null; r.lastPlanGateUnifiedAdopt = null; r.lastGoal = null; r.lastPlanAt = 0; r.planAdoptSeen = null; r.planAdoptShieldUsedFor = null; r.lastPlanAdoptEffect = null; r.tracePlanSeen = null; r.traceActSeen = null; } catch {} }
+function clearPlanRecords(r) { try { r.toolNeed = null; r.lastPlan = null; r.lastPlanGate = null; r.lastPlanGateP3 = null; r.lastPlanRevalP4 = null; r.lastPlanGateUnified = null; r.lastPlanRevalFull = null; r.lastPlanRevalAdopt = null; r.lastPlanRevalFullAdopt = null; r.lastPlanGateUnifiedAdopt = null; r.lastGoal = null; r.lastPlanInspect = null; r.lastPlanAt = 0; r.planAdoptSeen = null; r.planAdoptShieldUsedFor = null; r.lastPlanAdoptEffect = null; r.tracePlanSeen = null; r.traceActSeen = null; } catch {} }
 function finishMission(bot, owner, r) {
   r.mission = null; clearPlanRecords(r);
   persistMission(bot, r, true);
@@ -2833,6 +2835,8 @@ function tickMission(bot, owner, ctx, scan) {
       // Phase4 failAgg U1 R-1 影読み手 (cycle1421, a05設計): failRate の初の判断側読み手。ただし本段は記録のみ (shadow) で、計画・分岐には使わない。
       // 試行0の Action は載せない (未実測を 0% と誤読させない)。消費への昇格は次段でブレンド式と一緒に判断する
       try { if (r.failAgg) { const rates = {}; for (const ak of ["BREAK", "PLACE", "TAKE", "STORE", "WITHDRAW", "CRAFT", "SMELT"]) { const fr = failRate(r.failAgg, ak); if (fr && fr.trials > 0) rates[ak] = fr; } r.lastFailBlend = { at: Date.now(), rates, shadow: true }; } } catch {}
+      // Phase6 UNKNOWN→INSPECT段1 (cycle1850, a05設計): UNKNOWN が計画を塞ぐ内訳を候補形で影記録のみ (分岐・実行・ゲートには使わない、読み手は段2以降)
+      try { r.lastPlanInspect = { ...deriveInspectNeeds({ planOk: !!res?.ok, planReason: res?.ok ? null : (res?.reason || null), factStatus: ev?.meta?.factStatus ?? null, stationStatus: ev?.meta?.stationStatus ?? null, firstPre: r.lastPlan?.a1?.pre ?? null, chestObserved: (ev?.meta?.chest && Number.isFinite(ev.meta.chest.observed)) ? ev.meta.chest.observed : null, target: step.target }), planOk: !!res?.ok, at: r.lastPlan.at }; } catch { r.lastPlanInspect = null; }
     }
   } catch {}
   if (ft.found) { const key = ft.loc ? `${ft.loc.x},${ft.loc.y},${ft.loc.z}` : ""; if (key !== r.mTargetKey) { r.mTargetKey = key; r.mTargetSince = Date.now(); } r.mTargetLoc = ft.loc; r.mTargetType = ft.typeId; r.mTargetEntity = ft.entity || null; r.mTargetKind = ft.kind; }
@@ -2866,7 +2870,7 @@ function tickMission(bot, owner, ctx, scan) {
       const ex = r.exploreRegion;
       if (cur && ex && ex.rx === rg.rx && ex.rz === rg.rz && Math.hypot(bot.location.x - ex.x, bot.location.z - ex.z) < 12) {
         if (!r.exploreArrivedAt) r.exploreArrivedAt = Date.now();
-        else if (Date.now() - r.exploreArrivedAt > 20000 && cur.doneMask !== 0xffff) { cur.doneMask = 0xffff; noteFail(bot, "survey:region_incomplete", new Error(`${rg.rx},${rg.rz}`)); }
+        else if (Date.now() - r.exploreArrivedAt > 20000 && cur.doneMask !== 0xffff) { cur.doneMask = 0xffff; cur.at = Date.now(); noteFail(bot, "survey:region_incomplete", new Error(`${rg.rx},${rg.rz}`)); }
       } else r.exploreArrivedAt = 0;
       if (step && (step.type === "gather_block" || step.type === "side_collect") && !ft.found) {
         regionSearch = true;
@@ -3178,6 +3182,7 @@ function applyGaze(bot, owner, ctx, scan) {
     if (rot && r.stepupState) { const sub = sampleStepup(r.stepupState, Date.now()); if (sub.active) rot = { ...rot, x: rot.x + sub.gazePitchDeg }; } if (rot && r.portalsteadyState && isPortalsteadyActive(r.portalsteadyState, Date.now())) { const po = portalsteadyOffsetsAt(r.portalsteadyState.startedAtMs, Date.now()); rot = { ...rot, x: rot.x + po.gazePitchDeg, y: rot.y + po.yawSwayDeg }; } if (rot && r.surfacebreathState) { const sb = sampleSurfacebreath(r.surfacebreathState, Date.now()); if (sb.active) rot = { ...rot, x: applySurfacebreathPitch(rot.x, Date.now() - r.surfacebreathState.startedAtMs) }; } if (rot && r.workglanceState) { const wg = sampleWorkglance(r.workglanceState, Date.now()); if (wg.active) rot = { ...rot, y: rot.y + wg.gazeYawOffsetDeg, x: rot.x + wg.gazePitchDeg }; } // WORKGLANCE-01 (cycle1728): lowest-priority overlay (display only) // SURFACEBREATH overlay (clamped) // POLISH-ANIM-PORTALSTEADY-01 (cycle1640): 重畳の最下位 (表示層のみ・実機確認待ち) // POLISH-ANIM-STEPUP-01 (cycle1603): ピッチ重畳の最下位 (icebalance の後ろ。表示層のみ・実機確認待ち) // POLISH-ANIM-ICEBALANCE-01 (cycle1543): ピッチ重畳の最下位 (edgepeek の後ろ。表示層のみ・実機確認待ち)
     if (rot && r.toolcheckSample?.active) rot = { ...rot, x: rot.x + r.toolcheckSample.gazePitchDeg, y: rot.y + r.toolcheckSample.gazeYawDeg }; // POLISH-ANIM-TOOLCHECK-01 (cycle1807): 重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot && r.loadpostureState) { const lp = sampleLoadPosture(r.loadpostureState, Date.now()); if (lp.active) rot = { ...rot, x: rot.x + lp.pitchDeg }; } // POLISH-ANIM-LOADPOSTURE-01 (cycle1832): ピッチ重畳の最下位 (表示層のみ・実機確認待ち)
+    if (rot && r.partnercheckState) { const pc = partnerCheckOffset(r.partnercheckState, Date.now()); if (pc.active) rot = { ...rot, y: rot.y + pc.yawDeg, x: rot.x + pc.pitchDeg }; } // POLISH-ANIM-PARTNERCHECK-01 (cycle1850): 重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot) { try { bot.setRotation(rot); } catch {} }
   }
   if (gz.say && Math.random() < 0.4) sayAmbient(owner, bot, gz.say);
@@ -3330,7 +3335,7 @@ world.afterEvents.entityHurt.subscribe((ev) => {
         } catch {}
       }
     }
-    else if (e.typeId === "minecraft:player") { const b = findBotEntity(e.id); if (b) { const wm = wmemOf(b); if (wm) wm.recordDanger(e.location, e.dimension.id, "owner_hurt", 1); } }
+    else if (e.typeId === "minecraft:player") { const b = findBotEntity(e.id); if (b) { const wm = wmemOf(b); if (wm) wm.recordDanger(e.location, e.dimension.id, "owner_hurt", 1); try { const br = rt(b); if (!br.partnercheckState) br.partnercheckState = createPartnerCheckState(); const bp = b.location, gr = gazeRotation(bp, { x: e.location.x, y: e.location.y + 1.4, z: e.location.z }); const cur = (() => { try { return b.getRotation(); } catch { return { x: 0, y: 0 }; } })(); let relYaw = gr.y - (cur?.y || 0); relYaw = ((relYaw + 540) % 360) - 180; const d3 = Math.hypot(e.location.x - bp.x, e.location.y - bp.y, e.location.z - bp.z); notePartnerCheck(br.partnercheckState, { ownerHurtEdge: true, isOwner: true, dist: d3, targetYawDeg: relYaw, targetPitchDeg: gr.x - (cur?.x || 0), working: !!br.work, falling: br.selfFalling === true, inWater: !!b.isInWater, ownerInFront: Math.abs(relYaw) < 12 && Math.abs(gr.x - (cur?.x || 0)) < 12 }, Date.now()); br.lastPartnerCheck = br.partnercheckState.lastRecord; } catch {} } }
   } catch {}
 });
 
