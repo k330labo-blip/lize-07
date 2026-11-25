@@ -372,12 +372,14 @@ function searchDirective(m, s, obs, reason) {
   if (obs.regionSearch) {
     if (obs.searchExhausted) { s.regionObs = 0; return null; }
     // cycle1110 (a02実測): Known 経路は regionObs に上限が無く、searchExhausted が TTL 追いかけで
-    // 永遠に立たないと 100,000 観測でも active のまま (無出口)。リセット条件を持たない単調
-    // カウンタで終了保証する (進捗リセットの対象にしない)。上限超過で探し尽くし (null) へ。
+    // 永遠に立たないと 100,000 観測でも active のまま (無出口)。単調カウンタで終了保証する。
+    // cycle2248 裁定 (a10 実測): 進捗 (have 増加) でも戻らないと、必要量の大きい正常な長期採取が
+    // 累積 20,001 観測で進捗中に target_not_found 保留になる (REGION-TOTAL-PROGRESS-BLIND)。
+    // 他の全見切りカウンタと同じく進捗認定点で戻す。進捗ゼロなら累積が続くため終了保証は不変。
     s.regionTotalObs = (s.regionTotalObs || 0) + 1;
     if (s.regionTotalObs > REGION_TOTAL_LIMIT) { s.regionTotalObs = 0; return null; }
     // cycle0753-a02 ケースE: region 探索中でも所持が増えたら進捗として region 系カウンタを戻す (誤 suspend 防止)
-    if (typeof s.have === "number" && s.have > (s.regionLastHave ?? -1)) { s.regionObs = 0; s.regionFrozenObs = 0; }
+    if (typeof s.have === "number" && s.have > (s.regionLastHave ?? -1)) { s.regionObs = 0; s.regionFrozenObs = 0; s.regionTotalObs = 0; }
     s.regionLastHave = typeof s.have === "number" ? s.have : (s.regionLastHave ?? 0);
     // cycle0753: Known な region 探索は 49 区画で 1,900 観測を正当に超える (digdown 契約テストが
     // 「探索が続く」ことを固定) ため観測数では見切らない。出口は main 側 searchExhausted が担う。
