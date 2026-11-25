@@ -485,7 +485,9 @@ export function navTick(nav, pos, dtSec, opts = {}) {
   // --- グリッド管理：中心から離れたら分割で再構築（旧グリッドで移動継続） ---
   const pcx = Math.floor(pos.x), pcz = Math.floor(pos.z);
   if (!nav.grid && !nav.building) nav.building = createGrid(pcx, pcz, pos.y);
-  if (nav.grid && Math.hypot(nav.grid.cx - pcx, nav.grid.cz - pcz) >= NAV.REBUILD_DIST && !nav.building) {
+  const yDrift = nav.grid ? Math.abs(pos.y - nav.grid.refY) : 0; // BASICS-05 (cycle2036): 床探索窓の寸断是正 — 縦ずれでも refY を追随させる
+  if (nav.grid && !nav.building &&
+      (Math.hypot(nav.grid.cx - pcx, nav.grid.cz - pcz) >= NAV.REBUILD_DIST || yDrift >= 2)) {
     nav.building = createGrid(pcx, pcz, pos.y);
   }
   if (nav.building) {

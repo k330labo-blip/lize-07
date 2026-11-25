@@ -54,9 +54,10 @@ import { tickToolCheck, createToolCheckState } from "./toolcheck_math.js"; // PO
 import { createLoadPostureState, noteLoadPosture, sampleLoadPosture } from "./loadposture_math.js";
 import { createPartnerCheckState, notePartnerCheck, partnerCheckOffset } from "./partnercheck_math.js";
 import { createEnderavertState, noteEnderavert, sampleEnderavert } from "./enderavert_math.js"; // POLISH-ANIM-ENDERAVERT-01 (cycle1940): 表示層のみ・実機確認待ち
-import { restoreForbids, mergeSessionForbids } from "./session_forbids.js"; // Phase5 (cycle1923): sessionForbids の復元純粋核 / 読み手R1 (cycle2006)
+import { restoreForbids, mergeSessionForbids, serializeForbids } from "./session_forbids.js"; // Phase5 (cycle1923): sessionForbids の復元純粋核 / 読み手R1 (cycle2006) / 保存の単一形 (cycle2036)
 import { createMusicnodState, noteMusicnod, sampleMusicnod } from "./musicnod_math.js"; // POLISH-ANIM-MUSICNOD-01 (cycle2006): 表示層のみ・実機確認待ち
 import { createIdleState, noteIdle, sampleIdle } from "./idle_math.js"; // POLISH-ANIM-IDLE-01 (cycle2020): 待機モーション (表示層のみ・実機確認待ち)
+import { createLookLeadState, tickLookLead } from "./looklead_math.js"; // POLISH-ANIM-LOOKLEAD-01 (cycle2036): 作業対象への視線の先行 (表示層のみ・実機確認待ち)
 import { createOwnerReturnState, noteOwnerReturn, ownerReturnOffset } from "./ownerreturn_math.js"; // POLISH-ANIM-OWNERRETURN-01 (cycle1923): 帰還の気付き (表示層のみ・実機確認待ち) // POLISH-ANIM-PARTNERCHECK-01 (cycle1850): 主人被弾の辺で無事確認の視線 (表示層のみ・実機確認待ち)
 import { deriveInspectNeeds } from "./goap_inspect.js"; // Phase6 UNKNOWN→INSPECT段1 (cycle1850): 影記録。読み手は 6-ML 層1 (cycle1940) で source スコープ限定・記録のみ接続済み // POLISH-ANIM-LOADPOSTURE-01 (cycle1832): 満載が続くと小さく前傾する (表示層のみ・実機確認待ち)
 import { createMoveTracker, moveTrackStep, drainMoveEvents } from "./move_state.js"; // ground-walk Stage 0-B (cycle1703): record-only wiring // POLISH-ANIM-PORTALSTEADY-01 (cycle1640): 次元移動直後の立て直し (表示層のみ・実機確認待ち) // POLISH-ANIM-STEPUP-01 (cycle1603): 1マス段差を上る瞬間の小さな前傾 (表示層のみ・実機確認待ち) // POLISH-ANIM-ICEBALANCE-01 (cycle1543): 氷上のバランス取り (表示層のみ・実機確認待ち)
@@ -90,6 +91,7 @@ import { createEquipCore, createEquipmentApi, durabilityPcts } from "./equip_api
 import { createTrace, mapGoalEvent, mapPlanEvent, mapReplanEvent, mapInterruptAct, shouldRecordAct, formatTraceSummaryLines } from "./trace.js"; // Phase4 cb_trace (v0.4.56): 判断トレースの器 (記録専用)。v0.4.57: goal/plan 配線を追加。v0.4.60: replan 配線を追加。v0.4.62: 表示 U1 (selection 6 のみ)。v0.4.65: act 配線を追加
 import { createFailAgg, recordAction, recordNote, formatFailSummaryLines, serializeFailAggShards, restoreFailAggShardsWithReport, planShardWrites, failRate } from "./fail_vocab.js"; // Phase4 failAgg (v0.4.64): 失敗集計の純粋核。記録は noteFail/commitLastAction の内側2点だけ (S2)。読み手は状態表示のみ (S3a)。v0.4.77: S3b 永続化 (cb_failagg キー分割)
 import { pickSurveyEvictions } from "./survey_evict.js"; // survey 案C (cycle2006): 容量削除の複合キー純粋核
+import { recordHitReservoir } from "./survey_reservoir.js"; // survey 案R (cycle2036): リザーバサンプリング純粋核
 import { dropTupleForBlock } from "./block_drops.js";
 import { isUndergroundColumn } from "./underground_math.js"; // キュー0副次 (cycle1400): 地下判定の数え上げを純粋核へ (雪層は地形に数えない規則を回帰テストで固定)
 import { applyTossPitch, isTossActive, shouldToss } from "./toss_math.js"; // POLISH-ANIM-TOSS-01 (cycle1400): アイテム出現時の投げ出し表現 (表示層のみ・実機確認待ち)
@@ -981,6 +983,18 @@ function tickWork(bot, owner, r, ctx) {
     if (gate.action === "dig_first") { if (!swapWorkToOccluder(bot, r, w, gate)) r.lastDigHold = { why: "dig_first_unbreakable", loc: { ...w.loc }, at: Date.now() }; return true; }
   }
   else if (gate.action === "dig_first") { if (!swapWorkToOccluder(bot, r, w, gate)) r.lastDigHold = { why: "dig_first_unbreakable", loc: { ...w.loc }, at: Date.now() }; return true; }
+  // POLISH-ANIM-LOOKLEAD-01 feeder (cycle2036): 破壊完了 (w.left tick 後) を予定行動とし、残り 250ms から視線を対象へ先行させる (表示層のみ・実機確認待ち)
+  try {
+    if (!r.lookleadState) r.lookleadState = createLookLeadState();
+    const gr = gazeRotation(bot.location, { x: w.loc.x + 0.5, y: w.loc.y + 0.5, z: w.loc.z + 0.5 });
+    let cur = null; try { cur = bot.getRotation(); } catch {}
+    const yawTo = gr && cur ? ((gr.y - cur.y + 540) % 360) - 180 : 0;
+    const pitchTo = gr && cur ? gr.x - cur.x : 0;
+    let inWaterL = false; try { inWaterL = !!bot.isInWater; } catch {}
+    const out = tickLookLead({ nowMs: Date.now(), msUntilAction: Math.max(0, (w.left - 1)) * 50, yawToNextDeg: yawTo, pitchToNextDeg: pitchTo, targetKey: `cell:${w.loc.x},${w.loc.y},${w.loc.z}`, suppressed: !!((ctx?.danger?.count ?? 0) > 0) || r.selfFalling === true || inWaterL, state: r.lookleadState });
+    r.lookleadState = out.state; r.lookleadSample = out; r.lookleadSampleAt = Date.now();
+    if (out.fired) r.lastLookLead = { at: Date.now(), targetKey: `cell:${w.loc.x},${w.loc.y},${w.loc.z}` };
+  } catch {}
   w.left--;
   try { if (!r.sfxState) r.sfxState = createSfxState(); sfxDigHit(r.sfxState, bot.dimension, { x: w.loc.x + 0.5, y: w.loc.y + 0.5, z: w.loc.z + 0.5 }, w.typeId, Date.now()); } catch {} // 要望バッチF: 素材別の掘削音 (hit.*)
   if (w.left > 0) return true;
@@ -1003,7 +1017,7 @@ function tickWork(bot, owner, r, ctx) {
   }
   if (CROP_DROPS[w.typeId]) { // 植え直す
     const seedId = w.typeId === "minecraft:wheat" ? "minecraft:wheat_seeds" : w.typeId === "minecraft:beetroot" ? "minecraft:beetroot_seeds" : gain[0];
-    if (takeFromInv(bot, seedId, 1)) { try { b.setType(w.typeId); } catch {} }
+    if (takeFromInv(bot, seedId, 1)) { try { b.setType(w.typeId); try { sfxPlace(bot.dimension, { x: w.loc.x + 0.5, y: w.loc.y + 0.5, z: w.loc.z + 0.5 }, w.typeId); } catch {} } catch {} } // POLISH-SND-PLACE-01 残件 (cycle2036): 植え直しへの設置音配線 (表示層のみ)
   }
   r.lastBreak = { act: "BREAK", ok: true, reason: null, item: w.typeId, gained: gain ? gain[1] : 0, at: Date.now() }; commitLastAction(r, r.lastBreak);
   r.work = null;
@@ -1392,7 +1406,8 @@ function selfRescue(bot, r) {
 // 指示の実行中、進む先が自然のブロックで塞がっていて進めないなら、それを掘って進む
 function clearPathAhead(bot, r, blocked) {
   if (!blocked || !r.target) return;
-  if (!((r.mission && r.mission.status === "active") || r.longtask || (r.buildPlan && r.buildPlan.stage === "build"))) { r.clearDig = null; return; } // 追従中はプレイヤーの周りを掘らない // BLD-06 (cycle1133): 建築中も掘進できるよう build 段階を許可 (掘否は canBreakForPath+dig_gate が担う)
+  const workAct = typeof r.moveAct === "string" && (r.moveAct.startsWith("pickup_") || r.moveAct.startsWith("deliver") || r.moveAct === "deposit" || r.moveAct === "chest_alert"); // S1 (cycle2036): syncFlyGoal の interact 判定と許可集合を一致させる (回収/納品/入庫でも掘進救済が届くように)
+  if (!((r.mission && r.mission.status === "active") || r.longtask || (r.buildPlan && r.buildPlan.stage === "build") || workAct)) { r.clearDig = null; return; } // 追従中はプレイヤーの周りを掘らない // BLD-06 (cycle1133): 建築中も掘進できるよう build 段階を許可 (掘否は canBreakForPath+dig_gate が担う)
   const p = bot.location, t = r.target;
   const dx = t.x - p.x, dz = t.z - p.z, dy = t.y - p.y, hd = Math.hypot(dx, dz);
   if (Math.hypot(hd, dy) < 1.5) return;
@@ -1755,7 +1770,7 @@ function requestSurvey(dimId, rx, rz, prio = 1) {
   const key = surveyKeyOf(dimId, rx, rz);
   let sv = surveys.get(key);
   if (!sv) { sv = { dim: dimId, rx, rz, at: Date.now(), doneMask: 0, doneAt: null, fails: 0, hits: {}, wantAt: Date.now() }; surveys.set(key, sv); }
-  else if (!surveyFresh(sv) && !surveyDone(sv)) { sv.doneMask = 0; sv.doneAt = null; sv.fails = 0; sv.hits = {}; sv.units = undefined; sv.nextIdx = 0; sv.at = Date.now(); }
+  else if (!surveyFresh(sv) && !surveyDone(sv)) { sv.doneMask = 0; sv.doneAt = null; sv.fails = 0; sv.hits = {}; sv.seen = {}; sv.units = undefined; sv.nextIdx = 0; sv.at = Date.now(); } // survey 案R (cycle2036): seen も hits と対で初期化
   // ラッチ済み sv は失効しても作り直さない: doneMask/doneAt/hits は保持し、wantAt/prio のみ更新する。
   sv.wantAt = Date.now(); sv.prio = prio;
   if (surveys.size > 400) { const old = pickSurveyEvictions([...surveys.entries()], 100, Date.now(), SURVEY_TTL_MS); for (const [k] of old) surveys.delete(k); } // survey 案C (cycle2006): 複合削除キー (survey_evict.js)
@@ -1770,9 +1785,7 @@ function halveUnit(va, vb) {
   const m = va.z + Math.floor(sz / 2) - 1; return [[va, { ...vb, z: m }], [{ ...va, z: m + 1 }, vb]];
 }
 function recordHit(sv, id, loc) {
-  const arr = sv.hits[id] || (sv.hits[id] = []);
-  for (const h of arr) if (h.x === loc.x && h.y === loc.y && h.z === loc.z) return;
-  if (arr.length < SURVEY_HITS_CAP) arr.push({ x: loc.x, y: loc.y, z: loc.z });
+  recordHitReservoir(sv, id, loc, SURVEY_HITS_CAP); // survey 案R (cycle2036): drop-new を廃しリザーバサンプリングへ委譲 (survey_reservoir.js が単一の正)
 }
 // 1 chunk survey. Returns: "done" | "partial" | "unloaded" | "error"  (partial = progress saved in sv.units)
 function surveyChunk(sv, idx) {
@@ -3263,6 +3276,7 @@ function applyGaze(bot, owner, ctx, scan) {
     if (rot && r.partnercheckState) { const pc = partnerCheckOffset(r.partnercheckState, Date.now()); if (pc.active) rot = { ...rot, y: rot.y + pc.yawDeg, x: rot.x + pc.pitchDeg }; } if (rot && r.ownerreturnState) { const orc = ownerReturnOffset(r.ownerreturnState, Date.now()); if (orc.active) rot = { ...rot, y: rot.y + orc.yawDeg, x: rot.x + orc.pitchDeg }; } // POLISH-ANIM-OWNERRETURN-01 (cycle1923): 重畳の最下位 (表示層のみ・実機確認待ち) // POLISH-ANIM-PARTNERCHECK-01 (cycle1850): 重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot && r.musicnodState) { const mn = sampleMusicnod(r.musicnodState, Date.now()); if (mn.active) rot = { ...rot, x: rot.x + mn.gazePitchDeg }; } // POLISH-ANIM-MUSICNOD-01 (cycle2006): 重畳の最下位 (表示層のみ・実機確認待ち、近傍滞在が代理条件)
     if (rot && r.idleState) { const idl = sampleIdle(r.idleState, Date.now()); if (idl.active) rot = { ...rot, y: rot.y + idl.gazeYawRelDeg, x: rot.x + idl.gazePitchDeg }; } // POLISH-ANIM-IDLE-01 (cycle2020): 重畳の最下位 (表示層のみ・実機確認待ち)
+    if (rot && r.lookleadSample && (r.lookleadSample.active || r.lookleadSample.completed) && Date.now() - (r.lookleadSampleAt || 0) < 200) rot = { ...rot, y: rot.y + r.lookleadSample.yawDeltaDeg, x: rot.x + r.lookleadSample.pitchDeltaDeg }; // POLISH-ANIM-LOOKLEAD-01 (cycle2036): 重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot) { try { bot.setRotation(rot); } catch {} }
   }
   if (gz.say && Math.random() < 0.4) sayAmbient(owner, bot, gz.say);
@@ -3726,7 +3740,7 @@ function recordSessionForbids(bot, r, o) {
     if (!r.sessionForbids.some((f) => f.target === id && f.verb === (n.verb ?? null))) r.sessionForbids.push({ target: id, verb: n.verb ?? null, at: Date.now() });
   }
   if (r.sessionForbids.length > 32) r.sessionForbids = r.sessionForbids.slice(-32);
-  try { dps(bot, "cb_forbids", JSON.stringify(r.sessionForbids)); } catch {} // Phase5 (cycle1923): 再召喚・再起動を跨いで禁止を保持する
+  try { dps(bot, "cb_forbids", serializeForbids(r.sessionForbids)); } catch {} // Phase5 (cycle1923): 再召喚・再起動を跨いで禁止を保持する // cycle2036: 保存を serializeForbids へ統一 (非文字列 verb の復元時拡大を防ぐ)
 }
 function forbidTargetName(n) { return n?.target?.name || nameOfItem(n?.target?.item || n?.target?.block || n?.target?.entity || ""); }
 function startOrderFromParser(p, bot, r, o) {
