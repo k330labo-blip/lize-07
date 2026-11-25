@@ -58,6 +58,7 @@ export const ACT_LABEL = {
   deposit: "入庫中", deliver_all: "お届け中", deliver_food: "お届け中", deliver_valuable: "お届け中",
   pickup_nearest: "回収中", pickup_valuable: "回収中", pickup_food: "回収中", pickup_owner_drops: "回収中",
   guard: "警戒中", zap: "迎撃中", flee: "退避中", rest_at_home: "休憩中", return_home: "帰還中", go_home: "帰還中",
+  place_block_escape: "足場を作って脱出中",
   say_only: "", greet: "", celebrate: "", warn_creeper: "警告", warn_hostile: "警告", warn_lava: "警告", warn_owner_low: "警告", chest_alert: "報告",
 };
 
@@ -68,7 +69,7 @@ export const LT_DELIVER_FAIL_LIMIT = 60; // LT-DELIVER-NOEXIT (cycle1322): 長�
 export const LT_DELIVER_TIMEOUT_MS = 300000; // LT-DELIVER-NOEXIT (cycle1322): deliver 相全体の滞留上限 (未到達含む最終出口)
 export const BUILD_NO_PROGRESS_TIMEOUT_MS = 300000; // BUILD-HOLD-NOEXIT (cycle1343, 案A): 建築 build 相で idx/placed が5分間進まなければ終端 (保留中も数える)
 // 版数の単一の正（v0.4.1〜）。manifest説明・main.jsヘッダもこれに合わせる
-export const VERSION = "0.5.44";
+export const VERSION = "0.5.45";
 // Phase3 S1b 解禁フラグ (v0.4.21 導入、v0.4.54 READ-1 で解禁): true の間は採用tick合成の読み手 (READ-1) が有効。
 // 充足記録 (v0.4.48) と正式裁定 (v0.4.54) を経て、本版で読み手化と一体に切り替えた。
 export const GOAP_ADOPT_S1B = true;

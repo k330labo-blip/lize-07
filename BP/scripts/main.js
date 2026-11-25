@@ -36,6 +36,8 @@ import { applySummonScanYaw, isSummonScanActive, shouldSummonScan } from "./summ
 import { applyLookbackYaw, isLookbackActive, shouldLookback } from "./lookback_math.js"; // POLISH-ANIM-LOOKBACK-01 (cycle1153): 先行移動中に主人を一度だけ振り返る (表示層のみ)
 import { applySkyglancePitch, isSkyglanceActive, shouldSkyglance } from "./sky_glance_math.js";
 import { createHorizonState, noteHorizon, horizonCurrentOffset } from "./horizon_glance_math.js"; // POLISH-ANIM-HORIZONGLANCE-01 (cycle0320): dawn/dusk horizon glance (display only)
+import { pickEscapeBlock, shoreNeedFor, scanShore, lavaStuckStep } from "./env02_math.js"; // ENV-02 (cycle0340): 溶岩足場脱出の知覚・出口の純粋核
+import { createNightwatchState, noteNightwatch, sampleNightwatch, applyNightwatchPitch } from "./nightwatch_math.js"; // POLISH-ANIM-NIGHTWATCH-01 (cycle0340): 夜間見回り視線 (表示層のみ)
 import { applyDryoffYaw, isDryoffActive, noteDryoff as noteDryoffState } from "./dryoff_math.js"; // POLISH-ANIM-DRYOFF-01 (cycle1322): 雨上がりに水を払う (表示層のみ・実機確認待ち)
 import { noteBreathCold } from "./breath_cold_math.js"; // POLISH-FX-BREATHCOLD-01 (cycle1343): 寒冷地での白い排気 (表示層のみ・粒子ID未照合のため記録のみ・実機確認待ち)
 import { fromCraftResult } from "./actions_contract.js"; // 6-ML (cycle1322): CRAFT/SMELT 実行結果の正規化 (記録専用) // POLISH-ANIM-SKYGLANCE-01 (cycle1133): 雨の降り始めに空を見上げる (表示層のみ) // POLISH-ANIM-SUMMONSCAN-01 (cycle1110): 召喚・復元直後の見回し (表示層のみ)
@@ -492,6 +494,7 @@ function buildContext(bot, owner) {
   noteFlinch(bot, r, flinchCand); // POLISH-ANIM-FLINCH-01 (cycle1051): 出現の辺でのみ発火 (表示層のみ)
   noteSkyglance(r, c.env.isRaining, c.danger && c.danger.count > 0); // POLISH-ANIM-SKYGLANCE-01 (cycle1133)
   noteHorizonGlance(bot, r, c); // POLISH-ANIM-HORIZONGLANCE-01 (cycle0320)
+  noteNightwatchTick(bot, r, c); // POLISH-ANIM-NIGHTWATCH-01 (cycle0340)
   noteDryoff(r, c); // POLISH-ANIM-DRYOFF-01 (cycle1322)
   noteRainshelter(bot, dim, r, c); // POLISH-ANIM-RAINSHELTER-01 (cycle2231)
   noteLookback(r, c); // POLISH-ANIM-LOOKBACK-01 (cycle1153)
@@ -551,7 +554,24 @@ function buildContext(bot, owner) {
     }
   } catch {}
   c.x.hasMilk = !!c.x.items?.["minecraft:milk_bucket"];
-  c.x.hasFireResPotion = false; // ポーション種別は所持品から判別できないため安全側 (飲用ルールは発火しない)
+  c.x.hasFireResPotion = false; // ポーション種別は所持品から判別できないため安全側 (飲用ルールは発火しない)。ENV-02 (cycle0340): この act は dormant で、足場脱出は飲用連鎖を前提にしない
+  // --- ENV-02 知覚供給 (cycle0340): 材料選定は毎tick (items 集計の参照のみで安い)、岸走査は溶岩浸漬時のみ・1秒キャッシュ ---
+  try {
+    const eb = pickEscapeBlock(c.x.items);
+    c.x.escapeBlockId = eb.id; c.x.escapeBlockCount = eb.count; c.x.hasBlocks = eb.total > 0;
+    c.x.hasWaterBucket = !!c.x.items?.["minecraft:water_bucket"];
+    if (c.x.selfInLava) {
+      const nowE = Date.now();
+      if (!r.shoreCache || nowE - r.shoreCache.at > 1000) {
+        const probe = (x, y, z) => { try { const b = dim.getBlock({ x, y, z }); return b ? b.typeId : null; } catch { return null; } };
+        const sc = scanShore(probe, bot.location);
+        let sink = 0; try { for (let dy = 1; dy <= 3; dy++) { const b = dim.getBlock({ x: Math.floor(bot.location.x), y: Math.floor(bot.location.y) + dy, z: Math.floor(bot.location.z) }); if (b && (b.typeId === "minecraft:lava" || b.typeId === "minecraft:flowing_lava")) sink = dy; else break; } } catch {}
+        r.shoreCache = { at: nowE, dist: sc.dist, dirX: sc.dirX, dirZ: sc.dirZ, need: shoreNeedFor(sc.dist, sink) };
+      }
+      c.x.shoreDist = r.shoreCache.dist; c.x.shoreDir = r.shoreCache.dist < 999 ? { x: r.shoreCache.dirX, z: r.shoreCache.dirZ } : null; c.x.shoreNeed = r.shoreCache.need;
+    } else { c.x.shoreDist = 999; c.x.shoreDir = null; c.x.shoreNeed = 999; }
+  } catch {}
+  noteLavaStuck(bot, owner, r, c); // ENV-02 出口 (cycle0340): 30秒無進捗で hopeless を1回だけ申告
   try {
     const feet = dim.getBlock({ x: Math.floor(bot.location.x), y: Math.floor(bot.location.y), z: Math.floor(bot.location.z) });
     if (feet && feet.typeId === "minecraft:powder_snow") c.x.selfFreezing = true;
@@ -792,6 +812,7 @@ function execTarget(bot, owner, rule, ctx, scan) {
     }
     case "rise_avoid": return behind(2);
     case "escape_hazard": case "surface": return { x: bot.location.x, y: bot.location.y + 3, z: bot.location.z }; // ハザード脱出/浮上は真上へ
+    case "place_block_escape": { const sd = ctx?.x?.shoreDir || (r.shoreCache && r.shoreCache.dist < 999 ? { x: r.shoreCache.dirX, z: r.shoreCache.dirZ } : null); return sd ? { x: bot.location.x + sd.x * 2, y: bot.location.y + 1, z: bot.location.z + sd.z * 2 } : { x: bot.location.x + 1, y: bot.location.y + 1, z: bot.location.z }; } // ENV-02 (cycle0340): 岸方向へ寄る
     case "seek_water": return behind(2); // 水場の実座標は未走査のため主人側へ寄りつつ消火を待つ
     case "drink_fire_res": case "drink_milk": return bot.location; // 飲用中はその場に留まる
     case "use_heal_item": return bot.location; // 回復使用中はその場に留まる
@@ -844,6 +865,7 @@ function execArrive(bot, owner, rule, ctx, scan) {
   }
   // drink_fire_res: ポーション種別は typeId から識別不能のため消費しない (契約 POTION_KIND_UNKNOWN)。幻影の成功扱いはしない。
   if (act === "drink_fire_res") { r.lastUseItem = { act, ok: false, reason: "POTION_KIND_UNKNOWN", item: "minecraft:potion", at: Date.now() }; commitLastAction(r, r.lastUseItem); }
+  if (act === "place_block_escape") stepBridgeEscape(bot, r, ctx); // ENV-02 (cycle0340)
   if (act.startsWith("deliver") && d < DELIVER_RANGE) {
     const oc = invOf(owner); if (!oc) return;
     const res = transferFiltered(bot, oc, deliverFilterFor(rule));
@@ -1132,6 +1154,47 @@ function wanderTo(r, bot, owner) {
     r.wanderAt = Date.now();
   }
   r.target = r.wander;
+}
+// ENV-02 実行部 (cycle0340): 足場脱出を1tickに1セル進める。設置は PLACE 統一の作法
+// (takeFromInv→setType→検証→失敗時ロールバック)。人工物近傍 (structureGuard) では
+// 開始せず hopeless 側へ倒す。完了判定は selfInLava 解除 (知覚側) に委ねる。
+function stepBridgeEscape(bot, r, ctx) {
+  const fail = (reason, err) => {
+    try { if (!(r.lastPlace && r.lastPlace.reason === reason && Date.now() - (r.lastPlace.at || 0) < 5000)) { r.lastPlace = { act: "PLACE", mode: "bridge_escape", ok: false, reason, item: ctx?.x?.escapeBlockId || null, at: Date.now() }; commitLastAction(r, r.lastPlace); if (err) noteFail(bot, "place:bridge_" + String(reason).toLowerCase(), err); } } catch {}
+    return false;
+  };
+  const blockId = ctx?.x?.escapeBlockId;
+  if (!blockId) return fail("NO_MATERIAL");
+  const sd = ctx?.x?.shoreDir || (r.shoreCache && r.shoreCache.dist < 999 ? { x: r.shoreCache.dirX, z: r.shoreCache.dirZ } : null);
+  const bx = Math.floor(bot.location.x), by = Math.floor(bot.location.y), bz = Math.floor(bot.location.z);
+  const stepX = sd ? Math.round(sd.x) : 1, stepZ = sd ? Math.round(sd.z) : 0;
+  // 候補セル: まず足元-1 (ピラー)、埋まっていれば岸方向の次セルの足元-1 (橋)
+  const candidates = [{ x: bx, y: by - 1, z: bz }, { x: bx + stepX, y: by - 1, z: bz + stepZ }];
+  let cell = null, cur = null;
+  for (const cand of candidates) {
+    let b = null; try { b = bot.dimension.getBlock(cand); } catch (e) { return fail("API_ERROR", e); }
+    if (b && (b.typeId === "minecraft:lava" || b.typeId === "minecraft:flowing_lava" || b.typeId === "minecraft:air")) { cell = cand; cur = b; break; }
+  }
+  if (!cell) { // 足元も次セルも固体 = 岸か中洲に乗っている。前進は移動層に委ねる
+    try { r.lastPlace = { act: "PLACE", mode: "bridge_escape", ok: true, reason: "ON_SOLID", item: blockId, at: Date.now() }; commitLastAction(r, r.lastPlace); } catch {}
+    return true;
+  }
+  try { if (structureGuard(bot.dimension, cell)) return fail("STRUCTURE_NEAR"); } catch {}
+  if (!takeFromInv(bot, blockId, 1)) return fail("NO_MATERIAL");
+  try {
+    cur.setType(blockId);
+    let placed = false; try { const rb = bot.dimension.getBlock(cell); placed = !!rb && rb.typeId === blockId; } catch {}
+    if (!placed) throw new Error("bridge verify failed");
+    if (!r.bridge) r.bridge = { blockId, placed: [], startedAt: Date.now(), phase: "bridge" };
+    r.bridge.placed.push({ x: cell.x, y: cell.y, z: cell.z });
+    if (r.bridge.placed.length > 128) r.bridge.placed.splice(0, r.bridge.placed.length - 128);
+    try { r.lastPlace = { act: "PLACE", mode: "bridge_escape", ok: true, reason: null, item: blockId, at: Date.now() }; commitLastAction(r, r.lastPlace); } catch {}
+    try { sfxPlace(bot.dimension, { x: cell.x + 0.5, y: cell.y + 0.5, z: cell.z + 0.5 }, blockId); } catch {}
+    return true;
+  } catch (err) {
+    try { const bc = invOf(bot); let rest = 1; if (bc) rest = addTo(bc, blockId, 1); if (rest > 0) bot.dimension.spawnItem(new ItemStack(blockId, rest), bot.location); } catch {}
+    return fail("SET_FAILED", err);
+  }
 }
 function placeTorch(bot, r, ctx) {
   // cycle2117 torchfix: silent return を廃止し全不成立を理由つきで記録する (同一理由は5秒間引きで連発を防ぐ)
@@ -1625,7 +1688,7 @@ system.runInterval(() => {
 }, 2);
 
 // ---------- v0.3.0: 指示ミッション / 建築 / 工場 / 視線 ----------
-const LIFE_CRITICAL_ACTS = new Set(["flee", "rest_at_home", "use_heal_item"]); // ミッション中の安全割り込みはこの集合に限る（挙動ベンチ弱点2。use_heal_item は装備文脈でのみ発火する自己回復で、ベンチ文脈では出現しない）
+const LIFE_CRITICAL_ACTS = new Set(["flee", "rest_at_home", "use_heal_item", "place_block_escape"]); // ENV-02 (cycle0340): 溶岩浸漬は生命危機のため足場脱出も割り込み対象 // ミッション中の安全割り込みはこの集合に限る（挙動ベンチ弱点2。use_heal_item は装備文脈でのみ発火する自己回復で、ベンチ文脈では出現しない）
 function missionSig(m) { // Phase 0 負荷対策: 復元に必要な構造だけの軽量シグネチャ（obsCount/updatedAt/have は再導出できるので含めない）
   if (!m) return "";
   const steps = (m.steps || []).map((s) => `${s.status}:${s.banked || 0}:${s.base == null ? 0 : 1}:${s.searchStage || 0}`).join(",");
@@ -3030,6 +3093,36 @@ function noteHorizonGlance(bot, r, c) {
     if (ev?.fired) r.lastHorizonGlance = { at: Date.now(), band: phase };
   } catch {}
 }
+// ENV-02 出口 (cycle0340): lavaStuck 累計は env02_math の純粋核が単独で更新する
+// (移動ループの別経路で消されない)。進捗 = 足場の設置数増加。申告は1回だけ。
+function noteLavaStuck(bot, owner, r, c) {
+  try {
+    if (!r) return;
+    const inLava = !!(c?.x?.selfInLava);
+    const placedN = (r.bridge && Array.isArray(r.bridge.placed)) ? r.bridge.placed.length : 0;
+    const progressed = inLava && r.lavaStuckBridgeN != null && placedN > r.lavaStuckBridgeN;
+    r.lavaStuckBridgeN = placedN;
+    const res = lavaStuckStep(r.lavaStuck || null, inLava, Date.now(), progressed);
+    r.lavaStuck = res.state;
+    if (res.declare) {
+      try { noteFail(bot, "lava:hopeless_exhausted", new Error("lava stuck 30s without progress"), { expDone: true }); } catch {}
+      try { say(owner, bot, "足場を作れません。ブロックを投げ渡してください", true); } catch {}
+    }
+  } catch {}
+}
+function noteNightwatchTick(bot, r, c) {
+  try {
+    if (!r) return;
+    if (!r.nightwatchState) r.nightwatchState = createNightwatchState();
+    const phase = c?.env?.isNight ? "night" : c?.env?.isDawn ? "dawn" : c?.env?.isDusk ? "dusk" : "day";
+    const now = Date.now();
+    const idleMs = r.idleSinceMs != null ? now - r.idleSinceMs : null;
+    // a16 条件: otherOverlayActive は過渡的な上位重畳のみ (持続型を含めると常時抑制で発火不能)、
+    // hovering は実飛行中のみ (常時 true だと受動待機で発火不能) のため、ここではどちらも渡さない
+    const ev = noteNightwatch(r.nightwatchState, { phase, idleSustainedMs: idleMs, nowMs: now, danger: !!((c?.danger?.count ?? 0) > 0), hasWorkTarget: !!r.work, falling: r.selfFalling === true, inWater: !!bot.isInWater });
+    if (ev?.fired) r.lastNightwatch = { at: now };
+  } catch {}
+}
 function execSideTask(bot, owner, r, ctx, scan) {
   const t = r.sideTask; if (!t) return;
   try { noteAttempt(r.sideState, t, Date.now()); } catch {}
@@ -3672,6 +3765,7 @@ function applyGaze(bot, owner, ctx, scan) {
     if (rot && r.yieldState) { try { const ys = sampleYield(r.yieldState, Date.now()); if (ys.active) rot = { ...rot, y: rot.y + ys.yawDeg, x: rot.x + ys.gazePitchDeg }; } catch {} } // POLISH-ANIM-YIELD-01 (cycle0153): 重畳の最下位 (表示層のみ・実機確認待ち。lateralOffset は実座標へ流さない)
     if (rot && r.combatendState) { try { const ce = sampleCombatEnd(r.combatendState, Date.now()); if (ce.active) { rot = { ...rot, x: rot.x + ce.pitchDeg }; r.lastCombatEnd = { ...(r.lastCombatEnd || {}), armPitchDeg: ce.armPitchDeg }; } } catch {} } // POLISH-ANIM-COMBATEND-01 (cycle0224): 重畳の最下位 (表示層のみ・実機確認待ち。腕ピッチは記録のみ)
     if (rot && r.horizonState) { try { const ho = horizonCurrentOffset(r.horizonState, Date.now(), rot.y, null); if (ho.active) rot = { ...rot, x: rot.x + ho.pitchDeg }; } catch {} } // POLISH-ANIM-HORIZONGLANCE-01 (cycle0320): pitch-only stage1 (sun yaw unverified), lowest overlay (display only, real-machine check pending)
+    if (rot && r.nightwatchState) { try { const nw = sampleNightwatch(r.nightwatchState, Date.now()); if (nw.active) rot = { ...rot, y: rot.y + nw.yawDeg, x: applyNightwatchPitch(rot.x, Date.now() - (r.nightwatchState.startedAtMs || Date.now())) }; } catch {} } // POLISH-ANIM-NIGHTWATCH-01 (cycle0340): 重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot) { try { bot.setRotation(rot); } catch {} }
   }
   if (gz.say && Math.random() < 0.4) sayAmbient(owner, bot, gz.say);

@@ -71,6 +71,7 @@ export const RULES = [
 // === 自己ハザード (selfInLava / selfInWater / selfOnFire / selfFreezing / selfSuffocating / selfPoisoned / selfWithered) ===
 // 行動ベンチ hazard 群の設計前提。自分の身体の危機は回収・入庫・待機より先に処理する。
 // 生命危機帯 (p>=900) に置くことで、ミッション中の割り込み対象 (flee) にもなる。
+// ENV-02 D1 (cycle0340): hasFireResPotion は正式版 API で種別判別できず false 固定のため、このルールと drink_fire_res 実行部は dormant (安全側)。足場脱出は飲用連鎖を前提にしない
 {id:'emg2_self_lava_drink_fireres',p:919,when:c=>Boolean(c.x?.selfInLava&&c.x?.hasFireResPotion&&!c.x?.fireResActive),act:'drink_fire_res',say:'溶岩です。まず耐火を飲みます',note:'溶岩浸漬かつ耐火ポーション所持なら、脱出前に飲んで時間を稼ぐ'},
 {id:'emg2_self_lava_fireres_escape',p:918,when:c=>Boolean(c.x?.selfInLava&&c.x?.fireResActive),act:'escape_hazard',say:'耐火が効いています。落ち着いて出ます',note:'耐火有効中の溶岩浸漬は慌てて逃げず (flee でなく) 脱出移動'},
 {id:'emg2_self_lava_critical',p:917,when:c=>Boolean(c.x?.selfInLava&&c.self.hpPct<=0.75),act:'flee',say:'溶岩です。すぐに出ます',note:'溶岩浸漬かつHP余裕なしは生命危機として flee (ミッション割り込み対象)'},

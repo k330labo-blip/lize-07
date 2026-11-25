@@ -2,6 +2,7 @@
 // 優先度降順 + 安定ソート（同点は読み込み順＝この並び）で評価する。
 import { RULES as safety } from "./rules_safety.js";
 import { RULES as emergency2 } from "./rules_emergency2.js";
+import { RULES as bridgeEscape } from "./rules_bridge_escape.js"; // ENV-02 (cycle0340): 溶岩足場脱出 p920〜922
 import { RULES as care } from "./rules_care.js";
 import { RULES as orders } from "./rules_orders.js";
 import { RULES as dimension } from "./rules_dimension.js";
@@ -31,7 +32,7 @@ import { RULES_BODY } from "./rules_body.js";
 // - orders は care の直後: 注文制約帯 p799 は care（800帯）の次に評価し、安全・ケアには必ず負け、通常行動には勝つ設計のため。
 // - human は fallback の直前: p103〜120 の「空気の層」は既定層 fallback の手前。
 // - equipment は farming の直後: 装備帯 p500〜557 は日常作業（農業・乗り物）より優先し、運搬・戦術・ケア・安全には必ず譲る設計のため。
-const LOAD_ORDER = [safety, emergency2, care, orders, dimension, mining, tactics, haul, inventory, vehicles, farming, equipment, orbitalLife, crafting, env, biome, villager, mood, social, bond, sleep, life, human, fallback];
+const LOAD_ORDER = [safety, emergency2, bridgeEscape, care, orders, dimension, mining, tactics, haul, inventory, vehicles, farming, equipment, orbitalLife, crafting, env, biome, villager, mood, social, bond, sleep, life, human, fallback];
 export const ALL_RULES = [];
 for (const part of LOAD_ORDER) for (const r of part) ALL_RULES.push(r);
 ALL_RULES.sort((a, b) => b.p - a.p); // Array.sort は安定ソート。同点は読み込み順を保持
