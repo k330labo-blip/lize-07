@@ -154,6 +154,8 @@ export function formatInspectSummaryLines(sum) {
       if (l3.length > 160) { parts3 = parts3.filter((s) => !s.startsWith("ヒット")); l3 = `§7（INSPECT反復（記録）: ${parts3.join(" / ")}）§r`; }
       if (l3.length > 160) l3 = l3.slice(0, 160);
       lines.push(l3);
+    }
+    { // cycle0320 F-1: skip breakdown must show even when fires===0 (was nested inside fires>0, dead condition)
       const fp = isObj(sum.firesByPlan) ? sum.firesByPlan : {};
       const skips = isObj(sum.bySkipWhy) ? Object.entries(sum.bySkipWhy).filter(([, n]) => typeof n === "number" && n > 0).sort((a, b) => (b[1] - a[1]) || (a[0] < b[0] ? -1 : 1)) : [];
       if (fires > 0 || skips.length) {

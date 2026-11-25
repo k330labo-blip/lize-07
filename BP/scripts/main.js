@@ -35,6 +35,7 @@ import { applyFlinchPitch, isFlinchActive, decideFlinch } from "./flinch_math.js
 import { applySummonScanYaw, isSummonScanActive, shouldSummonScan } from "./summon_scan_math.js";
 import { applyLookbackYaw, isLookbackActive, shouldLookback } from "./lookback_math.js"; // POLISH-ANIM-LOOKBACK-01 (cycle1153): 先行移動中に主人を一度だけ振り返る (表示層のみ)
 import { applySkyglancePitch, isSkyglanceActive, shouldSkyglance } from "./sky_glance_math.js";
+import { createHorizonState, noteHorizon, horizonCurrentOffset } from "./horizon_glance_math.js"; // POLISH-ANIM-HORIZONGLANCE-01 (cycle0320): dawn/dusk horizon glance (display only)
 import { applyDryoffYaw, isDryoffActive, noteDryoff as noteDryoffState } from "./dryoff_math.js"; // POLISH-ANIM-DRYOFF-01 (cycle1322): 雨上がりに水を払う (表示層のみ・実機確認待ち)
 import { noteBreathCold } from "./breath_cold_math.js"; // POLISH-FX-BREATHCOLD-01 (cycle1343): 寒冷地での白い排気 (表示層のみ・粒子ID未照合のため記録のみ・実機確認待ち)
 import { fromCraftResult } from "./actions_contract.js"; // 6-ML (cycle1322): CRAFT/SMELT 実行結果の正規化 (記録専用) // POLISH-ANIM-SKYGLANCE-01 (cycle1133): 雨の降り始めに空を見上げる (表示層のみ) // POLISH-ANIM-SUMMONSCAN-01 (cycle1110): 召喚・復元直後の見回し (表示層のみ)
@@ -127,11 +128,11 @@ const dps = (e, k, v) => { try { e.setDynamicProperty(k, v); } catch (err) { not
 // 失敗の可視化（v0.4.1）: 握り潰す代わりに記録する。本人の文脈（c.x.lastFail）と状態表示に戻し、
 // 開発中は [LIZE DEBUG] ログも残す（同じ失敗は初回3回＋20回ごとだけ出してログを埋めない）。
 const failStats = { total: 0, byWhere: {} };
-function noteFail(bot, where, err) {
+function noteFail(bot, where, err, opts) {
   failStats.total++; failStats.byWhere[where] = (failStats.byWhere[where] || 0) + 1;
   const msg = err && err.message ? String(err.message).slice(0, 120) : String(err || "");
   const r = bot ? bots.get(bot.id) : null;
-  if (r) { r.failCount = (r.failCount || 0) + 1; r.lastFail = { where, msg, at: Date.now() }; (r.failLog = r.failLog || []).push(r.lastFail); if (r.failLog.length > 20) r.failLog.shift(); try { r.trace?.recordFail({ where, msg }); } catch {} try { if (r.failAgg) recordNote(r.failAgg, where, msg, Date.now()); } catch {} try { if (r.expStore) { const er = buildExpFromNoteFail(where, msg, { at: Date.now(), pack: VERSION }); if (er) addExpRecord(r.expStore, er); } } catch {} } // 6-ML: fail軸の記録 (内部キーはモジュール側で落ちる)
+  if (r) { r.failCount = (r.failCount || 0) + 1; r.lastFail = { where, msg, at: Date.now() }; (r.failLog = r.failLog || []).push(r.lastFail); if (r.failLog.length > 20) r.failLog.shift(); try { r.trace?.recordFail({ where, msg }); } catch {} try { if (r.failAgg) recordNote(r.failAgg, where, msg, Date.now()); } catch {} try { if (r.expStore && !opts?.expDone) { const er = buildExpFromNoteFail(where, msg, { at: Date.now(), pack: VERSION }); if (er) addExpRecord(r.expStore, er); } } catch {} } // 6-ML: fail軸の記録 (内部キーはモジュール側で落ちる)
   if (LIZE_DEBUG) { const n = failStats.byWhere[where]; if (n <= 3 || n % 20 === 0) console.warn(`[LIZE DEBUG] v${VERSION} ${where} failed (${n}): ${msg}`); }
 }
 // Phase2 BTS記録 (v0.4.7): BREAK/TAKE/STORE の結果を契約形で r.last* へ記録する (記録のみ、挙動不変)。
@@ -151,7 +152,7 @@ function noteTakeFull(bot, r, key, typeId) { const now = Date.now(); if (r.takeF
 function noteTakeBan(r, entityId, typeId) { try { if (!r.takeBan) r.takeBan = createTakeBanState(); recordTakeBan(r.takeBan, entityId, typeId, Date.now()); } catch {} } // TR2136-01 (cycle2200): 記録専用 (noteFail は呼ばない＝失敗ログの二重計上をしない)
 function recordStore(r, kind, res) { try { const moved = res?.moved || 0; const failed = !!res?.failed; const partial = failed && moved > 0; // Phase2 STORE語彙是正 (v0.4.11, cycle-1001 a06 裁定): ok/reason は契約 REASONS のみ。空振りは失敗でなく ok+detail.empty、部分移送は ok+detail.partial、全滅は INVENTORY_FULL+detail.side:"target"。量と完全性は detail へ分離する
   r.lastStore = { act: "STORE", kind, ok: moved > 0 || !failed, reason: moved === 0 && failed ? "INVENTORY_FULL" : null, moved, partial, detail: { empty: moved === 0 && !failed, partial, side: moved === 0 && failed ? "target" : null }, at: Date.now() }; commitLastAction(r, r.lastStore); } catch {} }
-function recordWithdraw(bot, r, res) { try { const d = res?.detail || {}; r.lastWithdraw = { act: "WITHDRAW", ok: !!res?.ok, reason: res?.reason || null, taken: d.taken || 0, partial: !!d.partial, item: d.item || null, at: Date.now() }; commitLastAction(r, r.lastWithdraw); if (res && !res.ok && res.reason) noteFail(bot, "bts_withdraw:" + String(res.reason).toLowerCase(), new Error("withdraw failed: " + res.reason)); } catch {} }
+function recordWithdraw(bot, r, res) { try { const d = res?.detail || {}; r.lastWithdraw = { act: "WITHDRAW", ok: !!res?.ok, reason: res?.reason || null, taken: d.taken || 0, partial: !!d.partial, item: d.item || null, at: Date.now() }; commitLastAction(r, r.lastWithdraw); if (res && !res.ok && res.reason) noteFail(bot, "bts_withdraw:" + String(res.reason).toLowerCase(), new Error("withdraw failed: " + res.reason), {expDone: true}); } catch {} }
 const wdp = (k, fb) => { try { const v = world.getDynamicProperty(k); return v === undefined ? fb : v; } catch { return fb; } };
 const wdps = (k, v) => { try { world.setDynamicProperty(k, v); } catch {} };
 const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
@@ -490,6 +491,7 @@ function buildContext(bot, owner) {
   } catch {}
   noteFlinch(bot, r, flinchCand); // POLISH-ANIM-FLINCH-01 (cycle1051): 出現の辺でのみ発火 (表示層のみ)
   noteSkyglance(r, c.env.isRaining, c.danger && c.danger.count > 0); // POLISH-ANIM-SKYGLANCE-01 (cycle1133)
+  noteHorizonGlance(bot, r, c); // POLISH-ANIM-HORIZONGLANCE-01 (cycle0320)
   noteDryoff(r, c); // POLISH-ANIM-DRYOFF-01 (cycle1322)
   noteRainshelter(bot, dim, r, c); // POLISH-ANIM-RAINSHELTER-01 (cycle2231)
   noteLookback(r, c); // POLISH-ANIM-LOOKBACK-01 (cycle1153)
@@ -818,7 +820,7 @@ function execArrive(bot, owner, rule, ctx, scan) {
     let gunRange = 0; if (core) { try { const s = core.snapshot(); if (s.hasGun) gunRange = s.gunRange; } catch {} }
     if (hd < 3.2 || (gunRange > 0 && hd <= gunRange)) zapEntity(bot, r, scan.nearestHostile);
   }
-  if (act === "use_heal_item") { const core = equipCoreOf(bot, r); if (!core) { r.lastUseItem = { act, ok: false, reason: "EQUIP_CORE_UNAVAILABLE", item: null, at: Date.now() }; commitLastAction(r, r.lastUseItem); } else { try { const res = core.useHealItem(); r.lastUseItem = { act, ok: !!res?.ok, reason: res?.reason || null, item: res?.item || null, at: Date.now() }; commitLastAction(r, r.lastUseItem); /* POLISH-SND-EAT-01 (cycle0753) */ if (res?.ok) { try { sfxEat(bot.dimension, bot.location, res?.item || null); } catch {} } } catch (e) { r.lastUseItem = { act, ok: false, reason: "API_ERROR", item: null, at: Date.now() }; commitLastAction(r, r.lastUseItem); noteFail(bot, "use_heal_item:exception", e); } } } // Phase2 USE_ITEM 無言経路 S1/S2 (v0.4.13): 記録のみ、挙動不変
+  if (act === "use_heal_item") { const core = equipCoreOf(bot, r); if (!core) { r.lastUseItem = { act, ok: false, reason: "EQUIP_CORE_UNAVAILABLE", item: null, at: Date.now() }; commitLastAction(r, r.lastUseItem); } else { try { const res = core.useHealItem(); r.lastUseItem = { act, ok: !!res?.ok, reason: res?.reason || null, item: res?.item || null, at: Date.now() }; commitLastAction(r, r.lastUseItem); /* POLISH-SND-EAT-01 (cycle0753) */ if (res?.ok) { try { sfxEat(bot.dimension, bot.location, res?.item || null); } catch {} } } catch (e) { r.lastUseItem = { act, ok: false, reason: "API_ERROR", item: null, at: Date.now() }; commitLastAction(r, r.lastUseItem); noteFail(bot, "use_heal_item:exception", e, {expDone: true}); } } } // Phase2 USE_ITEM 無言経路 S1/S2 (v0.4.13): 記録のみ、挙動不変
   // Phase2 USE_ITEM 実体化 (milk先行): 幻影 act drink_milk を実体化。消費→有害効果(毒/衰弱)の対象除去→空バケツ返却→再読検証。
   // 対象除去に留め有益効果 (耐火等) は消さない (a03 DESIGN §2.8 裁定)。結果は r.lastUseItem へ契約形で記録し破棄しない。
   if (act === "drink_milk") {
@@ -837,7 +839,7 @@ function execArrive(bot, owner, rule, ctx, scan) {
       if (!bucketReturned && !bucketDropped) noteFail(bot, "drink_milk:bucket_lost", new Error("empty bucket return failed"));
       let still = false; try { still = !!(bot.getEffect?.("poison") || bot.getEffect?.("wither")); } catch {}
       r.lastUseItem = { act, ok: !still, reason: still ? "VERIFY_FAILED" : null, item: "minecraft:milk_bucket", cleared: removed, bucketReturned, bucketDropped, at: now }; commitLastAction(r, r.lastUseItem);
-      if (still) noteFail(bot, "drink_milk:verify", new Error("effects remain after milk"));
+      if (still) noteFail(bot, "drink_milk:verify", new Error("effects remain after milk"), {expDone: true});
     }
   }
   // drink_fire_res: ポーション種別は typeId から識別不能のため消費しない (契約 POTION_KIND_UNKNOWN)。幻影の成功扱いはしない。
@@ -1097,7 +1099,7 @@ function tickWork(bot, owner, r, ctx) {
   w.left--;
   try { if (!r.sfxState) r.sfxState = createSfxState(); sfxDigHit(r.sfxState, bot.dimension, { x: w.loc.x + 0.5, y: w.loc.y + 0.5, z: w.loc.z + 0.5 }, w.typeId, Date.now()); } catch {} // 要望バッチF: 素材別の掘削音 (hit.*)
   if (w.left > 0) return true;
-  try { b.setType("minecraft:air"); } catch (err) { r.lastBreak = { act: "BREAK", ok: false, reason: "SET_FAILED", item: w.typeId, at: Date.now() }; commitLastAction(r, r.lastBreak); noteFail(bot, "bts_break:set_failed", err); r.work = null; return false; } // RSN-04: 例外を成功形にしない (v0.4.7)
+  try { b.setType("minecraft:air"); } catch (err) { r.lastBreak = { act: "BREAK", ok: false, reason: "SET_FAILED", item: w.typeId, at: Date.now() }; commitLastAction(r, r.lastBreak); noteFail(bot, "bts_break:set_failed", err, {expDone: true}); r.work = null; return false; } // RSN-04: 例外を成功形にしない (v0.4.7)
   clearStashFor(r, w.loc, w.typeId); // A06-03 (cycle0224): 完了セルの退避は使い切る
   try { sfxDigBreak(bot.dimension, { x: w.loc.x + 0.5, y: w.loc.y + 0.5, z: w.loc.z + 0.5 }, w.typeId); } catch {} // 要望バッチF: 素材別の破壊音
   let gain = CROP_DROPS[w.typeId] || null;
@@ -1134,7 +1136,7 @@ function wanderTo(r, bot, owner) {
 function placeTorch(bot, r, ctx) {
   // cycle2117 torchfix: silent return を廃止し全不成立を理由つきで記録する (同一理由は5秒間引きで連発を防ぐ)
   const fail = (reason, err) => {
-    try { if (!(r.lastPlace && r.lastPlace.reason === reason && Date.now() - (r.lastPlace.at || 0) < 5000)) { r.lastPlace = { act: "PLACE", mode: "torch", ok: false, reason, item: "minecraft:torch", at: Date.now() }; commitLastAction(r, r.lastPlace); if (err) noteFail(bot, "place:torch_" + reason.toLowerCase(), err); } } catch {}
+    try { if (!(r.lastPlace && r.lastPlace.reason === reason && Date.now() - (r.lastPlace.at || 0) < 5000)) { r.lastPlace = { act: "PLACE", mode: "torch", ok: false, reason, item: "minecraft:torch", at: Date.now() }; commitLastAction(r, r.lastPlace); if (err) noteFail(bot, "place:torch_" + reason.toLowerCase(), err, {expDone: true}); } } catch {}
     return false;
   };
   if (!((ctx.x?.lightLevel ?? 15) <= 7)) return fail("NOT_DARK");
@@ -1155,7 +1157,7 @@ function placeTorch(bot, r, ctx) {
     // Phase2 PLACE統一 (v0.4.9): station と同型に、消費後の設置失敗で松明を消失させない (ロールバック)
     try { const bc = invOf(bot); let rest = 1; if (bc) rest = addTo(bc, "minecraft:torch", 1); if (rest > 0) bot.dimension.spawnItem(new ItemStack("minecraft:torch", rest), bot.location); } catch {}
     try { r.lastPlace = { act: "PLACE", mode: "torch", ok: false, reason: "SET_FAILED", item: "minecraft:torch", at: Date.now() }; commitLastAction(r, r.lastPlace); } catch {}
-    noteFail(bot, "place:torch_set_failed", err);
+    noteFail(bot, "place:torch_set_failed", err, {expDone: true});
   }
 }
 function tickAutonomy(bot, owner, ctx, effMove) {
@@ -1195,7 +1197,7 @@ function tickAutonomy(bot, owner, ctx, effMove) {
         // 記録は execArrive use_heal_item と同一形式。act は互換のため "use_heal_item" を保ち、出自は via で区別する。
         const core = equipCoreOf(bot, r);
         if (!core) { r.lastUseItem = { act: "use_heal_item", ok: false, reason: "EQUIP_CORE_UNAVAILABLE", item: null, at: Date.now(), via: "rest_recover" }; commitLastAction(r, r.lastUseItem); }
-        else { try { const res = core.useHealItem(); if (res?.reason !== "eating") { r.lastUseItem = { act: "use_heal_item", ok: !!res?.ok, reason: res?.reason || null, item: res?.item || null, at: Date.now(), via: "rest_recover" }; commitLastAction(r, r.lastUseItem); if (res?.ok) { try { sfxEat(bot.dimension, bot.location, res?.item || null); } catch {} } } } catch (e) { r.lastUseItem = { act: "use_heal_item", ok: false, reason: "API_ERROR", item: null, at: Date.now(), via: "rest_recover" }; commitLastAction(r, r.lastUseItem); noteFail(bot, "use_heal_item:exception", e); } }
+        else { try { const res = core.useHealItem(); if (res?.reason !== "eating") { r.lastUseItem = { act: "use_heal_item", ok: !!res?.ok, reason: res?.reason || null, item: res?.item || null, at: Date.now(), via: "rest_recover" }; commitLastAction(r, r.lastUseItem); if (res?.ok) { try { sfxEat(bot.dimension, bot.location, res?.item || null); } catch {} } } } catch (e) { r.lastUseItem = { act: "use_heal_item", ok: false, reason: "API_ERROR", item: null, at: Date.now(), via: "rest_recover" }; commitLastAction(r, r.lastUseItem); noteFail(bot, "use_heal_item:exception", e, {expDone: true}); } }
         break;
       }
       r.target = { ...h };
@@ -2360,7 +2362,7 @@ function ensureStation(bot, r, leg) {
         // Phase2 PLACE (v0.4.8): 消費後の設置失敗でアイテムを消失させない (ロールバック: インベントリへ戻し、満杯なら足元へ)
         try { const bc = invOf(bot); let rest = 1; if (bc) rest = addTo(bc, need, 1); if (rest > 0) bot.dimension.spawnItem(new ItemStack(need, rest), bot.location); } catch {}
         try { r.lastPlace = { act: "PLACE", mode: "station", ok: false, reason: "SET_FAILED", item: need, at: Date.now() }; commitLastAction(r, r.lastPlace); } catch {}
-        noteFail(bot, "place:set_failed", err);
+        noteFail(bot, "place:set_failed", err, {expDone: true});
         return false;
       }
     }
@@ -2480,7 +2482,7 @@ function tickBranchMine(bot, owner, r, ctx) {
       if (!r.branchUnknownLeg || r.branchUnknownLeg.key !== key) r.branchUnknownLeg = { key, totalMs: 0, lastAt: now, count: cnt, noted: false };
       const bu = r.branchUnknownLeg;
       if (cnt > (bu.count || 0)) { bu.totalMs = 0; bu.count = cnt; } // 進捗があれば累計を消す
-      if (bu.lastAt && now - bu.lastAt < 2000) bu.totalMs += now - bu.lastAt;
+      if (bu.lastAt && now > bu.lastAt) bu.totalMs += Math.min(now - bu.lastAt, 2000); // cycle0320-a13: cap-add (was discard >=2000ms, 30s cutoff unreachable)
       bu.lastAt = now;
       if (!bu.noted) { bu.noted = true; noteFail(bot, "branchmine:unknown", new Error(key)); }
       if (bu.totalMs > 30000) { noteFail(bot, "branchmine:unknown_exhausted", new Error(key)); r.branchUnknownLeg = null; r.mineLeg = null; r.spiral = null; }
@@ -2519,7 +2521,7 @@ function tickBranchMine(bot, owner, r, ctx) {
       if (!r.branchGateLeg || r.branchGateLeg.key !== key) r.branchGateLeg = { key, totalMs: 0, lastAt: now, count: cnt, noted: false };
       const bg = r.branchGateLeg;
       if (cnt > (bg.count || 0)) { bg.totalMs = 0; bg.count = cnt; }
-      if (bg.lastAt && now - bg.lastAt < 2000) bg.totalMs += now - bg.lastAt;
+      if (bg.lastAt && now > bg.lastAt) bg.totalMs += Math.min(now - bg.lastAt, 2000); // cycle0320-a13: cap-add (same as holdHeld)
       bg.lastAt = now;
       if (!bg.noted) { bg.noted = true; noteFail(bot, "branchmine:gate_hold", new Error(key)); }
       if (bg.totalMs > 30000) { noteFail(bot, "branchmine:gate_hold_exhausted", new Error(key)); r.branchGateLeg = null; r.mineLeg = null; r.spiral = null; }
@@ -3019,6 +3021,15 @@ function noteSkyglance(r, raining, danger) {
     if (shouldSkyglance({ wasRaining: was, isRaining: raining === true, danger: danger === true, hasWorkTarget: !!r.work, flinchActive: isFlinchActive(r.flinchAnimAt, Date.now()), inspectActive: isInspectActive(r.inspectAnimAt, Date.now()), nodActive: isNodActive(r.nodAnimAt, Date.now()), lastFiredAtMs: r.skyglanceLastAt ?? null, nowMs: Date.now() })) { r.skyglanceAt = Date.now(); r.skyglanceLastAt = r.skyglanceAt; }
   } catch {}
 }
+function noteHorizonGlance(bot, r, c) {
+  try {
+    if (!r) return;
+    if (!r.horizonState) r.horizonState = createHorizonState();
+    const phase = c?.env?.isDawn ? "dawn" : c?.env?.isDusk ? "dusk" : c?.env?.isNight ? "night" : "day";
+    const ev = noteHorizon(r.horizonState, { phase, nowMs: Date.now(), danger: !!((c?.danger?.count ?? 0) > 0), hasWorkTarget: !!r.work, falling: r.selfFalling === true, inWater: !!bot.isInWater, skyVisible: undefined });
+    if (ev?.fired) r.lastHorizonGlance = { at: Date.now(), band: phase };
+  } catch {}
+}
 function execSideTask(bot, owner, r, ctx, scan) {
   const t = r.sideTask; if (!t) return;
   try { noteAttempt(r.sideState, t, Date.now()); } catch {}
@@ -3396,7 +3407,7 @@ function tickBuild(bot, owner, r, ctx) {
       const skey = bp.idx + ":" + pos.x + "," + pos.y + "," + pos.z;
       if (r.buildStallKey !== skey) { r.buildStallKey = skey; r.buildStallSince = Date.now(); r.buildStallBest = cellDist; }
       else if (r.buildStallBest == null || cellDist < r.buildStallBest - 0.5) { r.buildStallBest = cellDist; r.buildStallSince = Date.now(); }
-      else if (Date.now() - (r.buildStallSince || 0) > 45000) { bp.skipped.push({ item, reason: "OUT_OF_RANGE", pos }); try { r.lastPlace = { act: "PLACE", mode: "build", ok: false, reason: "OUT_OF_RANGE", item, at: Date.now() }; commitLastAction(r, r.lastPlace); } catch {} noteFail(bot, "place:build_unreachable", new Error("build cell unreachable")); bp.idx++; r.buildStallKey = null; r.buildStallBest = null; }
+      else if (Date.now() - (r.buildStallSince || 0) > 45000) { bp.skipped.push({ item, reason: "OUT_OF_RANGE", pos }); try { r.lastPlace = { act: "PLACE", mode: "build", ok: false, reason: "OUT_OF_RANGE", item, at: Date.now() }; commitLastAction(r, r.lastPlace); } catch {} noteFail(bot, "place:build_unreachable", new Error("build cell unreachable"), {expDone: true}); bp.idx++; r.buildStallKey = null; r.buildStallBest = null; }
       return true;
     }
     r.buildStallKey = null; r.buildStallBest = null;
@@ -3410,7 +3421,7 @@ function tickBuild(bot, owner, r, ctx) {
       // Phase2 PLACE build: station/torch と同型に、消費後の設置失敗で材料を消失させない (ロールバック)
       try { const bc = invOf(bot); let rest = 1; if (bc) rest = addTo(bc, item, 1); if (rest > 0) bot.dimension.spawnItem(new ItemStack(item, rest), bot.location); } catch {}
       try { r.lastPlace = { act: "PLACE", mode: "build", ok: false, reason: "SET_FAILED", item, at: Date.now() }; commitLastAction(r, r.lastPlace); } catch {}
-      noteFail(bot, "place:build_set_failed", err);
+      noteFail(bot, "place:build_set_failed", err, {expDone: true});
       bp.skipped.push({ item, reason: "SET_FAILED", pos });
       bp.idx++;
       return true;
@@ -3660,6 +3671,7 @@ function applyGaze(bot, owner, ctx, scan) {
     if (rot && r.routecheckState) { try { const rc2 = sampleRoutecheck(r.routecheckState, Date.now()); if (rc2.active) rot = { ...rot, x: rot.x + rc2.gazePitchDeg }; } catch {} } // POLISH-ANIM-ROUTECHECK-01 (cycle0117): 重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot && r.yieldState) { try { const ys = sampleYield(r.yieldState, Date.now()); if (ys.active) rot = { ...rot, y: rot.y + ys.yawDeg, x: rot.x + ys.gazePitchDeg }; } catch {} } // POLISH-ANIM-YIELD-01 (cycle0153): 重畳の最下位 (表示層のみ・実機確認待ち。lateralOffset は実座標へ流さない)
     if (rot && r.combatendState) { try { const ce = sampleCombatEnd(r.combatendState, Date.now()); if (ce.active) { rot = { ...rot, x: rot.x + ce.pitchDeg }; r.lastCombatEnd = { ...(r.lastCombatEnd || {}), armPitchDeg: ce.armPitchDeg }; } } catch {} } // POLISH-ANIM-COMBATEND-01 (cycle0224): 重畳の最下位 (表示層のみ・実機確認待ち。腕ピッチは記録のみ)
+    if (rot && r.horizonState) { try { const ho = horizonCurrentOffset(r.horizonState, Date.now(), rot.y, null); if (ho.active) rot = { ...rot, x: rot.x + ho.pitchDeg }; } catch {} } // POLISH-ANIM-HORIZONGLANCE-01 (cycle0320): pitch-only stage1 (sun yaw unverified), lowest overlay (display only, real-machine check pending)
     if (rot) { try { bot.setRotation(rot); } catch {} }
   }
   if (gz.say && Math.random() < 0.4) sayAmbient(owner, bot, gz.say);
