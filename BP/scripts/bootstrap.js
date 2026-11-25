@@ -194,24 +194,28 @@ export function normalizePlankSteps(steps, invCounts) {
     const first = work[firstIdx];
     const craftsOf = (s) => s.crafts || Math.ceil((s.count || 0) / 4);
     // 合体: 2件目以降の板材 craft を除去し、その直前の原木 gather を同量だけ減らす
+    // cycle0141 P1: 削除対象は添字でなくオブジェクト参照で保持する。旧形は補償 gather の
+    // splice 挿入で添字が +1 ずれ、古い添字のまま削除して作業台 craft や精錬工程を
+    // 誤って消していた (cycle0117-a20 実測: 47件で非板材工程が消失)。
     if (idxs.length > 1) {
       let total = craftsOf(first);
       let removedLogs = 0;
-      const drop = new Set();
+      const dropObjs = new Set();
       for (const i of idxs.slice(1)) {
         const c = craftsOf(work[i]); total += c;
-        drop.add(i);
+        dropObjs.add(work[i]);
         const g = work[i - 1];
-        if (g && g.type === "gather" && g.item === "group:logs") { g.count -= c; removedLogs += c; if (g.count <= 0) drop.add(i - 1); }
-      }
-      // 除去した craft が使っていた原木は、合体先の craft が必要とする分として最初の gather へ寄せる
-      if (removedLogs > 0) {
-        const fg = work[firstIdx - 1];
-        if (fg && fg.type === "gather" && fg.item === "group:logs") fg.count += removedLogs;
-        else work.splice(firstIdx, 0, { type: "gather", item: "group:logs", count: removedLogs, from: "minecraft:oak_log", note: "板材の原料。素手で集められる" });
+        if (g && g.type === "gather" && g.item === "group:logs" && !dropObjs.has(g)) { g.count -= c; removedLogs += c; if (g.count <= 0) dropObjs.add(g); }
       }
       first.crafts = total; first.count = total * 4; first.needs = { ...(first.needs || {}), "group:logs": total };
-      for (let i = work.length - 1; i >= 0; i--) if (drop.has(i)) work.splice(i, 1);
+      // 参照で削除してから、合体先の位置を再取得して補償 gather を挿入する
+      for (let i = work.length - 1; i >= 0; i--) if (dropObjs.has(work[i])) work.splice(i, 1);
+      if (removedLogs > 0) {
+        const fi2 = work.indexOf(first);
+        const fg = fi2 > 0 ? work[fi2 - 1] : null;
+        if (fg && fg.type === "gather" && fg.item === "group:logs") fg.count += removedLogs;
+        else if (fi2 >= 0) work.splice(fi2, 0, { type: "gather", item: "group:logs", count: removedLogs, from: "minecraft:oak_log", note: "板材の原料。素手で集められる" });
+      }
     }
     // トップアップ: 逐次 replay の板材不足を最初の craft へ寄せる (原木 gather も同数増やす/無ければ挿入)
     const short = replayShortage(work, invCounts);

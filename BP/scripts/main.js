@@ -69,6 +69,7 @@ import { createIdleState, noteIdle, sampleIdle } from "./idle_math.js"; // POLIS
 import { createLookLeadState, tickLookLead } from "./looklead_math.js"; // POLISH-ANIM-LOOKLEAD-01 (cycle2036): 作業対象への視線の先行 (表示層のみ・実機確認待ち)
 import { applySettlePitch, isSettleActive, shouldSettle } from "./settle_math.js"; // POLISH-ANIM-SETTLE-01 (cycle2058): 掘削完了直後の小さな確認視線 (表示層のみ・実機確認待ち)
 import { applyPlacesettlePitch, isPlacesettleActive, shouldPlacesettle } from "./placesettle_math.js"; // POLISH-ANIM-PLACESETTLE-01 (cycle2248): 設置完了直後の小さな確認視線 (表示層のみ・実機確認待ち)
+import { applyCraftsettlePitch, isCraftsettleActive, shouldCraftsettle } from "./craftsettle_math.js"; // POLISH-ANIM-CRAFTSETTLE-01 (cycle0141): 製作/精錬完了直後の小さな確認視線 (表示層のみ・実機確認待ち)
 import { collectInvDurability } from "./inv_durability.js"; // cycle2311: 耐久予備ポリシーへの invDurability 供給者
 import { createSwapSoundState, noteHeldItem } from "./swap_sound_math.js"; // POLISH-FX-SWAP-01 (cycle2311): 持ち替え音の発火決定 (記録のみ・実機確認待ち)
 import { createOwnerReturnState, noteOwnerReturn, ownerReturnOffset } from "./ownerreturn_math.js"; // POLISH-ANIM-OWNERRETURN-01 (cycle1923): 帰還の気付き (表示層のみ・実機確認待ち) // POLISH-ANIM-PARTNERCHECK-01 (cycle1850): 主人被弾の辺で無事確認の視線 (表示層のみ・実機確認待ち)
@@ -3602,6 +3603,9 @@ function applyGaze(bot, owner, ctx, scan) {
     // POLISH-ANIM-PLACESETTLE-01 feeder (cycle2248): lastAction の PLACE 成功 (seq変化) の辺でのみ発火記録 (表示層のみ・実機確認待ち)
     try { const la = r.lastAction; if (la && la.act === "PLACE" && la.ok && la.seq !== r.placesettleSeenSeq) { r.placesettleSeenSeq = la.seq; if (shouldPlacesettle({ placed: true, suppressed: ((ctx?.danger?.count ?? 0) > 0) || r.selfFalling === true || !!bot.isInWater, lastFiredMs: r.placesettleLastAt ?? null, nowMs: Date.now() })) { r.placesettleAnimAt = la.at || Date.now(); r.placesettleLastAt = r.placesettleAnimAt; r.lastPlacesettle = { at: r.placesettleAnimAt, item: la.item || null }; } } } catch {}
     if (rot && isPlacesettleActive(r.placesettleAnimAt, Date.now())) rot = { ...rot, x: applyPlacesettlePitch(rot.x, Date.now() - r.placesettleAnimAt) }; // POLISH-ANIM-PLACESETTLE-01 (cycle2248): 重畳 (表示層のみ・実機確認待ち)
+    // POLISH-ANIM-CRAFTSETTLE-01 feeder (cycle0141): lastAction の CRAFT/SMELT 成功 (seq変化) の辺でのみ発火記録 (表示層のみ・実機確認待ち)
+    try { const la = r.lastAction; if (la && (la.act === "CRAFT" || la.act === "SMELT") && la.ok && la.seq !== r.craftsettleSeenSeq) { r.craftsettleSeenSeq = la.seq; if (shouldCraftsettle({ crafted: true, suppressed: ((ctx?.danger?.count ?? 0) > 0) || r.selfFalling === true || !!bot.isInWater, lastFiredMs: r.craftsettleLastAt ?? null, nowMs: Date.now() })) { r.craftsettleAnimAt = la.at || Date.now(); r.craftsettleLastAt = r.craftsettleAnimAt; r.lastCraftsettle = { at: r.craftsettleAnimAt, item: la.item || null, act: la.act }; } } } catch {}
+    if (rot && isCraftsettleActive(r.craftsettleAnimAt, Date.now())) rot = { ...rot, x: applyCraftsettlePitch(rot.x, Date.now() - r.craftsettleAnimAt) }; // POLISH-ANIM-CRAFTSETTLE-01 (cycle0141): 重畳 (表示層のみ・実機確認待ち)
     if (rot && r.snowtreadState) { try { const so = snowtreadCurrentOffset(r.snowtreadState); if (so.active) rot = { ...rot, x: applySnowtreadPitch(rot.x, r.snowtreadState.phase) }; } catch {} } // POLISH-ANIM-SNOWTREAD-01 (cycle2333): 重畳 (表示層のみ・実機確認待ち)
     if (rot && isFlinchActive(r.flinchAnimAt, Date.now())) rot = { ...rot, x: applyFlinchPitch(rot.x, Date.now() - r.flinchAnimAt) }; // POLISH-ANIM-FLINCH-01 (cycle1051)
     // POLISH-ANIM-ENDERAVERT-01 (cycle1940): feeder は既存走査 scan.hostiles から最寄りエンダーマンを取る (新規走査なし)。重畳は FLINCH の直下 (表示層のみ・実機確認待ち)
