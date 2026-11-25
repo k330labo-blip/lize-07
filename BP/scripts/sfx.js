@@ -109,6 +109,7 @@ const GLASSLIKE_IDS = new Set(["glowstone", "redstone_lamp", "lit_redstone_lamp"
 
 // cycle0922 (a05): 植物集合。作物茎・コケ絨毯もここで grass に確定させ、_stem/_carpet の先取り誤分類を解消する
 const PLANT_IDS = new Set([
+  "reeds", "kelp_plant", "tall_seagrass", "azalea_leaves_flowered", // cycle0522 (a13): 植物別名の grass 是正
   "poppy", "dandelion", "red_tulip", "orange_tulip", "white_tulip", "pink_tulip",
   "blue_orchid", "allium", "azure_bluet", "oxeye_daisy", "cornflower", "lily_of_the_valley", "wither_rose",
   "sunflower", "lilac", "rose_bush", "peony", "pink_petals", "wildflowers", "leaf_litter", "spore_blossom",
@@ -129,12 +130,13 @@ const WOODWORK_IDS = new Set([
   "chest", "trapped_chest", "barrel", "bookshelf", "chiseled_bookshelf", "crafting_table",
   "cartography_table", "fletching_table", "loom", "lectern", "note_block", "jukebox",
   "composter", "ladder", "campfire", "soul_campfire", "beehive", "bee_nest", "scaffolding", "creaking_heart",
+  "sign", "wall_sign", "hanging_sign", "wall_hanging_sign", "wooden_button", "wooden_pressure_plate", "shelf", "wooden_slab", // cycle0522 (a13): 無樹種・旧式形の wood 是正
   "armor_stand", "item_frame", "glow_item_frame", "smithing_table", "jack_o_lantern",
 ]);
 // cycle0922 (a05): 樹種×部品の直積 (素朴なサフィックス追加は stone_stairs を巻き込むため直積必須)
 const WOOD_SPECIES = ["oak", "spruce", "birch", "jungle", "acacia", "dark_oak", "mangrove", "cherry", "pale_oak", "bamboo"];
 const NETHER_SPECIES = ["crimson", "warped"];
-const WOOD_PARTS = ["_stairs", "_slab", "_sign", "_hanging_sign", "_wall_sign", "_wall_hanging_sign", "_button", "_pressure_plate", "_fence_gate", "_door", "_trapdoor", "_fence", "_shelf"]; // POLISH-SND-CLASS-SHELF-01 (cycle0224): 木製棚 *_shelf を wood へ (crimson/warped は stem 判定が先行)
+const WOOD_PARTS = ["_stairs", "_slab", "_double_slab", "_sign", "_standing_sign", "_hanging_sign", "_wall_sign", "_wall_hanging_sign", "_button", "_pressure_plate", "_fence_gate", "_door", "_trapdoor", "_fence", "_shelf"]; // cycle0522 (a13): *_standing_sign / *_double_slab の直積漏れ是正 (petrified_oak_slab は stone のまま=負ガード) // POLISH-SND-CLASS-SHELF-01 (cycle0224): 木製棚 *_shelf を wood へ (crimson/warped は stem 判定が先行)
 const speciesPart = (species, id) => species.some((s) => WOOD_PARTS.some((p) => id === s + p));
 
 export function materialOfTypeId(typeId) {

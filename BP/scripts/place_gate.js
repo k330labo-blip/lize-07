@@ -1,4 +1,4 @@
-// place_gate.js — PLACE-GATE-01 設置側到達可能性ゲートの純粋核 (cycle0320 統合: 段1。呼び出し側配線は段2/段3で、B320-01 のため build 配線はブループリント順是正と同版で行う)
+// place_gate.js — PLACE-GATE-01 設置側到達可能性ゲートの純粋核 (cycle0320 段1統合、cycle0522 段2で tickBuild (build) 配線済み。station/torch は段3)
 //
 // 正とする設計:
 //   brain_parts/solutions/cycle2200-a16-placegate/DESIGN.md (§2 規則 / §3 モジュール仕様)

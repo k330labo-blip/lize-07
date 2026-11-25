@@ -28,6 +28,7 @@ import { parseOrder, resumeClarifyOrder, classifyClarifyUnmatched } from "./orde
 import { isCropMature, CROP_MATURITY_MAX, isCropBlock, cropBreakGate } from "./crop_maturity.js";
 import { resolveWorkAccess, ACCESS } from "./work_access.js"; // 基礎 遮蔽除去 (v0.4.76): 作業アクセス解決の純粋核
 import { evaluateDig } from "./dig_gate.js"; // 要望バッチA (v0.4.88): 掘削の統一ゲート
+import { evaluatePlace, placeHoldRecord } from "./place_gate.js"; // PLACE-GATE段2 (cycle0522): 設置側ゲート (build配線のみ、station/torchは段3)
 import { gazeRotation } from "./gaze_math.js"; // POLISH-ANIM-LOOK-01 (cycle0821): 視線ピッチ連動の純粋計算
 import { applyInspectPitch, isInspectActive, shouldInspect } from "./inspect_math.js"; // POLISH-ANIM-INSPECT-01 (cycle1003): 依頼品入手時の検分 (表示層のみ)
 import { applyNodPitch, isNodActive, shouldNod } from "./nod_math.js";
@@ -82,7 +83,8 @@ import { applyPlacesettlePitch, isPlacesettleActive, shouldPlacesettle } from ".
 import { applyCraftsettlePitch, isCraftsettleActive, shouldCraftsettle } from "./craftsettle_math.js"; // POLISH-ANIM-CRAFTSETTLE-01 (cycle0141): 製作/精錬完了直後の小さな確認視線 (表示層のみ・実機確認待ち)
 import { createDeliverGuardState, noteDeliverOutcome, isDeliverCooling } from "./deliver_guard_math.js"; // A18-TR-01 (cycle0446): planner deliver_to_owner 満杯失敗の出口 (連続全滅3回で60秒冷却し他 goal へ譲る)
 import { applyDeliverBowPitch, isDeliverBowActive, shouldDeliverBow } from "./deliverbow_math.js"; // POLISH-ANIM-DELIVERBOW-01 (cycle0446): 手渡し成功直後の小さな会釈 (表示層のみ・実機確認待ち)
-import { applyStoresettlePitch, isStoresettleActive, shouldStoresettle } from "./storesettle_math.js"; // POLISH-ANIM-STORESETTLE-01 (cycle0505): 格納成功直後の小さな収納の仕草 (表示層のみ・実機確認待ち)
+import { applyStoresettlePitch, isStoresettleActive, shouldStoresettle } from "./storesettle_math.js";
+import { createStowState, noteStowWork, noteStowTick, applyStowPitch, isStowActive, STOW_MAX_ARM_DEG } from "./stow_math.js"; // POLISH-ANIM-STOW-01 (cycle0522): 作業セッション終了時の道具をしまう仕草 (表示層のみ・実機確認待ち) // POLISH-ANIM-STORESETTLE-01 (cycle0505): 格納成功直後の小さな収納の仕草 (表示層のみ・実機確認待ち)
 import { collectInvDurability } from "./inv_durability.js"; // cycle2311: 耐久予備ポリシーへの invDurability 供給者
 import { createSwapSoundState, noteHeldItem } from "./swap_sound_math.js"; // POLISH-FX-SWAP-01 (cycle2311): 持ち替え音の発火決定 (記録のみ・実機確認待ち)
 import { createOwnerReturnState, noteOwnerReturn, ownerReturnOffset } from "./ownerreturn_math.js"; // POLISH-ANIM-OWNERRETURN-01 (cycle1923): 帰還の気付き (表示層のみ・実機確認待ち) // POLISH-ANIM-PARTNERCHECK-01 (cycle1850): 主人被弾の辺で無事確認の視線 (表示層のみ・実機確認待ち)
@@ -3529,6 +3531,9 @@ function tickBuild(bot, owner, r, ctx) {
       return true;
     }
     r.buildStallKey = null; r.buildStallBest = null;
+    // PLACE-GATE段2 (cycle0522): 消費直前の設置ゲート (build のみ)。非placeは消費せず・setTypeせず・idxも進めない。出口は既存の300秒無進捗終端が担う
+    { let gate = null; try { gate = evaluatePlace(digBlockAt(bot), { x: bot.location.x, y: bot.location.y + 1.6, z: bot.location.z }, pos, { reach: WORK_REACH, feetCell: { x: Math.floor(bot.location.x), y: Math.floor(bot.location.y), z: Math.floor(bot.location.z) }, selfCells: bodyCells(bot.location), ownerCells: bodyCells(owner.location), itemSolid: solidOfTypeId(item), via: "build" }); } catch { gate = { action: "hold", why: "gate_error" }; }
+      if (!gate || gate.action !== "place") { try { r.lastPlaceHold = placeHoldRecord(gate || { action: "hold", why: "gate_error" }, { via: "build", at: Date.now() }); r.lastPlace = { act: "PLACE", mode: "build", ok: false, reason: "OUT_OF_RANGE", item, at: Date.now() }; commitLastAction(r, r.lastPlace); } catch {} return true; } }
     if (!takeFromInv(bot, item, 1)) { try { r.lastPlace = { act: "PLACE", mode: "build", ok: false, reason: "NO_MATERIAL", item, at: Date.now() }; commitLastAction(r, r.lastPlace); } catch {} bp.skipped.push({ item, reason: "NO_MATERIAL", pos }); bp.idx++; return true; }
     try {
       cur.setType(item);
@@ -3766,6 +3771,9 @@ function applyGaze(bot, owner, ctx, scan) {
     // POLISH-ANIM-STORESETTLE-01 feeder (cycle0505): lastAction の STORE 成功 (seq変化) の辺でのみ発火記録 (表示層のみ・実機確認待ち)
     try { const la = r.lastAction; if (la && la.act === "STORE" && la.ok && la.seq !== r.storesettleSeenSeq) { r.storesettleSeenSeq = la.seq; if (shouldStoresettle({ stored: true, suppressed: ((ctx?.danger?.count ?? 0) > 0) || r.selfFalling === true || !!bot.isInWater, lastFiredMs: r.storesettleLastAt ?? null, nowMs: Date.now() })) { r.storesettleAnimAt = la.at || Date.now(); r.storesettleLastAt = r.storesettleAnimAt; r.lastStoresettle = { at: r.storesettleAnimAt, item: la.item || null }; } } } catch {}
     if (rot && isStoresettleActive(r.storesettleAnimAt, Date.now())) rot = { ...rot, x: applyStoresettlePitch(rot.x, Date.now() - r.storesettleAnimAt) }; // POLISH-ANIM-STORESETTLE-01 (cycle0505): 重畳 (表示層のみ・実機確認待ち)
+    // POLISH-ANIM-STOW-01 feeder (cycle0522): 作業セッション (BREAK/PLACE/CRAFT/SMELT成功の連なり) の終了の辺でのみ発火 (表示層のみ・実機確認待ち。腕は記録のみ)
+    try { if (!r.stowState) r.stowState = createStowState(); const la = r.lastAction; if (la && la.ok && la.seq !== r.stowSeenSeq) { r.stowSeenSeq = la.seq; r.stowState = noteStowWork(r.stowState, { nowMs: la.at || Date.now(), kind: la.act, success: true }); } const supS = ((ctx?.danger?.count ?? 0) > 0) || r.selfFalling === true || !!bot.isInWater; const ovS = isSettleActive(r.settleAnimAt, Date.now()) || isPlacesettleActive(r.placesettleAnimAt, Date.now()) || isCraftsettleActive(r.craftsettleAnimAt, Date.now()) || isStoresettleActive(r.storesettleAnimAt, Date.now()); const tk = noteStowTick(r.stowState, { nowMs: Date.now(), workActive: !!(r.work || r.buildPlan || r.mission), suppressed: supS, overlayActive: ovS, toolTypeId: null }); r.stowState = tk.state; if (tk.fired) { r.stowAnimAt = Date.now(); r.lastStow = { atMs: r.stowAnimAt, toolTypeId: tk.toolTypeId, armPitchDeg: STOW_MAX_ARM_DEG }; } } catch {}
+    if (rot && isStowActive(r.stowAnimAt, Date.now())) rot = { ...rot, x: applyStowPitch(rot.x, Date.now() - r.stowAnimAt) }; // POLISH-ANIM-STOW-01 (cycle0522): 重畳は最下位 (表示層のみ・実機確認待ち)
     if (rot && r.snowtreadState) { try { const so = snowtreadCurrentOffset(r.snowtreadState); if (so.active) rot = { ...rot, x: applySnowtreadPitch(rot.x, r.snowtreadState.phase) }; } catch {} } // POLISH-ANIM-SNOWTREAD-01 (cycle2333): 重畳 (表示層のみ・実機確認待ち)
     if (rot && isFlinchActive(r.flinchAnimAt, Date.now())) rot = { ...rot, x: applyFlinchPitch(rot.x, Date.now() - r.flinchAnimAt) }; // POLISH-ANIM-FLINCH-01 (cycle1051)
     // POLISH-ANIM-ENDERAVERT-01 (cycle1940): feeder は既存走査 scan.hostiles から最寄りエンダーマンを取る (新規走査なし)。重畳は FLINCH の直下 (表示層のみ・実機確認待ち)
