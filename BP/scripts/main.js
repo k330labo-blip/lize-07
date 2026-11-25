@@ -50,6 +50,7 @@ import { createWorkglanceState, noteWorkglance, sampleWorkglance } from "./workg
 import { notePortalsteady, portalsteadyOffsetsAt, isPortalsteadyActive } from "./portalsteady_math.js";
 import { createSurfacebreathState, stepSurfacebreath, sampleSurfacebreath, applySurfacebreathPitch } from "./surfacebreath_math.js"; // POLISH-ANIM-SURFACEBREATH-01 (cycle1703)
 import { tickToolCheck, createToolCheckState } from "./toolcheck_math.js"; // POLISH-ANIM-TOOLCHECK-01 (cycle1807): 長時間待機中に一度だけ手元の道具を点検する (表示層のみ・実機確認待ち)
+import { createLoadPostureState, noteLoadPosture, sampleLoadPosture } from "./loadposture_math.js"; // POLISH-ANIM-LOADPOSTURE-01 (cycle1832): 満載が続くと小さく前傾する (表示層のみ・実機確認待ち)
 import { createMoveTracker, moveTrackStep, drainMoveEvents } from "./move_state.js"; // ground-walk Stage 0-B (cycle1703): record-only wiring // POLISH-ANIM-PORTALSTEADY-01 (cycle1640): 次元移動直後の立て直し (表示層のみ・実機確認待ち) // POLISH-ANIM-STEPUP-01 (cycle1603): 1マス段差を上る瞬間の小さな前傾 (表示層のみ・実機確認待ち) // POLISH-ANIM-ICEBALANCE-01 (cycle1543): 氷上のバランス取り (表示層のみ・実機確認待ち)
 import { materialOfTypeId } from "./sfx.js"; // cycle1543: ICEBALANCE の足元カテゴリ供給 (分類の単一の正は sfx.js) // POLISH-ANIM-EDGEPEEK-01 (cycle1518): 段差手前の覗き込み視線 (表示層のみ・実機確認待ち) // POLISH-ANIM-HEED-01 (cycle1443): 主人の発言の辺で頭だけを向ける (表示層のみ・実機確認待ち) // 要望バッチB (v0.4.90): 螺旋階段の純粋幾何
 import { pickaxeItemForLevel } from "./bootstrap.js"; // cycle0942: toolNeed 消費点の等級→ツルハシ決定
@@ -193,7 +194,7 @@ function rt(bot) {
     nav: null, navDim: null, navMode: "direct", mission: undefined, missionKills: 0, deliveredFlag: false, conv: null, fallbackStreak: 0, lastCtx: null, lastChatAt: 0, lastPraiseAt: 0, lastDangerAt: 0, sideState: { cooldowns: {}, now: 0 }, sideTask: null, mTargetLoc: null, mTargetType: null, mTargetEntity: null, mTargetKind: null, mFound: false, mAtReturn: false, mScan: null, percOpps: [], buildPlan: null, hyst: null, suspendNotified: false, usedHonesty: [],
     lastAmbientAt: 0, equipCore: null, equipRestored: false, equipChanged: null, equipChangedAt: 0, equipFromOwner: false, justHealedAt: 0, lastAmmoCount: 0, lastHealCount: 0,
     // v0.3.9: 飛行・目標固定・ウォッチドッグ
-    fly: null, flyDim: null, flyMode: "ground", ownerPosCache: null, moveTracker: null, moveDim: null, moveState: null, moveEvents: [], surfacebreathState: null, workglanceState: null, workglanceSeenAt: 0, toolcheckState: null, idleSinceMs: null, idleAnchor: null, toolcheckSample: null, mTargetKey: "", mTargetSince: 0, mLastHave: -1, mBanKey: "", mBanUntil: 0, watchHist: [], watchAt: 0, lastHopAt: 0,
+    fly: null, flyDim: null, flyMode: "ground", ownerPosCache: null, moveTracker: null, moveDim: null, moveState: null, moveEvents: [], surfacebreathState: null, workglanceState: null, workglanceSeenAt: 0, toolcheckState: null, loadpostureState: null, idleSinceMs: null, idleAnchor: null, toolcheckSample: null, mTargetKey: "", mTargetSince: 0, mLastHave: -1, mBanKey: "", mBanUntil: 0, watchHist: [], watchAt: 0, lastHopAt: 0,
     // v0.4.0: 長期自律タスク
     longtask: undefined, ltLegActive: false, mineLeg: null, mineDir: null, spiral: null,
     // v0.4.1: 失敗記録・装備破損の監視
@@ -424,6 +425,7 @@ function buildContext(bot, owner) {
   notePortalsteadyTick(bot, dim, r, c); // POLISH-ANIM-PORTALSTEADY-01 (cycle1640)
   noteSurfacebreathTick(bot, r, c); // POLISH-ANIM-SURFACEBREATH-01 (cycle1703)
   noteToolCheckTick(bot, r, c); // POLISH-ANIM-TOOLCHECK-01 (cycle1807)
+  noteLoadPostureTick(bot, r, c); // POLISH-ANIM-LOADPOSTURE-01 (cycle1832)
   // 溶岩・暗さ・地下
   try {
     const bl = dim.getBlock({ x: Math.floor(bot.location.x), y: Math.floor(bot.location.y) - 1, z: Math.floor(bot.location.z) });
@@ -1469,7 +1471,12 @@ const LIFE_CRITICAL_ACTS = new Set(["flee", "rest_at_home", "use_heal_item"]); /
 function missionSig(m) { // Phase 0 負荷対策: 復元に必要な構造だけの軽量シグネチャ（obsCount/updatedAt/have は再導出できるので含めない）
   if (!m) return "";
   const steps = (m.steps || []).map((s) => `${s.status}:${s.banked || 0}:${s.base == null ? 0 : 1}:${s.searchStage || 0}`).join(",");
-  return `${m.status}|${m.currentStep}|${m.suspendReason || ""}|${m.suspendCount || 0}|${m.suspendWaitSince || 0}|${m.detour ? m.detour.phase + ":" + m.detour.resumeStep : ""}|${steps}`; // cycle1807: suspendWaitSince を sig へ含める (cannot_recover の180秒上限が復元をまたいで到達可能になる)
+  // cycle1832 S-2/S-3: 見切りカウンタ群は生値でなく量子バケット (上限の約1/10) で sig へ含める。
+  // 復元跨ぎの喪失を上限の約10%以下に有界化しつつ、毎観測の DP 書き (dirty 化の目的) は増やさない。
+  const qb = (v, q) => Math.floor((v || 0) / q);
+  const qSteps = (m.steps || []).map((s) => `${qb(s.stallObs, 6)},${qb(s.foundStallObs, 60)},${qb(s.routeFrozenObs, 190)},${qb(s.wdFrozenObs, 190)},${qb(s.searchFrozenObs, 190)},${qb(s.regionFrozenObs, 190)},${qb(s.regionTotalObs, 2000)}`).join(";");
+  const qDetour = m.detour ? `${qb(m.detour.stallObs, 6)},${qb(m.detour.routeFrozenObs, 190)}` : "";
+  return `${m.status}|${m.currentStep}|${m.suspendReason || ""}|${m.suspendCount || 0}|${m.suspendWaitSince || 0}|${m.detour ? m.detour.phase + ":" + m.detour.resumeStep : ""}|${steps}|q:${qb(m.recoverObs, 60)}:${m.blocked ? 1 : 0}:${qSteps}:${qDetour}`; // cycle1807: suspendWaitSince を sig へ含める (cannot_recover の180秒上限が復元をまたいで到達可能になる)
 }
 function persistMission(bot, r, force = false) {
   const sig = missionSig(r.mission);
@@ -2169,9 +2176,14 @@ function ensureStation(bot, r, leg) {
     const id = cell.typeId;
     if (/_ore$|ancient_debris/.test(id) || ARTIFICIAL_HINTS.some((h) => id.includes(h)) || isContainerBlock(id)) continue; // 鉱石・人工物・入れ物は壊さない
     if (requiredPickLevel(id) > bestPickLevel(bot) || lavaNear(dim, c)) continue;
+    // cycle1832 GAP-4 (案B+): carve も掘削ゲートと構造物ガードを通す (従来は無検査で直接置換していた)
+    if (structureGuard(dim, c)) continue;
+    { let gate = null; try { const eye = { x: pos.x, y: pos.y + 1.6, z: pos.z }; gate = evaluateDig(digBlockAt(bot), eye, c, { reach: WORK_REACH, feetCell: { x: fx, y: fy, z: fz }, via: "work" }); } catch { gate = { action: "hold", why: "gate_error" }; }
+      if (!gate || gate.action !== "dig") { r.lastDigHold = { why: gate?.why || "gate_error", loc: { ...c }, at: Date.now() }; continue; } }
     if (!takeFromInv(bot, need, 1)) return false;
     try {
       cell.setType(need);
+      { const rb = dim.getBlock(c); if (!rb || rb.typeId !== need) throw new Error("station carve verify failed"); } // cycle1832 F2: 設置後再読込で確認してから keep を付与する
       const keep = id === "minecraft:grass_block" ? "minecraft:dirt" : id === "minecraft:stone" ? "minecraft:cobblestone" : id === "minecraft:deepslate" ? "minecraft:cobbled_deepslate" : id;
       try { const bc = invOf(bot); let rest = 1; if (bc) rest = addTo(bc, keep, 1); if (rest > 0) dim.spawnItem(new ItemStack(keep, rest), bot.location); } catch {}
       r.placedStation = { ...c, id: need, dim: dim.id };
@@ -3107,6 +3119,20 @@ function noteToolCheckTick(bot, r, c) {
     if (out.fired) r.lastToolCheck = { at: now, idleMs, armPitchDeg: -28 }; // 腕ピッチは RP 受け口が無い間は記録のみ
   } catch {}
 }
+// POLISH-ANIM-LOADPOSTURE-01 (cycle1832): 所持スロット占有率が 0.85 以上で3秒続くと前傾する。供給は既存の所持観測 (invOf) のみ・表示層のみ・実機確認待ち
+function noteLoadPostureTick(bot, r, c) {
+  try {
+    if (!bot || !r) return;
+    if (!r.loadpostureState) r.loadpostureState = createLoadPostureState();
+    const now = Date.now();
+    let ratio = null;
+    try { const cont = invOf(bot); if (cont) { let used = 0; for (let i = 0; i < cont.size; i++) if (cont.getItem(i)) used++; ratio = cont.size > 0 ? used / cont.size : null; } } catch {}
+    const sample = { ratio, working: !!r.work || !!r.mission || !!r.longtask || !!r.buildPlan, danger: !!(c?.danger && c.danger.count > 0), selfFalling: r.selfFalling === true, inWater: !!bot.isInWater }; // 注: ホバーはリゼの既定移動のため feeder では抑制に含めない (含めると常時抑制で到達不能になる。核側の別名受理は維持)
+    noteLoadPosture(r.loadpostureState, sample, now);
+    const s = sampleLoadPosture(r.loadpostureState, now);
+    if (s.active) r.lastLoadPosture = { atMs: now, ratio: s.ratio, band: s.band };
+  } catch {}
+}
 function notePortalsteadyTick(bot, dim, r, c) {
   try {
     if (!bot || !r) return;
@@ -3151,6 +3177,7 @@ function applyGaze(bot, owner, ctx, scan) {
     if (rot && r.icebalanceState) { const isb = sampleIcebalance(r.icebalanceState, Date.now()); if (isb.active) rot = { ...rot, x: rot.x + isb.gazePitchDeg }; }
     if (rot && r.stepupState) { const sub = sampleStepup(r.stepupState, Date.now()); if (sub.active) rot = { ...rot, x: rot.x + sub.gazePitchDeg }; } if (rot && r.portalsteadyState && isPortalsteadyActive(r.portalsteadyState, Date.now())) { const po = portalsteadyOffsetsAt(r.portalsteadyState.startedAtMs, Date.now()); rot = { ...rot, x: rot.x + po.gazePitchDeg, y: rot.y + po.yawSwayDeg }; } if (rot && r.surfacebreathState) { const sb = sampleSurfacebreath(r.surfacebreathState, Date.now()); if (sb.active) rot = { ...rot, x: applySurfacebreathPitch(rot.x, Date.now() - r.surfacebreathState.startedAtMs) }; } if (rot && r.workglanceState) { const wg = sampleWorkglance(r.workglanceState, Date.now()); if (wg.active) rot = { ...rot, y: rot.y + wg.gazeYawOffsetDeg, x: rot.x + wg.gazePitchDeg }; } // WORKGLANCE-01 (cycle1728): lowest-priority overlay (display only) // SURFACEBREATH overlay (clamped) // POLISH-ANIM-PORTALSTEADY-01 (cycle1640): 重畳の最下位 (表示層のみ・実機確認待ち) // POLISH-ANIM-STEPUP-01 (cycle1603): ピッチ重畳の最下位 (icebalance の後ろ。表示層のみ・実機確認待ち) // POLISH-ANIM-ICEBALANCE-01 (cycle1543): ピッチ重畳の最下位 (edgepeek の後ろ。表示層のみ・実機確認待ち)
     if (rot && r.toolcheckSample?.active) rot = { ...rot, x: rot.x + r.toolcheckSample.gazePitchDeg, y: rot.y + r.toolcheckSample.gazeYawDeg }; // POLISH-ANIM-TOOLCHECK-01 (cycle1807): 重畳の最下位 (表示層のみ・実機確認待ち)
+    if (rot && r.loadpostureState) { const lp = sampleLoadPosture(r.loadpostureState, Date.now()); if (lp.active) rot = { ...rot, x: rot.x + lp.pitchDeg }; } // POLISH-ANIM-LOADPOSTURE-01 (cycle1832): ピッチ重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot) { try { bot.setRotation(rot); } catch {} }
   }
   if (gz.say && Math.random() < 0.4) sayAmbient(owner, bot, gz.say);
@@ -3430,7 +3457,11 @@ function openMenu(p, bot) {
       if (loc) { dps(bot, "cb_home", JSON.stringify({ x: loc.x, y: loc.y, z: loc.z, dim: p.dimension.id })); say(p, bot, "帰る場所、登録されました。……ありがとうございます", true); }
       else say(p, bot, "近くにコンテナが見つかりません。チェストを見ながら、もう一度どうぞ", true);
     }
-    if (res.selection === 5) { const oc = invOf(p); if (oc) { const res2 = transferFiltered(bot, oc, null); say(p, bot, res2.moved > 0 ? `${res2.moved}個、お渡ししました` : "渡せるものは、今はありません", true); } }
+    if (res.selection === 5) { // cycle1832 F1: フォーム応答は非同期のため、実行時点で距離・次元を再検査する (U1 と同型の fail-closed)
+      let inRange = false; try { inRange = p.dimension.id === bot.dimension.id && dist(bot.location, p.location) <= DELIVER_RANGE; } catch {}
+      if (!inRange) { say(p, bot, "距離が離れています。近くで、もう一度どうぞ", true); }
+      else { const oc = invOf(p); if (oc) { const res2 = transferFiltered(bot, oc, null); say(p, bot, res2.moved > 0 ? `${res2.moved}個、お渡ししました` : "渡せるものは、今はありません", true); } }
+    }
     if (res.selection === 6) {
       const cont = invOf(bot); let used = 0; if (cont) for (let i = 0; i < cont.size; i++) if (cont.getItem(i)) used++;
       let misTxt = "";

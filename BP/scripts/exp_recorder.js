@@ -286,6 +286,20 @@ export function expCtxOf(r, rec, opts = {}) {
 }
 
 /** commitLastAction の材料 rec {act,ok,reason,item,at,mode?,kind?,via?,detail?,...} -> EXP 1件 */
+// cycle1832 6-ML (層3): INSPECT の detail (三状態) だけを actualEffects 語彙へ射影する純粋ヘルパー。非INSPECTでは常に []
+function inspectEffects(rec) {
+  try {
+    if (rec?.act !== "INSPECT" || !rec.detail || typeof rec.detail !== "object") return [];
+    const st = rec.detail.state;
+    if (st !== "present" && st !== "absent" && st !== "unknown") return [];
+    const out = ["inspect:" + st];
+    const src = s(rec.detail.source, 32); if (src) out.push("src:" + src);
+    const cf = num(rec.detail.confidence);
+    if (cf != null) out.push("conf:" + Math.max(0, Math.min(1, cf)).toFixed(2));
+    return out;
+  } catch { return []; }
+}
+
 export function buildExpFromCommit(rec, ctx = {}) {
   try {
     if (!rec || typeof rec !== "object") return null;
@@ -315,7 +329,7 @@ export function buildExpFromCommit(rec, ctx = {}) {
       result: {
         ok, reason,
         failCls: ok ? null : classifyFailure(reason),
-        actualEffects: Array.isArray(ctx?.actualEffects) ? ctx.actualEffects.slice(0, 8) : [],
+        actualEffects: [...inspectEffects(rec), ...(Array.isArray(ctx?.actualEffects) ? ctx.actualEffects : [])].slice(0, 8), // cycle1832 6-ML: INSPECT の detail (三状態) を actualEffects へ射影する
         ticks,
         attribution: attributionFor({ where: ctx?.where ?? null, reason, pack: ctx?.pack, ok }),
       },

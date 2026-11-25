@@ -771,7 +771,7 @@ export function parseOrder(input) {
   });
 
   // Phase 5 手順6: 正対象ゼロでも否定があれば消失させない（forbid / clarify）
-  if (candidates.length === 0 && negations.length > 0) {
+  if (candidates.length === 0 && (negations.length > 0 || negResult.hostileNegated)) { // cycle1832 C1: 総称敵の動詞否定単独形 (negations 空でも hostileNegated が立てば forbid/clarify として保持する)
     if (unresolved.length > 0) {
       return { kind: "clarify", target: null, amount: null, constraints, sideTasks: [], negations, unresolved, returnTo, raw };
     }

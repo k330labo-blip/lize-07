@@ -171,6 +171,64 @@ function makeVirtualInv(invCounts) {
   return { v, count, consume, produce };
 }
 
+// cycle1832 queue0-B small-2 (設計B): 板材工程の正規化。ensure* の都度変換で分かれた
+// 板材 craft を最初の1件へ合体し、逐次 replay で不足があれば最初の craft へトップアップする。
+// 補正後に replay で不足ゼロを確認できなければ元の steps をそのまま返す (悪化させない)。
+function replayShortage(steps, invCounts) {
+  const V = makeVirtualInv(invCounts);
+  let plankShort = 0;
+  for (const s of steps) {
+    if (s.needs) for (const [k, n] of Object.entries(s.needs)) { const got = V.consume(k, n); if (k === "group:planks") plankShort += n - got; }
+    if (s.type === "gather" || s.type === "craft" || s.type === "smelt") V.produce(s.item, s.count || 0);
+  }
+  return plankShort;
+}
+export function normalizePlankSteps(steps, invCounts) {
+  try {
+    if (!Array.isArray(steps) || steps.length < 2) return steps;
+    const idxs = [];
+    steps.forEach((s, i) => { if (s.type === "craft" && s.item === "group:planks") idxs.push(i); });
+    if (!idxs.length) return steps;
+    const work = steps.map((s) => ({ ...s, needs: s.needs ? { ...s.needs } : s.needs }));
+    const firstIdx = idxs[0];
+    const first = work[firstIdx];
+    const craftsOf = (s) => s.crafts || Math.ceil((s.count || 0) / 4);
+    // 合体: 2件目以降の板材 craft を除去し、その直前の原木 gather を同量だけ減らす
+    if (idxs.length > 1) {
+      let total = craftsOf(first);
+      let removedLogs = 0;
+      const drop = new Set();
+      for (const i of idxs.slice(1)) {
+        const c = craftsOf(work[i]); total += c;
+        drop.add(i);
+        const g = work[i - 1];
+        if (g && g.type === "gather" && g.item === "group:logs") { g.count -= c; removedLogs += c; if (g.count <= 0) drop.add(i - 1); }
+      }
+      // 除去した craft が使っていた原木は、合体先の craft が必要とする分として最初の gather へ寄せる
+      if (removedLogs > 0) {
+        const fg = work[firstIdx - 1];
+        if (fg && fg.type === "gather" && fg.item === "group:logs") fg.count += removedLogs;
+        else work.splice(firstIdx, 0, { type: "gather", item: "group:logs", count: removedLogs, from: "minecraft:oak_log", note: "板材の原料。素手で集められる" });
+      }
+      first.crafts = total; first.count = total * 4; first.needs = { ...(first.needs || {}), "group:logs": total };
+      for (let i = work.length - 1; i >= 0; i--) if (drop.has(i)) work.splice(i, 1);
+    }
+    // トップアップ: 逐次 replay の板材不足を最初の craft へ寄せる (原木 gather も同数増やす/無ければ挿入)
+    const short = replayShortage(work, invCounts);
+    if (short > 0) {
+      const add = Math.ceil(short / 4);
+      const fi = work.findIndex((s) => s.type === "craft" && s.item === "group:planks");
+      const fc = work[fi];
+      fc.crafts = craftsOf(fc) + add; fc.count = fc.crafts * 4; fc.needs = { ...(fc.needs || {}), "group:logs": fc.crafts };
+      const g = work[fi - 1];
+      if (g && g.type === "gather" && g.item === "group:logs") g.count += add;
+      else work.splice(fi, 0, { type: "gather", item: "group:logs", count: add, from: "minecraft:oak_log", note: "板材の原料。素手で集められる" });
+    }
+    if (replayShortage(work, invCounts) > 0) return steps; // 確認できなければ元へ (フォールバック)
+    return work;
+  } catch { return steps; }
+}
+
 // ================= 計画本体 =================
 
 export function planBootstrap(input) {
@@ -371,9 +429,10 @@ export function planBootstrap(input) {
 
   for (const tn of toolsNeeded) ensureTool(tn.kind, tn.tier, wantCount[tn.item] || 1);
 
-  const status = steps.length === 0 ? "ready" : "in_progress";
+  const finalSteps = normalizePlankSteps(steps, inv); // cycle1832 設計B: 板材工程の合体+トップアップ
+  const status = finalSteps.length === 0 ? "ready" : "in_progress";
   return {
     status, stage, stageName: TIER_LABEL[stage], requiredLevel, desiredTier,
-    toolsNeeded, steps, next: steps[0] || null, health, notes,
+    toolsNeeded, steps: finalSteps, next: finalSteps[0] || null, health, notes,
   };
 }
