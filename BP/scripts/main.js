@@ -39,7 +39,9 @@ import { applyDryoffYaw, isDryoffActive, noteDryoff as noteDryoffState } from ".
 import { noteBreathCold } from "./breath_cold_math.js"; // POLISH-FX-BREATHCOLD-01 (cycle1343): 寒冷地での白い排気 (表示層のみ・粒子ID未照合のため記録のみ・実機確認待ち)
 import { fromCraftResult } from "./actions_contract.js"; // 6-ML (cycle1322): CRAFT/SMELT 実行結果の正規化 (記録専用) // POLISH-ANIM-SKYGLANCE-01 (cycle1133): 雨の降り始めに空を見上げる (表示層のみ) // POLISH-ANIM-SUMMONSCAN-01 (cycle1110): 召喚・復元直後の見回し (表示層のみ)
 import { createSpiral, spiralStepCell, spiralDigCells, spiralStepsTotal, spiralHeading, spiralLocateK, chooseSpiralVariant } from "./spiral.js";
-import { steerDecision, collectHints, chooseHint, hintDirection, reSteerDir } from "./survey_hint.js"; // cycle2333: R1 reSteerDir 配線 (発火点限定) // キュー7 (cycle1443): surveyヒントで坑道を誘導する純粋核 (ヒント無し時は従来ランダムへ完全フォールバック)
+import { steerDecision, collectHints, chooseHint, hintDirection, inDepthBand, SURVEY_HINT, reSteerDir } from "./survey_hint.js"; // cycle2333: R1 reSteerDir 配線 (発火点限定) // キュー7 (cycle1443): surveyヒントで坑道を誘導する純粋核 (ヒント無し時は従来ランダムへ完全フォールバック)
+import { createGuardState, decideResteer, recordBlocked, recordResteerApplied, legKeyOf } from "./resteer_guard_math.js"; // cycle0005: resteer F-1/F-2 ガード純粋核 (元凶方向への復帰禁止・再blocked無効化・blocked累計30秒の出口・距離/深度ガード)
+import { createWakestretchState, noteWakestretch, wakestretchCurrent, applyWakestretchPitch } from "./wakestretch_math.js"; // POLISH-ANIM-WAKESTRETCH-01 (cycle0005): 長い待機明けの小さな伸び (表示層のみ・実機確認待ち)
 import { createHeedState, noteHeed as noteHeedState, sampleHeed } from "./heed_math.js";
 import { createThresholdState, noteThreshold as noteThresholdState, sampleThreshold } from "./threshold_math.js"; // POLISH-ANIM-THRESHOLD-01 (cycle1503): くぐり視線 (表示層のみ・実機確認待ち)
 import { createEdgepeekState, noteEdgepeek as noteEdgepeekState, sampleEdgepeek } from "./edgepeek_math.js";
@@ -473,6 +475,7 @@ function buildContext(bot, owner) {
   noteBubblebreathTick(bot, r, c); // POLISH-FX-BUBBLEBREATH-01 (cycle1909)
   noteToolCheckTick(bot, r, c); // POLISH-ANIM-TOOLCHECK-01 (cycle1807)
   noteIdleTick(bot, r, c); // POLISH-ANIM-IDLE-01 (cycle2020)
+  noteWakestretchTick(bot, r, c); // POLISH-ANIM-WAKESTRETCH-01 (cycle0005)
   noteLoadPostureTick(bot, r, c); // POLISH-ANIM-LOADPOSTURE-01 (cycle1832)
   // 溶岩・暗さ・地下
   try {
@@ -2314,22 +2317,45 @@ function tickBranchMine(bot, owner, r, ctx) {
     } catch { return null; }
   };
   // キュー7 R1 (cycle2333): ヒント座標を返す版 (surveyHintDir と同じ絞り込み。座標は捨てない)
+  // cycle0005 F-2 是正: steerDecision の安全弁 (STEER_RADIUS=64 / 深度帯) を resteer 経路でも課す。
+  // cycle0005 F-3 是正: blocked 中は入力 (次元|leg|位置セル) が不変のため結果を3秒キャッシュする (null も含む)。
   const surveyHintLoc = () => {
     try {
-      const hints = collectHints(surveys, { dimId: bot.dimension?.id, now: Date.now() });
-      const ore = hints.filter((h) => h.typeId === leg?.item || /_ore$/.test(h.typeId || ""));
-      if (!ore.length) return null;
-      const best = chooseHint(bot.location, ore, { depth: leg?.depth });
-      return best?.loc || null;
+      const now = Date.now();
+      const cell = `${Math.floor(pos.x)},${Math.floor(pos.y)},${Math.floor(pos.z)}`;
+      const ckey = `${bot.dimension?.id || ""}|${leg?.item || ""}@${leg?.depth ?? ""}|${cell}`;
+      const cache = r.resteerHintCache;
+      if (cache && cache.key === ckey && now - (cache.at || 0) < 3000) return cache.loc;
+      let loc = null;
+      try {
+        if (leg?.depth != null && Math.abs(pos.y - leg.depth) > SURVEY_HINT.DEPTH_BAND) loc = null; // pos 側深度帯外は誘導しない (steerDecision の no_depth と同一基準)
+        else {
+          const hints = collectHints(surveys, { dimId: bot.dimension?.id, now });
+          const ore = hints.filter((h) => (h.typeId === leg?.item || /_ore$/.test(h.typeId || "")) && inDepthBand(h.loc, leg?.depth));
+          if (ore.length) {
+            const best = chooseHint(bot.location, ore, { depth: leg?.depth });
+            if (best && !(best.distH > SURVEY_HINT.STEER_RADIUS)) loc = best.loc || null; // 半径外ヒントで遠回りさせない
+          }
+        }
+      } catch { loc = null; }
+      try { r.resteerHintCache = { key: ckey, at: now, loc }; } catch {}
+      return loc;
     } catch { return null; }
   };
   // キュー7 R1 (cycle2333): 方向転換した直後だけヒントへ寄せ直す。毎tick呼び出し禁止 (blocked 回避を潰すため発火点は2種に限定)
+  // cycle0005 F-1 是正: 適用可否は resteer_guard_math の decideResteer が決める (元凶方向への復帰禁止・
+  // resteer 復帰後の再 blocked で leg 中無効化・距離/深度ガード)。ガードが deny したら現在の方向 (回転結果) を維持する。
   const applyReSteer = () => {
     try {
       const loc = surveyHintLoc(); if (!loc || !r.mineDir) return;
       const rs = reSteerDir(pos, loc, r.mineDir);
-      try { r.lastSurveyHint = { mode: "resteer", changed: !!rs.changed, overshoot: !!rs.overshoot, loc, at: Date.now() }; } catch {}
-      if (rs.changed && rs.dir) r.mineDir = rs.dir;
+      const lk = legKeyOf(leg);
+      if (!r.resteerGuard || r.resteerGuard.legKey !== lk) r.resteerGuard = createGuardState(lk);
+      const before = r.mineDir;
+      const candidate = rs.changed && rs.dir ? rs.dir : before;
+      const dec = decideResteer({ pos, hintLoc: loc, depth: leg?.depth, rotatedDir: before, candidateDir: candidate, state: r.resteerGuard, legKey: lk });
+      try { r.lastSurveyHint = { mode: "resteer", changed: !!(dec.apply && dec.dir && (dec.dir.x !== before.x || dec.dir.z !== before.z)), overshoot: !!rs.overshoot, guard: dec.reason, loc, at: Date.now() }; } catch {}
+      if (dec.apply && dec.dir && (dec.dir.x !== before.x || dec.dir.z !== before.z)) { r.mineDir = dec.dir; r.resteerGuard = recordResteerApplied(r.resteerGuard, lk, dec.dir, before); }
     } catch {}
   };
   const pos = bot.location, dim = bot.dimension;
@@ -2470,7 +2496,16 @@ function tickBranchMine(bot, owner, r, ctx) {
   for (const yy of [fy, fy + 1]) {
     const res = digAt(fx, yy, fz);
     if (res === "tool") { r.mineLeg = null; r.target = { x: pos.x, y: pos.y, z: pos.z }; return; } // cycle0922: 道具不足で leg を畳み無限再試行を断つ
-    if (res === "blocked" || res === "liquid") { r.mineDir = { x: d.z, z: -d.x }; applyReSteer(); return; } // cycle2333 R1: 回転直後にヒントへ寄せ直す (ヒント方向自体が元凶なら changed=false で回転が維持される)
+    if (res === "blocked" || res === "liquid") { // cycle0005 F-1 是正: まず blocked をガードへ記録する (元凶方向の保持・再blocked無効化・累計30秒で leg を畳む出口)。その後に回転し、resteer は元凶方向へは戻さない
+      try {
+        const lk = legKeyOf(leg);
+        if (!r.resteerGuard || r.resteerGuard.legKey !== lk) r.resteerGuard = createGuardState(lk);
+        const rb = recordBlocked(r.resteerGuard, { legKey: lk, dir: d, kind: res, now: Date.now(), count: countOfGroup(countInv(bot), leg.item) });
+        r.resteerGuard = rb.state;
+        if (rb.shouldFold) { noteFail(bot, "branchmine:blocked_exhausted", new Error(`${leg.item || ""}@${leg.depth ?? ""}`)); r.resteerGuard = null; r.mineLeg = null; r.target = { x: pos.x, y: pos.y, z: pos.z }; return; }
+      } catch {}
+      r.mineDir = { x: d.z, z: -d.x }; applyReSteer(); return;
+    }
     if (res === "unknown") { holdUnknown(); return; } // 片方でも未読なら前進しない (方向転換もしない: 未読は壁の証拠ではない)
     if (res === "held") { holdHeld(); return; } // M-1051-1 (cycle1153)
     if (res === "digging") return;
@@ -3318,6 +3353,26 @@ function noteBubblebreathTick(bot, r, c) {
     if (res.fired) r.lastBubbleBreath = { at: Date.now(), count: r.bubblebreathState.fireCount, submergedMs: res.submergedMs };
   } catch {}
 }
+// POLISH-ANIM-WAKESTRETCH-01 (cycle0005): 長い待機 (60秒以上) の終了の辺でのみ小さな伸びを出す (表示層のみ・実機確認待ち)。
+// 待機観測は noteToolCheckTick が維持する r.idleSinceMs を流用し新規観測は作らない。idleSinceMs が張り直された
+// (アンカーから動いた) 場合は純粋核の時計も張り直すため、抑制つき辺消費で一度リセットしてから数え直す (cycle0005-a04)。
+// 飛行 (ホバー待機が既定姿勢) は抑制に入れない: 入れると既定移動では到達不能になる (IDLE-01 と同じ倒し方)。
+function noteWakestretchTick(bot, r, c) {
+  try {
+    if (!bot || !r) return;
+    if (!r.wakestretchState) r.wakestretchState = createWakestretchState();
+    const now = Date.now();
+    const idle = r.idleSinceMs != null;
+    if (idle && r.wakestretchSeenIdleSince !== r.idleSinceMs) {
+      if (r.wakestretchState.idleSinceMs != null) noteWakestretch(r.wakestretchState, { idle: false, suppressed: true }, now); // 時計の張り直し: 辺を消費して数え直す
+      r.wakestretchSeenIdleSince = r.idleSinceMs;
+    }
+    if (!idle) r.wakestretchSeenIdleSince = null;
+    let inWater = false; try { inWater = !!bot.isInWater; } catch {}
+    const res = noteWakestretch(r.wakestretchState, { idle, combat: !!(c?.danger && c.danger.count > 0), falling: r.selfFalling === true, inWater }, now);
+    if (res && res.fired) { const cur = wakestretchCurrent(r.wakestretchState, now); r.lastWakestretch = { at: now, pitchDeg: cur.pitchDeg, yawDeg: cur.yawDeg, armPitchDeg: cur.armPitchDeg, episode: cur.episode }; } // 腕ピッチは記録のみ
+  } catch {}
+}
 function noteToolCheckTick(bot, r, c) {
   try {
     if (!bot || !r) return;
@@ -3471,6 +3526,7 @@ function applyGaze(bot, owner, ctx, scan) {
     if (rot && r.lookleadSample && (r.lookleadSample.active || r.lookleadSample.completed) && Date.now() - (r.lookleadSampleAt || 0) < 200) rot = { ...rot, y: rot.y + r.lookleadSample.yawDeltaDeg, x: rot.x + r.lookleadSample.pitchDeltaDeg }; // POLISH-ANIM-LOOKLEAD-01 (cycle2036): 重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot && r.catchsightState) { const cs = sampleCatchsight(r.catchsightState, Date.now(), catchsightSuppressInput(bot, owner, ctx, gz, r, Date.now())); if (cs.active) rot = { ...rot, y: rot.y + cs.yawDeg, x: rot.x + cs.pitchDeg }; } // POLISH-ANIM-CATCHSIGHT-01 (cycle2200): 重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot && r.rainshelterState) { const rs = sampleRainShelter(r.rainshelterState, Date.now()); if (rs.active) rot = { ...rot, y: rot.y + rs.gazeYawOffsetDeg, x: rot.x + rs.gazePitchDeg }; } // POLISH-ANIM-RAINSHELTER-01 (cycle2231): 重畳の最下位 (表示層のみ・実機確認待ち)
+    if (rot && r.wakestretchState) { try { const wk = wakestretchCurrent(r.wakestretchState, Date.now()); if (wk.active) rot = { ...rot, y: rot.y + wk.yawDeg, x: applyWakestretchPitch(rot.x, Date.now() - (r.wakestretchState.startedAtMs || Date.now())) }; } catch {} } // POLISH-ANIM-WAKESTRETCH-01 (cycle0005): 重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot) { try { bot.setRotation(rot); } catch {} }
   }
   if (gz.say && Math.random() < 0.4) sayAmbient(owner, bot, gz.say);
