@@ -52,6 +52,64 @@ function normalizeDecStep(s) {
   return { type: s.type, item: s.item, need: s.need || 1, via: s.via || null, yRange: s.yRange || null, depth: mineDepthFor(s.item) ?? mineDepthFor(s.via), crafts: 0, needs: null, station: null, dim: s.dim || null }; // queue2: dim を落とさない (decomposer の gather step が持つ次元情報を下流の次元ガードへ渡す)
 }
 
+// cycle1940 案A': 板材 leg の跨層合体 (boot の group:planks craft と dec の *_planks craft が
+// 両方ある場合だけ、dec 分の crafts を boot 側へ寄せ、dec 側の板材 craft とその原料分の
+// 原木 gather を畳む)。逐次 replay (板材/原木のみ集計、bootstrap 設計B と同指標) で
+// 不足ゼロかつ元より悪化しないことを確認できなければ元の legs をそのまま返す。
+function replayPlankShortage(legs, invCounts) {
+  const v = { ...(invCounts || {}) };
+  const consume = (k, n) => {
+    const ids = GROUPS[k] || [k];
+    let left = n;
+    for (const id of ids) { const t = Math.min(v[id] || 0, left); v[id] = (v[id] || 0) - t; left -= t; if (left <= 0) break; }
+    return n - left;
+  };
+  const isPlankLog = (k) => k === "group:planks" || k === "group:logs" || /_planks$/.test(k) || /_log$/.test(k);
+  let short = 0;
+  for (const l of legs || []) {
+    if (l.needs) for (const [k, n] of Object.entries(l.needs)) { const got = consume(k, n); if (got < n && isPlankLog(k)) short += n - got; }
+    if (l.type === "gather" || l.type === "craft" || l.type === "smelt" || l.type === "hunt") {
+      const id = GROUPS[l.item] ? GROUPS[l.item][0] : l.item;
+      if (id) v[id] = (v[id] || 0) + (l.need || 0);
+    }
+  }
+  return short;
+}
+export function normalizePlankLegs(legs, invCounts) {
+  try {
+    if (!Array.isArray(legs) || legs.length < 2) return legs;
+    const bootIdx = legs.findIndex((l) => l.fromBootstrap && l.type === "craft" && l.item === "group:planks");
+    const decPlankIdxs = [];
+    legs.forEach((l, i) => { if (!l.fromBootstrap && l.type === "craft" && /_planks$/.test(l.item || "")) decPlankIdxs.push(i); });
+    if (bootIdx < 0 || decPlankIdxs.length === 0) return legs;
+    let decCrafts = 0, decLogs = 0;
+    for (const i of decPlankIdxs) {
+      const dp = legs[i];
+      const c = dp.crafts || Math.ceil((dp.need || 0) / 4);
+      decCrafts += c;
+      let lg = 0;
+      if (dp.needs) for (const [k, n] of Object.entries(dp.needs)) if (k === "group:logs" || /_log$/.test(k)) lg += n;
+      decLogs += lg > 0 ? lg : c;
+    }
+    if (decCrafts <= 0 || decLogs <= 0) return legs;
+    const work = legs.map((l) => ({ ...l, needs: l.needs ? { ...l.needs } : l.needs }));
+    const bp = work[bootIdx];
+    const decPlankCopies = new Set(decPlankIdxs.map((i) => work[i]));
+    bp.crafts = (bp.crafts || Math.ceil((bp.need || 0) / 4)) + decCrafts;
+    bp.need = bp.crafts * 4;
+    bp.needs = { ...(bp.needs || {}), "group:logs": bp.crafts };
+    const bootLog = work.find((l) => l.fromBootstrap && l.type === "gather" && l.item === "group:logs");
+    if (bootLog) bootLog.need = (bootLog.need || 0) + decLogs;
+    else work.splice(bootIdx, 0, { type: "gather", item: "group:logs", need: decLogs, crafts: 0, needs: null, via: "minecraft:oak_log", yRange: null, depth: null, station: null, fromBootstrap: true, dim: null });
+    const decLog = work.find((l) => !l.fromBootstrap && l.type === "gather" && /_log$/.test(l.item || ""));
+    if (decLog) decLog.need = (decLog.need || 0) - decLogs;
+    const out = work.filter((l) => !decPlankCopies.has(l) && !(decLog && l === decLog && (decLog.need || 0) <= 0));
+    if (replayPlankShortage(out, invCounts) > 0) return legs;
+    if (replayPlankShortage(out, invCounts) > replayPlankShortage(legs, invCounts)) return legs;
+    return out;
+  } catch { return legs; }
+}
+
 // 注文 → 長期タスク計画。工程が無い純採取なら null（通常ミッションで足りる）。
 // 分解不能なら { feasible:false, warnings } を返す。
 export function planLongTask(order, invCounts) {
@@ -83,13 +141,16 @@ export function planLongTask(order, invCounts) {
   if (boot && boot.status !== "ready" && Array.isArray(boot.steps)) for (const s of boot.steps) legs.push(normalizeBootStep(s));
   for (const s of dec.steps) legs.push(normalizeDecStep(s));
 
+  // cycle1940 案A': 板材 leg の跨層合体 (判定より前に置く — 正規化後の legs で判定する)
+  const finalLegs = normalizePlankLegs(legs, invCounts || {});
+
   // 長期タスクにする条件：工程がある／ツール自作が要る／地下へ掘り進む採取がある。
   // どれも無い純粋な地表採取だけ通常ミッションに任せる。
-  const hasProcess = legs.some((l) => l.type === "craft" || l.type === "smelt");
+  const hasProcess = finalLegs.some((l) => l.type === "craft" || l.type === "smelt");
   const hasBoot = boot && boot.status !== "ready" && Array.isArray(boot.steps) && boot.steps.length > 0;
-  const hasMine = legs.some((l) => l.depth != null);
+  const hasMine = finalLegs.some((l) => l.depth != null);
   if (!hasProcess && !hasBoot && !hasMine) return null;
-  return { feasible: true, target: dec.target, legs, warnings: dec.warnings || [], totals: dec.totals || null };
+  return { feasible: true, target: dec.target, legs: finalLegs, warnings: dec.warnings || [], totals: dec.totals || null };
 }
 
 // 工程の短い表示名（節目報告・名札用）

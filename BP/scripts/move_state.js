@@ -4,7 +4,7 @@
 // 0-B (cycle1703): main.js の noteMove から記録のみ配線済み (挙動不変)。消費側は Stage 1。
 export const STRIDE_LEN = 2.0; // blocks/cycle。1サイクル=左右2歩、一歩=1.0ブロック
 const SPEED_DASH = 5.0, SPEED_WALK = 3.0, SPEED_FINE = 0.05;
-const LAND_DROP = 2, EVENT_CAP = 32;
+const LAND_DROP = 0.6, EVENT_CAP = 32; // cycle1940: 到達可能性監査 (a05) で確定した欠陥の是正。旧値2では main の接地供給 (足元-0.5セル) が早期反転し空中蓄積が最大でも通常ホバー着地で約0.7にしかならず land が 0/100 回だった。0.6 で通常着地 (下降1.2) が発動し、強弱は event.drop を受ける側が付ける
 function fin(v) { return typeof v === "number" && Number.isFinite(v) ? v : null; }
 export function createMoveTracker() {
   return { state: { mode: "idle", speed: 0, phase: 0, grounded: true, surface: "minecraft:air", at: 0 },

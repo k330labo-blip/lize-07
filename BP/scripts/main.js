@@ -53,9 +53,10 @@ import { createBubblebreathState, stepBubblebreath } from "./bubblebreath_math.j
 import { tickToolCheck, createToolCheckState } from "./toolcheck_math.js"; // POLISH-ANIM-TOOLCHECK-01 (cycle1807): 長時間待機中に一度だけ手元の道具を点検する (表示層のみ・実機確認待ち)
 import { createLoadPostureState, noteLoadPosture, sampleLoadPosture } from "./loadposture_math.js";
 import { createPartnerCheckState, notePartnerCheck, partnerCheckOffset } from "./partnercheck_math.js";
+import { createEnderavertState, noteEnderavert, sampleEnderavert } from "./enderavert_math.js"; // POLISH-ANIM-ENDERAVERT-01 (cycle1940): 表示層のみ・実機確認待ち
 import { restoreForbids } from "./session_forbids.js"; // Phase5 (cycle1923): sessionForbids の復元純粋核
 import { createOwnerReturnState, noteOwnerReturn, ownerReturnOffset } from "./ownerreturn_math.js"; // POLISH-ANIM-OWNERRETURN-01 (cycle1923): 帰還の気付き (表示層のみ・実機確認待ち) // POLISH-ANIM-PARTNERCHECK-01 (cycle1850): 主人被弾の辺で無事確認の視線 (表示層のみ・実機確認待ち)
-import { deriveInspectNeeds } from "./goap_inspect.js"; // Phase6 UNKNOWN→INSPECT段1 (cycle1850): 影記録のみ (読み手なし) // POLISH-ANIM-LOADPOSTURE-01 (cycle1832): 満載が続くと小さく前傾する (表示層のみ・実機確認待ち)
+import { deriveInspectNeeds } from "./goap_inspect.js"; // Phase6 UNKNOWN→INSPECT段1 (cycle1850): 影記録。読み手は 6-ML 層1 (cycle1940) で source スコープ限定・記録のみ接続済み // POLISH-ANIM-LOADPOSTURE-01 (cycle1832): 満載が続くと小さく前傾する (表示層のみ・実機確認待ち)
 import { createMoveTracker, moveTrackStep, drainMoveEvents } from "./move_state.js"; // ground-walk Stage 0-B (cycle1703): record-only wiring // POLISH-ANIM-PORTALSTEADY-01 (cycle1640): 次元移動直後の立て直し (表示層のみ・実機確認待ち) // POLISH-ANIM-STEPUP-01 (cycle1603): 1マス段差を上る瞬間の小さな前傾 (表示層のみ・実機確認待ち) // POLISH-ANIM-ICEBALANCE-01 (cycle1543): 氷上のバランス取り (表示層のみ・実機確認待ち)
 import { materialOfTypeId } from "./sfx.js"; // cycle1543: ICEBALANCE の足元カテゴリ供給 (分類の単一の正は sfx.js) // POLISH-ANIM-EDGEPEEK-01 (cycle1518): 段差手前の覗き込み視線 (表示層のみ・実機確認待ち) // POLISH-ANIM-HEED-01 (cycle1443): 主人の発言の辺で頭だけを向ける (表示層のみ・実機確認待ち) // 要望バッチB (v0.4.90): 螺旋階段の純粋幾何
 import { pickaxeItemForLevel } from "./bootstrap.js"; // cycle0942: toolNeed 消費点の等級→ツルハシ決定
@@ -2853,8 +2854,10 @@ function tickMission(bot, owner, ctx, scan) {
       // Phase4 failAgg U1 R-1 影読み手 (cycle1421, a05設計): failRate の初の判断側読み手。ただし本段は記録のみ (shadow) で、計画・分岐には使わない。
       // 試行0の Action は載せない (未実測を 0% と誤読させない)。消費への昇格は次段でブレンド式と一緒に判断する
       try { if (r.failAgg) { const rates = {}; for (const ak of ["BREAK", "PLACE", "TAKE", "STORE", "WITHDRAW", "CRAFT", "SMELT"]) { const fr = failRate(r.failAgg, ak); if (fr && fr.trials > 0) rates[ak] = fr; } r.lastFailBlend = { at: Date.now(), rates, shadow: true }; } } catch {}
-      // Phase6 UNKNOWN→INSPECT段1 (cycle1850, a05設計): UNKNOWN が計画を塞ぐ内訳を候補形で影記録のみ (分岐・実行・ゲートには使わない、読み手は段2以降)
+      // Phase6 UNKNOWN→INSPECT段1 (cycle1850, a05設計): UNKNOWN が計画を塞ぐ内訳を候補形で影記録 (分岐・実行・ゲートには使わない。読み手は 6-ML 層1 の source 限定・記録のみ接続のみ)
       try { r.lastPlanInspect = { ...deriveInspectNeeds({ planOk: !!res?.ok, planReason: res?.ok ? null : (res?.reason || null), factStatus: ev?.meta?.factStatus ?? null, stationStatus: ev?.meta?.stationStatus ?? null, firstPre: r.lastPlan?.a1?.pre ?? null, chestObserved: (ev?.meta?.chest && Number.isFinite(ev.meta.chest.observed)) ? ev.meta.chest.observed : null, target: step.target }), planOk: !!res?.ok, at: r.lastPlan.at }; } catch { r.lastPlanInspect = null; }
+      // 6-ML INSPECT 層1 (cycle1940): 影記録の直後に source スコープ (via === "inspect_block_near") の need 先頭1件だけ inspectBlockNear へ渡し、EXP 記録を開始する。戻り値は分岐・実行・ゲートに使わない (記録のみ)。chest/station スコープは対象外
+      try { const need1 = (r.lastPlanInspect?.needs || []).find((n) => n && n.via === "inspect_block_near" && typeof n.item === "string" && n.item); if (need1) inspectBlockNear(bot, r, need1.item); } catch {}
     }
   } catch {}
   if (ft.found) { const key = ft.loc ? `${ft.loc.x},${ft.loc.y},${ft.loc.z}` : ""; if (key !== r.mTargetKey) { r.mTargetKey = key; r.mTargetSince = Date.now(); } r.mTargetLoc = ft.loc; r.mTargetType = ft.typeId; r.mTargetEntity = ft.entity || null; r.mTargetKind = ft.kind; }
@@ -3222,6 +3225,8 @@ function applyGaze(bot, owner, ctx, scan) {
     if (rot && isInspectActive(r.inspectAnimAt, Date.now())) rot = { ...rot, x: applyInspectPitch(rot.x, Date.now() - r.inspectAnimAt) };
     if (rot && isNodActive(r.nodAnimAt, Date.now())) rot = { ...rot, x: applyNodPitch(rot.x, Date.now() - r.nodAnimAt) };
     if (rot && isFlinchActive(r.flinchAnimAt, Date.now())) rot = { ...rot, x: applyFlinchPitch(rot.x, Date.now() - r.flinchAnimAt) }; // POLISH-ANIM-FLINCH-01 (cycle1051)
+    // POLISH-ANIM-ENDERAVERT-01 (cycle1940): feeder は既存走査 scan.hostiles から最寄りエンダーマンを取る (新規走査なし)。重畳は FLINCH の直下 (表示層のみ・実機確認待ち)
+    if (rot) { try { if (!r.enderavertState) r.enderavertState = createEnderavertState(); const em = (scan?.hostiles || []).filter((x) => x.typeId === "minecraft:enderman").sort((a, b) => dist(bot.location, a.location) - dist(bot.location, b.location))[0] || null; const base = { falling: r.selfFalling === true, inWater: !!bot.isInWater, inCombat: gz.gaze === "danger" || gz.gaze === "danger_then_owner", otherOverlayActive: isFlinchActive(r.flinchAnimAt, Date.now()) }; let smp = { hasTarget: false, ...base }; if (em) { const gr = gazeRotation(bot.location, { x: em.location.x, y: em.location.y + 1.4, z: em.location.z }); let ry = ((gr.y - rot.y + 540) % 360) - 180; smp = { hasTarget: true, dist: dist(bot.location, em.location), relYawDeg: ry, ...base }; } const ev = noteEnderavert(r.enderavertState, smp, Date.now()); if (ev && (ev.entered || ev.exited)) r.lastEnderAvert = { at: Date.now(), entered: !!ev.entered, exited: !!ev.exited, reason: ev.reason || null }; const ea = sampleEnderavert(r.enderavertState, Date.now()); if (ea.active) rot = { ...rot, y: rot.y + ea.gazeYawOffsetDeg, x: rot.x + ea.gazePitchDeg }; } catch {} }
     if (rot && isSkyglanceActive(r.skyglanceAt, Date.now())) rot = { ...rot, x: applySkyglancePitch(rot.x, Date.now() - r.skyglanceAt) }; // POLISH-ANIM-SKYGLANCE-01 (cycle1133): 最下位優先で重畳
     if (rot && isTossActive(r.tossAnimAt, Date.now())) rot = { ...rot, x: applyTossPitch(rot.x, Date.now() - r.tossAnimAt) }; // POLISH-ANIM-TOSS-01 (cycle1400): 視線連動のみ live、腕ピッチは r.lastToss 記録 (RP配線は実機確認待ち)
     if (rot && isSummonScanActive(r.summonScanAt, Date.now())) rot = { ...rot, y: applySummonScanYaw(rot.y, Date.now() - r.summonScanAt) }; // POLISH-ANIM-SUMMONSCAN-01 (cycle1110): ヨー重畳は末尾1箇所のみ
