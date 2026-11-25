@@ -84,7 +84,7 @@ function bare(typeId) {
 }
 
 const GRASS_IDS = new Set([
-  "grass_block", "dirt", "coarse_dirt", "rooted_dirt", "podzol", "mycelium",
+  "grass_block", "dirt", "coarse_dirt", "rooted_dirt", "dirt_with_roots", "podzol", "mycelium", // cycle0659 (a09): dirt_with_roots alias
   "dirt_path", "farmland", "mud", "muddy_mangrove_roots", "clay", "packed_mud",
   "hay_block", "dried_kelp_block", "sponge", "wet_sponge",
   "target", "melon", "pumpkin", "carved_pumpkin", // cycle1543: 草系の実体 (干し草標的・瓜類)
@@ -137,7 +137,7 @@ const WOODWORK_IDS = new Set([
   "composter", "ladder", "campfire", "soul_campfire", "beehive", "bee_nest", "scaffolding", "creaking_heart",
   "sign", "wall_sign", "hanging_sign", "wall_hanging_sign", "wooden_button", "wooden_pressure_plate", "shelf", "wooden_slab", // cycle0522 (a13): 無樹種・旧式形の wood 是正
   "torch", "wall_torch", "soul_torch", "soul_wall_torch", "redstone_torch", "redstone_wall_torch", "unlit_redstone_torch", // cycle0606 (a10): 松明系が stone へ落ちていた誤分類を wood へ是正 / cycle0628 (a09 N2): unlit 形の非対称を是正
-  "armor_stand", "item_frame", "glow_item_frame", "smithing_table", "jack_o_lantern",
+  "armor_stand", "item_frame", "glow_item_frame", "smithing_table", "jack_o_lantern", "lit_pumpkin", // cycle0659 (a09): lit_pumpkin only fell to stone vs jack_o_lantern wood
 ]);
 // cycle0922 (a05): 樹種×部品の直積 (素朴なサフィックス追加は stone_stairs を巻き込むため直積必須)
 const WOOD_SPECIES = ["oak", "spruce", "birch", "jungle", "acacia", "dark_oak", "mangrove", "cherry", "pale_oak", "bamboo"];

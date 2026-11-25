@@ -83,7 +83,8 @@ import { createLookLeadState, tickLookLead } from "./looklead_math.js"; // POLIS
 import { applySettlePitch, isSettleActive, shouldSettle } from "./settle_math.js"; // POLISH-ANIM-SETTLE-01 (cycle2058): 掘削完了直後の小さな確認視線 (表示層のみ・実機確認待ち)
 import { applyPlacesettlePitch, isPlacesettleActive, shouldPlacesettle } from "./placesettle_math.js"; // POLISH-ANIM-PLACESETTLE-01 (cycle2248): 設置完了直後の小さな確認視線 (表示層のみ・実機確認待ち)
 import { applyCraftsettlePitch, isCraftsettleActive, shouldCraftsettle } from "./craftsettle_math.js"; // POLISH-ANIM-CRAFTSETTLE-01 (cycle0141): 製作/精錬完了直後の小さな確認視線 (表示層のみ・実機確認待ち)
-import { createDeliverGuardState, noteDeliverOutcome, isDeliverCooling } from "./deliver_guard_math.js"; // A18-TR-01 (cycle0446): planner deliver_to_owner 満杯失敗の出口 (連続全滅3回で60秒冷却し他 goal へ譲る)
+import { createDeliverGuardState, noteDeliverOutcome, isDeliverCooling } from "./deliver_guard_math.js";
+import { createDepositGuardState, noteDepositOutcome, isDepositCooling, nextDepositDeliverFail } from "./deposit_guard_math.js"; // cycle0659: deposit F1/F3 guard // A18-TR-01 (cycle0446): planner deliver_to_owner 満杯失敗の出口 (連続全滅3回で60秒冷却し他 goal へ譲る)
 import { applyDeliverBowPitch, isDeliverBowActive, shouldDeliverBow } from "./deliverbow_math.js"; // POLISH-ANIM-DELIVERBOW-01 (cycle0446): 手渡し成功直後の小さな会釈 (表示層のみ・実機確認待ち)
 import { applyStoresettlePitch, isStoresettleActive, shouldStoresettle } from "./storesettle_math.js";
 import { applyNospaceYaw, isNospaceActive, shouldNospace } from "./nospace_math.js"; // POLISH-ANIM-NOSPACE-01 (cycle0537): 満杯で拾えない辺の小さな首振り (表示層のみ・実機確認待ち)
@@ -897,6 +898,7 @@ function execArrive(bot, owner, rule, ctx, scan) {
   if (act === "drink_fire_res") { r.lastUseItem = { act, ok: false, reason: "POTION_KIND_UNKNOWN", item: "minecraft:potion", at: Date.now() }; commitLastAction(r, r.lastUseItem); }
   if (act === "place_block_escape") stepBridgeEscape(bot, r, ctx); // ENV-02 (cycle0340)
   if (act.startsWith("deliver") && d < DELIVER_RANGE) {
+    try { if (owner.dimension.id !== bot.dimension.id) { r.deliverFail = true; return; } } catch { r.deliverFail = true; return; } // cycle0659 F2 dim gate
     const oc = invOf(owner); if (!oc) return;
     const res = transferFiltered(bot, oc, deliverFilterFor(rule));
     if (res.moved > 0) { const st = stats(bot); st.deliver = (st.deliver || 0) + res.moved; saveStats(bot, st); r.justDelivered = true; r.deliveredFlag = true; system.runTimeout(() => { r.justDelivered = false; }, 100); dps(bot, "cb_bond", Math.min(100, dp(bot, "cb_bond", 30) + 1)); noteNod(r, res.moved); if (rule.act === "deliver_food") sayFromCategory(owner, bot, "deliver_food"); }
@@ -905,6 +907,8 @@ function execArrive(bot, owner, rule, ctx, scan) {
   if (act === "deposit" || act === "chest_alert") {
     const home = homeOf(bot); if (!home || home.dim !== bot.dimension.id) return;
     if (dist(bot.location, { x: home.x + 0.5, y: home.y + 1, z: home.z + 0.5 }) > DELIVER_RANGE) return;
+    try { if (!r.depositGuard) r.depositGuard = createDepositGuardState(); } catch {}
+    if (r.depositGuard && isDepositCooling(r.depositGuard, Date.now())) return; // cycle0659 F1 cooling
     let block = null; try { block = bot.dimension.getBlock(home); } catch {}
     const cc = block ? (() => { try { return block.getComponent("minecraft:inventory")?.container; } catch { return null; } })() : null;
     if (cc) {
@@ -912,11 +916,14 @@ function execArrive(bot, owner, rule, ctx, scan) {
       if (res.moved > 0) { const st = stats(bot); st.deposit = (st.deposit || 0) + res.moved; saveStats(bot, st); r.justDeposited = true; r.deliveredFlag = true; system.runTimeout(() => { r.justDeposited = false; }, 100); if (Math.random() < 0.5) say(owner, bot, genSpeech({ say: { item: "荷物", count: res.moved }, drops: { count: 0 }, flags: { bond: dp(bot, "cb_bond", 30) }, x: {} }, "deposit_report"));
       else sayFromCategory(owner, bot, "deposit_done"); }
       recordStore(r, "deposit", res);
+      r.deliverFail = nextDepositDeliverFail(r.deliverFail, res); // cycle0659 F3
+      try { const out = noteDepositOutcome(r.depositGuard, { moved: res?.moved || 0, failed: !!res?.failed }, Date.now()); if (out?.action === "cooldown") noteFail(bot, "deposit:full_cooldown", new Error("home container full")); } catch {}
       if (res.failed) sayFromCategory(owner, bot, "chest_full");
     } else {
       // 拠点にコンテナが無い/読めない: 無言で成功扱いにせず、失敗として本人に認識させる
       noteFail(bot, "deposit:no_container", new Error("home container not found"));
       r.deliverFail = true;
+      try { const out = noteDepositOutcome(r.depositGuard, { moved: 0, noContainer: true }, Date.now()); if (out?.action === "cooldown") noteFail(bot, "deposit:no_container_cooldown", new Error("home container not found (cooldown)")); } catch {} // cycle0659 F1
       if (Date.now() - (r.depFailSaidAt || 0) > 60000) { r.depFailSaidAt = Date.now(); say(owner, bot, "拠点のチェストが見つかりません。入庫できませんでした", true); }
     }
   }
@@ -972,7 +979,7 @@ function startWork(bot, r, target, opts = {}) {
   if (r.work && r.work.typeId === target.typeId && r.work.loc.x === target.x && r.work.loc.y === target.y && r.work.loc.z === target.z) return true;
   // v0.4.76 遮蔽除去: 先掘り中は主対象 (main) が一致すれば先掘り対象の進捗を保持する
   if (r.work && r.work.main && r.work.main.typeId === target.typeId && r.work.main.loc.x === target.x && r.work.main.loc.y === target.y && r.work.main.loc.z === target.z) return true;
-  if (structureGuard(bot.dimension, target)) return false; // 人工物の近くでは壊さない
+  if (structureGuard(bot.dimension, target) && !CROP_DROPS[target.typeId]) { r.lastWorkReject = { reason: "STRUCTURE_GUARD", typeId: target.typeId, at: Date.now() }; return false; } // cycle0659 HV1c: crops exempt + record
   stashWorkProgress(r, workHardOf, Date.now()); // A06-03 (cycle0224): 差替確定点で現行 work の掘削進捗を退避する
   const hardOf = workHardOf; // v0.4.88: 単一の正は workHardOf (tickWork の dig_first 差し替えと共用)
   const hard = hardOf(target.typeId);
@@ -1277,7 +1284,7 @@ function tickAutonomy(bot, owner, ctx, effMove) {
     case "place_torch_dark": { // cycle2117 torchfix: 足元へ降りる目標を張り syncFlyGoal の interact 降下に載せる (張るだけでは消費しない)
       try { r.target = { x: Math.floor(bot.location.x) + 0.5, y: Math.floor(bot.location.y), z: Math.floor(bot.location.z) + 0.5 }; r.moveAct = "place_torch"; } catch {}
       placeTorch(bot, r, ctx); break; }
-    case "deposit_at_home": { const h = homeOf(bot); if (h) { r.target = { x: h.x + 0.5, y: h.y + 1, z: h.z + 0.5 }; execArrive(bot, owner, { act: "deposit" }, ctx, null); } break; }
+    case "deposit_at_home": { const h = homeOf(bot); if (h && h.dim === bot.dimension.id) { r.target = { x: h.x + 0.5, y: h.y + 1, z: h.z + 0.5 }; execArrive(bot, owner, { act: "deposit" }, ctx, null); } break; } // cycle0659 F4 dim gate
     case "deliver_to_owner": { // cycle1807 U1: 距離・次元ゲート無しの即時転送を是正 (DELIVER_RANGE が単一の正、範囲外は主人へ接近目標を張る)
       let inRange = false; try { inRange = owner.dimension.id === bot.dimension.id && dist(bot.location, owner.location) <= DELIVER_RANGE; } catch {}
       if (inRange) {
@@ -2111,7 +2118,7 @@ system.runInterval(() => {
     sv.nextIdx = (idx + 1) % 16;
     if (res === "done") { sv.fails = 0; sv.doneMask |= (1 << idx); sv.at = Date.now(); if (sv.doneMask === 0xffff && sv.doneAt == null) sv.doneAt = sv.at; }
     else if (res === "partial") { sv.fails = 0; sv.at = Date.now(); } // B-prime: progress refreshes freshness only / cycle0628: 進捗で fails リセット (survey_broken.js の nextFails と同義。断片抽出ハーネスと両立させるため実行部は自己完結形で書く)
-    else if (res === "error") { sv.fails++; if (sv.fails > 40) { sv.quarantinedUntil = Date.now() + 900000; try { surveyGlobalEvents = pruneGlobalErrorEvents([...surveyGlobalEvents, { key: surveyKeyOf(sv.dim, sv.rx, sv.rz), at: Date.now() }], Date.now()); if (shouldTripGlobalLatch(surveyGlobalEvents, Date.now())) { surveyLatch = tripSurveyLatch(surveyLatch, Date.now()); console.warn("[LIZE] chunk survey paused (failures spread across regions, cooldown recovery)"); } } catch {} } } // cycle0628: 単一区画の失敗では全体を止めず当該区画だけ15分隔離。全体停止は複数区画への拡散時のみ＋5分クールダウンで回復 (恒久ラッチ surveyBroken は廃止)
+    else if (res === "error") { sv.fails++; if (sv.fails > 40) { sv.quarantinedUntil = Date.now() + 900000; sv.fails = 0; /* cycle0659: reset fails on quarantine */ try { surveyGlobalEvents = pruneGlobalErrorEvents([...surveyGlobalEvents, { key: surveyKeyOf(sv.dim, sv.rx, sv.rz), at: Date.now() }], Date.now()); if (shouldTripGlobalLatch(surveyGlobalEvents, Date.now())) { surveyLatch = tripSurveyLatch(surveyLatch, Date.now()); console.warn("[LIZE] chunk survey paused (failures spread across regions, cooldown recovery)"); } } catch {} } } // cycle0628: 単一区画の失敗では全体を止めず当該区画だけ15分隔離。全体停止は複数区画への拡散時のみ＋5分クールダウンで回復 (恒久ラッチ surveyBroken は廃止)
 // unloaded は次の tick に別のチャンクを試す (リゼが近づけば読み込まれる)
     break;
   }
@@ -2802,7 +2809,7 @@ function tickLongTask(bot, owner, r, ctx) {
       if (dist(bot.location, rp) <= DELIVER_RANGE) { r.justDeposited = false; doDeliver(bot, owner, r, { order: { returnTo: "home" } }); if (r.justDeposited) { completeLongTask(bot, owner, r); return true; } lt.deliverFails = (lt.deliverFails || 0) + 1; if (lt.deliverFails > LT_DELIVER_FAIL_LIMIT) { noteFail(bot, "longtask:deliver_failed", new Error(lt.target)); completeLongTask(bot, owner, r, false, "", `長期タスク、ここまでです。${lt.name}は揃えたのですが、拠点へ入庫できませんでした。チェストの空きや設置を確認してください`); return true; } saveLongTask(bot, r); return true; } // v0.4.79 B-1+C-2: 入庫実測なしで完了しない。事前クリアで残留フラグの偽完了も防ぐ
       r.target = rp; r.moveAct = "follow"; return true;
     }
-    if (dist(bot.location, owner.location) <= DELIVER_RANGE) {
+    if (owner.dimension.id === bot.dimension.id && dist(bot.location, owner.location) <= DELIVER_RANGE) { // cycle0659 F2 dim gate
       const bc = invOf(bot), oc = invOf(owner);
       let delivered = 0;
       // v0.4.70: 手持ちが足りない (探し尽くしても見つからなかった等) 時は、ある分だけ渡して正しく伝える。
@@ -2977,6 +2984,7 @@ function handleMissionSay(bot, owner, r, d) {
 }
 function doDeliver(bot, owner, r, m) {
   if (m.order.returnTo === "home") { execArrive(bot, owner, { act: "deposit" }, r.lastCtx || {}, null); if (r.justDeposited) { r.deliveredFlag = true; r.deliverFail = false; } return; }
+  try { if (owner.dimension.id !== bot.dimension.id) { r.deliverFail = true; noteFail(bot, "deliver:dim_mismatch", new Error("owner in another dimension")); return; } } catch { r.deliverFail = true; return; } // cycle0659 F2 dim gate
   const oc = invOf(owner); if (!oc) { r.deliverFail = true; noteFail(bot, "deliver:no_owner_inv", new Error("owner inventory unavailable")); return; }
   const res = transferFiltered(bot, oc, null); recordStore(r, "doDeliver", res);
   // 検証: 1個も渡せなかったら「成功したつもり」にせず失敗として記録する
