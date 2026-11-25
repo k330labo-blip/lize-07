@@ -84,7 +84,8 @@ import { applySettlePitch, isSettleActive, shouldSettle } from "./settle_math.js
 import { applyPlacesettlePitch, isPlacesettleActive, shouldPlacesettle } from "./placesettle_math.js"; // POLISH-ANIM-PLACESETTLE-01 (cycle2248): 設置完了直後の小さな確認視線 (表示層のみ・実機確認待ち)
 import { applyCraftsettlePitch, isCraftsettleActive, shouldCraftsettle } from "./craftsettle_math.js"; // POLISH-ANIM-CRAFTSETTLE-01 (cycle0141): 製作/精錬完了直後の小さな確認視線 (表示層のみ・実機確認待ち)
 import { createDeliverGuardState, noteDeliverOutcome, isDeliverCooling } from "./deliver_guard_math.js";
-import { createDepositGuardState, noteDepositOutcome, isDepositCooling, nextDepositDeliverFail } from "./deposit_guard_math.js"; // cycle0659: deposit F1/F3 guard // A18-TR-01 (cycle0446): planner deliver_to_owner 満杯失敗の出口 (連続全滅3回で60秒冷却し他 goal へ譲る)
+import { createDepositGuardState, noteDepositOutcome, isDepositCooling, nextDepositDeliverFail } from "./deposit_guard_math.js"; // cycle0659: deposit F1/F3 guard
+import { ownerLavaNearFromIds, lavaBelowFromIds, LAVA_BELOW_SCAN } from "./lava_detect_math.js"; // cycle0721: LAVA-01/02 検知分離 // A18-TR-01 (cycle0446): planner deliver_to_owner 満杯失敗の出口 (連続全滅3回で60秒冷却し他 goal へ譲る)
 import { applyDeliverBowPitch, isDeliverBowActive, shouldDeliverBow } from "./deliverbow_math.js"; // POLISH-ANIM-DELIVERBOW-01 (cycle0446): 手渡し成功直後の小さな会釈 (表示層のみ・実機確認待ち)
 import { applyStoresettlePitch, isStoresettleActive, shouldStoresettle } from "./storesettle_math.js";
 import { applyNospaceYaw, isNospaceActive, shouldNospace } from "./nospace_math.js"; // POLISH-ANIM-NOSPACE-01 (cycle0537): 満杯で拾えない辺の小さな首振り (表示層のみ・実機確認待ち)
@@ -393,7 +394,7 @@ function buildContext(bot, owner) {
     owner: { present: !!owner, hpPct: owner ? (oHp.max ? oHp.cur / oHp.max : 1) : 0, hunger: 20, sneaking: false, sprinting: false, inWater: false, onFire: false, idleSec: 0, underground: false, dimensionSame: !!owner && owner.dimension.id === dim.id, dead: !owner },
     inv: { used: 0, size: 27, full: false, nearFull: false, hasFood: false, foodCount: 0, hasValuable: false, valuableCount: 0, hasTorch: false, hasWeapon: false },
     env: { isNight: false, isDawn: false, isDusk: false, isRaining: false, isThundering: false },
-    danger: { nearestDist: 999, count: 0, creeperDist: 999, rangedDist: 999, lavaNear: false, ownerTargeted: false },
+    danger: { nearestDist: 999, count: 0, creeperDist: 999, rangedDist: 999, lavaNear: false, ownerLavaNear: false, lavaBelow: false, lavaBelowDist: 999, ownerTargeted: false },
     drops: { count: 0, nearestDist: -1, valuableDist: -1, foodDist: -1, ownerDroppedDist: -1 },
     home: { registered: !!home, chestFull: false, chestMissing: false, dist: homeDist },
     flags: { warnOk: true, justDelivered: !!r.justDelivered, justDeposited: !!r.justDeposited, bond: dp(bot, "cb_bond", 30), trust: dp(bot, "cb_trust", 30) },
@@ -543,6 +544,19 @@ function buildContext(bot, owner) {
   try {
     const bl = dim.getBlock({ x: Math.floor(bot.location.x), y: Math.floor(bot.location.y) - 1, z: Math.floor(bot.location.z) });
     c.danger.lavaNear = !!bl && bl.typeId.includes("lava");
+    // cycle0721 LAVA-01/02: 検知の分離。主人向け警告は主人の足元で、落下先は下方走査で判定する (lavaNear は Bot 自身専用のまま)
+    try {
+      const ox = Math.floor(owner.location.x), oy = Math.floor(owner.location.y) - 1, oz = Math.floor(owner.location.z);
+      const oc = [[ox, oz], [ox + 1, oz], [ox - 1, oz], [ox, oz + 1], [ox, oz - 1]].map(([x, z]) => { try { return dim.getBlock({ x, y: oy, z })?.typeId; } catch { return undefined; } });
+      c.danger.ownerLavaNear = ownerLavaNearFromIds(oc);
+    } catch {}
+    try {
+      const bx = Math.floor(bot.location.x), by = Math.floor(bot.location.y), bz = Math.floor(bot.location.z);
+      const col = [];
+      for (let d = 2; d < 2 + LAVA_BELOW_SCAN; d++) { try { col.push(dim.getBlock({ x: bx, y: by - d, z: bz })?.typeId); } catch { col.push(undefined); } }
+      const bd = lavaBelowFromIds(col);
+      c.danger.lavaBelow = bd !== null; c.danger.lavaBelowDist = bd === null ? 999 : bd;
+    } catch {}
     const above = dim.getTopmostBlock({ x: Math.floor(owner.location.x), z: Math.floor(owner.location.z) });
     c.owner.underground = !!above && above.location.y > owner.location.y + 3;
   } catch {}

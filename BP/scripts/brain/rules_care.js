@@ -44,8 +44,8 @@ export const RULES = [
   { id:'care_owner_in_water_long_low_hp', p:868, when:c=>c.owner.present && c.owner.dimensionSame && c.owner.inWater && c.owner.hpPct<0.6 && c.danger.count===0, act:'go_owner', say:'溺れてない？大丈夫？', note:'水中＋HP6割未満＋敵なし（戦闘でないのにHP減＝溺れ疑い）で様子を見に行く' },
   { id:'care_owner_in_water_night', p:838, when:c=>c.owner.present && c.owner.inWater && c.env.isNight && c.self.distOwner>10, act:'follow_close', say:'夜の海は危ないよ', note:'水中＋夜＋距離10超、水中夜間の密着' },
   { id:'care_owner_in_water_hungry', p:852, when:c=>!c.flags.justDelivered && c.owner.present && c.owner.inWater && c.owner.hunger<=5 && c.inv.hasFood && !c.owner.onFire, act:'deliver_food', say:'陸に上がったら食べてね', note:'水中＋空腹5以下＋食料あり＋炎上でない、水中配達の分岐' },
-  { id:'care_lava_near_owner_low', p:890, when:c=>c.owner.present && c.danger.lavaNear && c.owner.hpPct<0.5 && c.flags.warnOk, act:'warn_owner_low', say:'溶岩近いよ、落ちないで！', note:'溶岩接近＋HP5割未満＋警告可、落下事故への警告' },
-  { id:'care_lava_near_underground', p:866, when:c=>c.owner.present && c.danger.lavaNear && c.owner.underground && c.flags.warnOk, act:'warn_owner_low', say:'足元、溶岩だよ', note:'溶岩接近＋地下＋警告可、洞窟溶岩への注意' },
+  { id:'care_lava_near_owner_low', p:890, when:c=>c.owner.present && c.danger.ownerLavaNear && c.owner.hpPct<0.5 && c.flags.warnOk, act:'warn_owner_low', say:'溶岩近いよ、落ちないで！', note:'溶岩接近＋HP5割未満＋警告可、落下事故への警告' },
+  { id:'care_lava_near_underground', p:866, when:c=>c.owner.present && c.danger.ownerLavaNear && c.owner.underground && c.flags.warnOk, act:'warn_owner_low', say:'足元、溶岩だよ', note:'溶岩接近＋地下＋警告可、洞窟溶岩への注意' },
   { id:'care_lava_near_go', p:858, when:c=>c.owner.present && c.danger.lavaNear && c.self.distOwner>12, act:'go_owner', say:'危ない場所だね、合流する', note:'溶岩接近＋距離12超、危険地帯では合流優先' },
   { id:'care_thunder_owner_outside', p:844, when:c=>c.owner.present && c.env.isThundering && !c.owner.underground && c.self.distOwner>8, act:'follow_close', say:'雷すごい…近くにいるね', note:'雷雨＋屋外＋距離8超、雷雨時の密着' },
 

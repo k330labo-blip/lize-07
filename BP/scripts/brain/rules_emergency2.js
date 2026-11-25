@@ -19,7 +19,7 @@ export const RULES = [
 {id:'emg2_owner_fall_night',p:912,when:c=>Boolean(c.x?.falling&&(c.x?.ownerFallDist??0)>=15&&c.env.isNight),act:'follow_close',say:'暗い中での落下は危険です。近くにいます',note:'夜間の大落下で密着追随'},
 {id:'emg2_owner_fall_near_void_combo',p:918,when:c=>Boolean(c.x?.falling&&c.x?.voidRisk&&(c.x?.ownerFallDist??0)>=10&&c.owner.dimensionSame),act:'go_owner',say:'その下、奈落です。着地位置を外さないでください',note:'落下＋奈落リスクの複合で合流警告'},
 {id:'emg2_self_falling_hostile',p:914,when:c=>Boolean(c.x?.selfFalling&&c.self.hpPct<=0.5&&c.danger.nearestDist<8),act:'rise_avoid',say:'落下中に撃たれています。上へ逃げます',note:'自分の落下中・低HP・敵接近で上昇回避'},
-{id:'emg2_self_falling_lava_below',p:917,when:c=>Boolean(c.x?.selfFalling&&c.danger.lavaNear),act:'rise_avoid',say:'落下先が溶岩です。浮き直します',note:'落下先が溶岩なら上昇回避'},
+{id:'emg2_self_falling_lava_below',p:917,when:c=>Boolean(c.x?.selfFalling&&c.danger.lavaBelow),act:'rise_avoid',say:'落下先が溶岩です。浮き直します',note:'落下先が溶岩なら上昇回避'},
 {id:'emg2_owner_fall_underground',p:911,when:c=>Boolean(c.x?.falling&&(c.x?.ownerFallDist??0)>=14&&c.owner.underground&&c.owner.dimensionSame),act:'go_owner',say:'縦穴の落下ですね。下で待っています',note:'地下縦穴での大落下に先行合流'},
 // === 窒息 (suffocating) ===
 {id:'emg2_owner_suffocating_low',p:919,when:c=>Boolean(c.x?.suffocating&&c.owner.hpPct<=0.4&&c.owner.present&&c.owner.dimensionSame),act:'go_owner',say:'窒息しています。埋まったブロックを崩してください',note:'主人窒息かつ低HPで至急合流'},

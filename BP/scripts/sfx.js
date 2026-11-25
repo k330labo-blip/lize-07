@@ -162,7 +162,9 @@ export function materialOfTypeId(typeId) {
   if (id === "powder_snow") return "powder_snow";                         // 8
   if (id === "snow" || id === "snow_layer" || id === "snow_block" || id === "top_snow") return "snow"; // 9 (cycle0446: snow_block/top_snow が stone へ落ちていた誤分類を是正)
   if (id.endsWith("_wool") || id.endsWith("_carpet")
-      || id.endsWith("_bed") || id.endsWith("_banner") || id === "banner") return "cloth";   // 10 (+a11 bed/banner 全色 / cycle0553: 素の banner は endsWith に掛からず stone へ落ちていた非対称を是正)
+      || id.endsWith("_bed") || id.endsWith("_banner") || id === "banner"
+      || id === "bed" || id === "carpet" || id === "wool"
+      || id === "candle" || id.endsWith("_candle")) return "cloth";   // 10 (+a11 bed/banner 全色 / cycle0553: 素の banner / cycle0721: 素の bed/carpet/wool と ろうそく17形も stone へ落ちていた非対称を是正)
   if (id === "netherite_block") return "netherite";                      // 11a (cycle1303): 完全一致のみ。ancient_debris は巻き込まない
   if (id === "ice" || id === "packed_ice" || id === "blue_ice" || id === "frosted_ice") return "ice"; // 11b (cycle1322): 完全一致集合のみ (includes("ice") は将来の無関係 ID を巻き込むため不採用)
   if (id.includes("vines")) return "vines";                               // 11c (cycle1322): 複数形のみ。単数 vine は grass のまま (PLANT 側に "vines" を含む ID は無い)
