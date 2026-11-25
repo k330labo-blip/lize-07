@@ -45,6 +45,8 @@ import { createThresholdState, noteThreshold as noteThresholdState, sampleThresh
 import { createEdgepeekState, noteEdgepeek as noteEdgepeekState, sampleEdgepeek } from "./edgepeek_math.js";
 import { createIcebalanceState, noteIcebalance as noteIcebalanceState, sampleIcebalance } from "./icebalance_math.js";
 import { createStepupState, noteStepup as noteStepupState, sampleStepup } from "./stepup_math.js";
+import { banKeyFor, matchesBan, isBanned } from "./trunk_ban.js"; // queue0-A bug2 (cycle1728, v0.5.19): trunk-unit ban
+import { createWorkglanceState, noteWorkglance, sampleWorkglance } from "./workglance_math.js"; // POLISH-ANIM-WORKGLANCE-01 (cycle1728, v0.5.19)
 import { notePortalsteady, portalsteadyOffsetsAt, isPortalsteadyActive } from "./portalsteady_math.js";
 import { createSurfacebreathState, stepSurfacebreath, sampleSurfacebreath, applySurfacebreathPitch } from "./surfacebreath_math.js"; // POLISH-ANIM-SURFACEBREATH-01 (cycle1703)
 import { createMoveTracker, moveTrackStep, drainMoveEvents } from "./move_state.js"; // ground-walk Stage 0-B (cycle1703): record-only wiring // POLISH-ANIM-PORTALSTEADY-01 (cycle1640): 次元移動直後の立て直し (表示層のみ・実機確認待ち) // POLISH-ANIM-STEPUP-01 (cycle1603): 1マス段差を上る瞬間の小さな前傾 (表示層のみ・実機確認待ち) // POLISH-ANIM-ICEBALANCE-01 (cycle1543): 氷上のバランス取り (表示層のみ・実機確認待ち)
@@ -190,7 +192,7 @@ function rt(bot) {
     nav: null, navDim: null, navMode: "direct", mission: undefined, missionKills: 0, deliveredFlag: false, conv: null, fallbackStreak: 0, lastCtx: null, lastChatAt: 0, lastPraiseAt: 0, lastDangerAt: 0, sideState: { cooldowns: {}, now: 0 }, sideTask: null, mTargetLoc: null, mTargetType: null, mTargetEntity: null, mTargetKind: null, mFound: false, mAtReturn: false, mScan: null, percOpps: [], buildPlan: null, hyst: null, suspendNotified: false, usedHonesty: [],
     lastAmbientAt: 0, equipCore: null, equipRestored: false, equipChanged: null, equipChangedAt: 0, equipFromOwner: false, justHealedAt: 0, lastAmmoCount: 0, lastHealCount: 0,
     // v0.3.9: 飛行・目標固定・ウォッチドッグ
-    fly: null, flyDim: null, flyMode: "ground", ownerPosCache: null, moveTracker: null, moveDim: null, moveState: null, moveEvents: [], surfacebreathState: null, mTargetKey: "", mTargetSince: 0, mLastHave: -1, mBanKey: "", mBanUntil: 0, watchHist: [], watchAt: 0, lastHopAt: 0,
+    fly: null, flyDim: null, flyMode: "ground", ownerPosCache: null, moveTracker: null, moveDim: null, moveState: null, moveEvents: [], surfacebreathState: null, workglanceState: null, workglanceSeenAt: 0, mTargetKey: "", mTargetSince: 0, mLastHave: -1, mBanKey: "", mBanUntil: 0, watchHist: [], watchAt: 0, lastHopAt: 0,
     // v0.4.0: 長期自律タスク
     longtask: undefined, ltLegActive: false, mineLeg: null, mineDir: null, spiral: null,
     // v0.4.1: 失敗記録・装備破損の監視
@@ -1127,16 +1129,16 @@ function movementWatchdog(bot, r, pos) {
   const now = Date.now();
   if (now - (r.watchAt || 0) < 500) return;
   r.watchAt = now;
-  r.watchHist.push({ x: pos.x, z: pos.z, t: now });
+  r.watchHist.push({ x: pos.x, y: pos.y, z: pos.z, t: now }); // queue0-A bug1 (cycle1728): keep y for 3D stuck detection
   while (r.watchHist.length && now - r.watchHist[0].t > 6000) r.watchHist.shift();
   if (r.watchHist.length < 8) return;
   const t = r.target;
   // v0.4.59 (外部レビュー指摘4): 水平だけ見ると「真上だが高さが離れている」を到着扱いして救済が働かない
   if (Math.hypot(t.x - pos.x, t.z - pos.z) <= 3 && (typeof t.y !== "number" || Math.abs(t.y - pos.y) <= 2)) return;
   const first = r.watchHist[0];
-  const net = Math.hypot(pos.x - first.x, pos.z - first.z);
+  const net = Math.hypot(pos.x - first.x, (pos.y||0) - (first.y||0), pos.z - first.z); // queue0-A bug1: 3D
   let path = 0;
-  for (let i = 1; i < r.watchHist.length; i++) path += Math.hypot(r.watchHist[i].x - r.watchHist[i - 1].x, r.watchHist[i].z - r.watchHist[i - 1].z);
+  for (let i = 1; i < r.watchHist.length; i++) path += Math.hypot(r.watchHist[i].x - r.watchHist[i - 1].x, (r.watchHist[i].y||0) - (r.watchHist[i - 1].y||0), r.watchHist[i].z - r.watchHist[i - 1].z); // queue0-A bug1: 3D
   const oscillating = path > 3 && net < 1.0;   // 行ったり来たりしている
   const frozen = path < 0.3 && r.stuckSec >= 3; // 全く動いていない
   if (!oscillating && !frozen) return;
@@ -1180,7 +1182,7 @@ function moveDirect(bot, r) {
   let liftedY = ny; try { const lf = liftFeet(bot.dimension, { x: nx, y: ny, z: nz }); if (!lf || lf.y > p.y + 1.25) { r.stuckSec += 0.1; r.lastPos = { ...p }; return; } liftedY = lf.y; } catch {}
   try { if (hd > 0.5) bot.teleport({ x: nx, y: liftedY, z: nz }, { rotation: { x: 0, y: yawToward(dx, dz) } }); else bot.teleport({ x: nx, y: liftedY, z: nz }); } catch {} // heading H1: fly/nav 経路と同様に進行方向を向く
   // ハマり検出
-  if (r.lastPos && Math.hypot(p.x - r.lastPos.x, p.z - r.lastPos.z) < 0.05 && hd > 2) r.stuckSec += 0.1; else r.stuckSec = 0;
+  if (r.lastPos && Math.hypot(p.x - r.lastPos.x, p.z - r.lastPos.z) < 0.05 && (typeof t.y === "number" ? Math.hypot(p.x - t.x, p.y - t.y, p.z - t.z) : hd) > 2) r.stuckSec += 0.1; else r.stuckSec = 0; // queue0-A bug1 (cycle1728): 3D distance (was horizontal-only, so targets below never accumulated stuck)
   r.lastPos = { ...p };
 }
 
@@ -1422,7 +1424,7 @@ system.runInterval(() => {
     if (fres) { const fr = fres.reason || ""; if (fr && fr !== r.lastFlyReason) r.flyReasonCount = (r.flyReasonCount || 0) + 1; if (fr) r.lastFlyReason = fr; if (fres.arrived) r.flyArrivedAt = Date.now(); } // Phase2: fly理由の回収（追加のみ・挙動不変）
     if (fres && fres.mode === "fly") {
       if (fres.move) { try { bot.teleport(fres.move, { rotation: { x: 0, y: fres.move.yaw } }); } catch {} }
-      else { try { clearPathAhead(bot, r, ["dest_blocked", "flight_blocked", "no_progress"].includes(fres.reason) || r.stuckSec >= 1); } catch {} } // v0.4.68: 塞がれて動けない時は掘って進む
+      else { try { clearPathAhead(bot, r, ["dest_blocked", "flight_blocked", "no_progress"].includes(fres.reason) || r.stuckSec >= 1); } catch {} } if (fres.move && r.stuckSec >= 1) { try { clearPathAhead(bot, r, true); } catch {} } // queue0-A bug1 (cycle1728): hover move issued but stuck -> still try digging rescue // v0.4.68: 塞がれて動けない時は掘って進む
       const t = r.target; const td = Math.hypot(t.x - pos0.x, t.y - pos0.y, t.z - pos0.z);
       if (r.lastPos && Math.hypot(pos0.x - r.lastPos.x, pos0.y - r.lastPos.y, pos0.z - r.lastPos.z) < 0.05 && td > 2) r.stuckSec += 0.1; else r.stuckSec = 0;
       r.lastPos = { ...pos0 };
@@ -1442,7 +1444,7 @@ system.runInterval(() => {
       const lifted = liftFeet(bot.dimension, { x: res.move.x, y: res.move.y, z: res.move.z }); // v0.4.69: 段差で下半身が埋まらない
       if (lifted) { try { bot.teleport(lifted, { rotation: { x: 0, y: res.move.yaw } }); } catch {} } else { try { navClearGoal(navOf(bot, r)); } catch {} } // 体が入らないなら動かず経路を引き直す
       const t = r.target; const hd = Math.hypot(t.x - p0.x, t.z - p0.z);
-      if (r.lastPos && Math.hypot(p0.x - r.lastPos.x, p0.z - r.lastPos.z) < 0.05 && hd > 2) r.stuckSec += 0.1; else r.stuckSec = 0;
+      if (r.lastPos && Math.hypot(p0.x - r.lastPos.x, p0.z - r.lastPos.z) < 0.05 && (typeof t.y === "number" ? Math.hypot(p0.x - t.x, p0.y - t.y, p0.z - t.z) : hd) > 2) r.stuckSec += 0.1; else r.stuckSec = 0; // queue0-A bug1 (cycle1728): 3D distance
       r.lastPos = { ...p0 };
     } else {
       moveDirect(bot, r);
@@ -1815,7 +1817,7 @@ function lookupSurvey(bot, ids, banKey = null) {
     for (const id of Object.keys(sv.hits)) {
       if (!want.has(id)) continue;
       for (const loc of sv.hits[id]) {
-        if (banKey && banKey === `${loc.x},${loc.y},${loc.z}`) continue;
+        if (banKey && matchesBan(loc, id, banKey)) continue; // queue0-A bug2 (cycle1728): trunk-unit ban matching
         const dx = loc.x - p.x, dy = loc.y - p.y, dz = loc.z - p.z;
         cands.push({ sv, id, loc, d: dx * dx + dz * dz + dy * dy * 2.25 });
       }
@@ -1870,7 +1872,7 @@ function lavaNear(dim, c) {
   return false;
 }
 function abandonTunnel(bot, owner, r, why) {
-  r.mBanKey = r.mTargetKey; r.mBanUntil = Date.now() + 120000; r.mTargetLoc = null; r.mTargetKey = ""; r.mTargetSince = Date.now();
+  r.mBanKey = banKeyFor(r.mTargetLoc, r.mTargetType) || r.mTargetKey; r.mBanUntil = Date.now() + 120000; r.mTargetLoc = null; r.mTargetKey = ""; r.mTargetSince = Date.now(); // queue0-A bug2 (cycle1728): trunk-unit ban
   r.tunnel = null; r.work = null;
   try { r.lastBreak = { act: "BREAK", ok: false, reason: why, item: null, at: Date.now() }; commitLastAction(r, r.lastBreak); } catch {}
   if (!r.tunnelWarnAt || Date.now() - r.tunnelWarnAt > 60000) { r.tunnelWarnAt = Date.now(); try { say(owner, bot, why === "LAVA" ? "その先は溶岩があります。別の鉱石を探します" : "そこへは掘り進めませんでした。別のものを探します", true); } catch {} }
@@ -1975,6 +1977,7 @@ function findMissionTarget(bot, r, scan, step, scanUnknown = false) {
       if (peek.state === "hit" && peek.loc) { const d = dist(bot.location, peek.loc); if (!best || d < best.d) best = { loc: peek.loc, typeId: id, d }; }
       else if (peek.state === "unknown") sawUnknown = true;
     }
+    if (best && isBanned(best.loc, best.typeId, r.mBanKey, r.mBanUntil, Date.now())) best = null; // queue0-A bug2 (cycle1728): banned trunk is not re-selected from scan cache
     if (best) return { found: true, kind: "block", loc: best.loc, typeId: best.typeId, detail: { state: "present" } };
     if (sawUnknown) return { found: false, detail: { state: "unknown" } }; // Step 3b: 測れていない間はドロップへ逸れない
     { const sv = lookupSurvey(bot, ids, Date.now() < (r.mBanUntil || 0) ? r.mBanKey : null); if (sv) return { found: true, kind: "block", loc: sv.loc, typeId: sv.typeId, detail: { state: "present", via: "survey" } }; } // v0.4.66: チャンク調査の結果
@@ -2764,12 +2767,12 @@ function tickMission(bot, owner, ctx, scan) {
     const prevTS = r.mTargetState;
     if (r.mTargetSince && prevTS && (prevTS.state === "unknown" || prevTS.state === "pending") && prevTS.typeId === (step.target ?? null) && typeof prevTS.at === "number") { r.mTargetSince += Math.max(0, Math.min(Date.now() - prevTS.at, 10000)); }
     if (curHave !== r.mLastHave) { r.mLastHave = curHave; r.mTargetSince = Date.now(); }
-    else if (r.mTargetLoc && r.mTargetSince && Date.now() - r.mTargetSince > 45000 && !(r.tunnel && r.tunnel.key === r.mTargetKey && Date.now() - r.tunnel.lastStepAt < 15000)) { /* v0.4.66: 掘り進めている間は見切らない */ r.mBanKey = r.mTargetKey; r.mBanUntil = Date.now() + 60000; r.mTargetLoc = null; r.mTargetKey = ""; r.mTargetSince = Date.now(); }
+    else if (r.mTargetLoc && r.mTargetSince && Date.now() - r.mTargetSince > 45000 && !(r.tunnel && r.tunnel.key === r.mTargetKey && Date.now() - r.tunnel.lastStepAt < 15000)) { /* v0.4.66: 掘り進めている間は見切らない */ r.mBanKey = banKeyFor(r.mTargetLoc, r.mTargetType) || r.mTargetKey; r.mBanUntil = Date.now() + 60000; r.mTargetLoc = null; r.mTargetKey = ""; r.mTargetSince = Date.now(); } // queue0-A bug2 (cycle1728): trunk-unit ban (was found-cell key, looped on same trunk)
     // 目標の固定: 一度狙った対象は、消える/壊れるまで変えない（毎tickの最寄り再選択による上下動・迷走を断つ）
     if (r.mTargetLoc && missionTargetValid(bot, r)) ft = { found: true, kind: r.mTargetKind, loc: r.mTargetLoc, typeId: r.mTargetType, entity: r.mTargetEntity };
     else {
       ft = findMissionTarget(bot, r, scan, step, ctx.x?.obs ? ctx.x.obs.scan !== "ok" : ctx.x?.scanOk === false);
-      if (ft.found && ft.loc && r.mBanKey === `${ft.loc.x},${ft.loc.y},${ft.loc.z}` && Date.now() < r.mBanUntil) {
+      if (ft.found && ft.loc && isBanned(ft.loc, ft.typeId, r.mBanKey, r.mBanUntil, Date.now())) { // queue0-A bug2 (cycle1728)
         // v0.4.66: 一番近いものを避けている時は、調査結果から次に近いものを選ぶ (隣の鉱石を見落とさない)
         let alt = null; try { if (ft.kind === "block" && ft.typeId) alt = lookupSurvey(bot, [ft.typeId], r.mBanKey); } catch {}
         ft = alt ? { found: true, kind: "block", loc: alt.loc, typeId: alt.typeId, detail: { state: "present", via: "survey" } } : { found: false };
@@ -3102,6 +3105,8 @@ function applyGaze(bot, owner, ctx, scan) {
     const cellTarget = gz.gaze === "work_target" || gz.gaze === "home";
     const tp = { x: look.x, y: look.y + (cellTarget ? 0.5 : 1.4), z: look.z };
     let rot = gazeRotation(bot.location, tp);
+    // POLISH-ANIM-WORKGLANCE-01 (cycle1728, v0.5.19): owner break/place event edge -> brief glance (display only, real-machine check pending)
+    try { if (!r.workglanceState) r.workglanceState = createWorkglanceState(); const ort = owner ? ownerRt.get(owner.id) : null; const evs = []; if (ort?.breakLoc && (ort.breakAt||0) > (r.workglanceSeenAt||0)) evs.push({ kind: "break", loc: ort.breakLoc, at: ort.breakAt }); if (ort?.placeLoc && (ort.placeAt||0) > (r.workglanceSeenAt||0)) evs.push({ kind: "place", loc: ort.placeLoc, at: ort.placeAt }); evs.sort((a,b)=>a.at-b.at); for (const ev of evs) { r.workglanceSeenAt = ev.at; const fired = noteWorkglance(r.workglanceState, { nowMs: Date.now(), selfPos: bot.location, eventPos: ev.loc, eventKind: ev.kind, selfYawDeg: rot ? rot.y : null, working: !!r.work, danger: !!((ctx?.danger?.count ?? 0) > 0), falling: r.selfFalling === true, inWater: !!bot.isInWater, sameDimension: (()=>{ try { return bot.dimension.id === owner.dimension.id; } catch { return false; } })() }); if (fired) r.lastWorkglance = { at: Date.now(), kind: ev.kind }; } } catch {}
     // POLISH-ANIM-INSPECT-01 (cycle1003): 検分中はピッチへ見下ろしオフセットを重畳する (消費点はここ1箇所)
     if (rot && isInspectActive(r.inspectAnimAt, Date.now())) rot = { ...rot, x: applyInspectPitch(rot.x, Date.now() - r.inspectAnimAt) };
     if (rot && isNodActive(r.nodAnimAt, Date.now())) rot = { ...rot, x: applyNodPitch(rot.x, Date.now() - r.nodAnimAt) };
@@ -3115,7 +3120,7 @@ function applyGaze(bot, owner, ctx, scan) {
     if (rot && r.thresholdState) { const ts = sampleThreshold(r.thresholdState, Date.now()); if (ts.active) rot = { ...rot, x: rot.x + ts.gazePitchDeg }; } // POLISH-ANIM-THRESHOLD-01 (cycle1503): ピッチ重畳 (表示層のみ・実機確認待ち)
     if (rot && r.edgepeekState) { const es = sampleEdgepeek(r.edgepeekState, Date.now()); if (es.active) rot = { ...rot, x: rot.x + es.gazePitchDeg }; } // POLISH-ANIM-EDGEPEEK-01 (cycle1518): ピッチ重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot && r.icebalanceState) { const isb = sampleIcebalance(r.icebalanceState, Date.now()); if (isb.active) rot = { ...rot, x: rot.x + isb.gazePitchDeg }; }
-    if (rot && r.stepupState) { const sub = sampleStepup(r.stepupState, Date.now()); if (sub.active) rot = { ...rot, x: rot.x + sub.gazePitchDeg }; } if (rot && r.portalsteadyState && isPortalsteadyActive(r.portalsteadyState, Date.now())) { const po = portalsteadyOffsetsAt(r.portalsteadyState.startedAtMs, Date.now()); rot = { ...rot, x: rot.x + po.gazePitchDeg, y: rot.y + po.yawSwayDeg }; } if (rot && r.surfacebreathState) { const sb = sampleSurfacebreath(r.surfacebreathState, Date.now()); if (sb.active) rot = { ...rot, x: applySurfacebreathPitch(rot.x, Date.now() - r.surfacebreathState.startedAtMs) }; } // SURFACEBREATH overlay (clamped) // POLISH-ANIM-PORTALSTEADY-01 (cycle1640): 重畳の最下位 (表示層のみ・実機確認待ち) // POLISH-ANIM-STEPUP-01 (cycle1603): ピッチ重畳の最下位 (icebalance の後ろ。表示層のみ・実機確認待ち) // POLISH-ANIM-ICEBALANCE-01 (cycle1543): ピッチ重畳の最下位 (edgepeek の後ろ。表示層のみ・実機確認待ち)
+    if (rot && r.stepupState) { const sub = sampleStepup(r.stepupState, Date.now()); if (sub.active) rot = { ...rot, x: rot.x + sub.gazePitchDeg }; } if (rot && r.portalsteadyState && isPortalsteadyActive(r.portalsteadyState, Date.now())) { const po = portalsteadyOffsetsAt(r.portalsteadyState.startedAtMs, Date.now()); rot = { ...rot, x: rot.x + po.gazePitchDeg, y: rot.y + po.yawSwayDeg }; } if (rot && r.surfacebreathState) { const sb = sampleSurfacebreath(r.surfacebreathState, Date.now()); if (sb.active) rot = { ...rot, x: applySurfacebreathPitch(rot.x, Date.now() - r.surfacebreathState.startedAtMs) }; } if (rot && r.workglanceState) { const wg = sampleWorkglance(r.workglanceState, Date.now()); if (wg.active) rot = { ...rot, y: rot.y + wg.gazeYawOffsetDeg, x: rot.x + wg.gazePitchDeg }; } // WORKGLANCE-01 (cycle1728): lowest-priority overlay (display only) // SURFACEBREATH overlay (clamped) // POLISH-ANIM-PORTALSTEADY-01 (cycle1640): 重畳の最下位 (表示層のみ・実機確認待ち) // POLISH-ANIM-STEPUP-01 (cycle1603): ピッチ重畳の最下位 (icebalance の後ろ。表示層のみ・実機確認待ち) // POLISH-ANIM-ICEBALANCE-01 (cycle1543): ピッチ重畳の最下位 (edgepeek の後ろ。表示層のみ・実機確認待ち)
     if (rot) { try { bot.setRotation(rot); } catch {} }
   }
   if (gz.say && Math.random() < 0.4) sayAmbient(owner, bot, gz.say);
@@ -3526,8 +3531,8 @@ world.afterEvents.entityDie.subscribe((ev) => {
   }
 });
 world.afterEvents.playerSpawn.subscribe((ev) => { const ort = ownerRt.get(ev.player.id) || {}; ort.spawnAt = Date.now(); ort.lastMoveAt = Date.now(); ownerRt.set(ev.player.id, ort); });
-world.afterEvents.playerBreakBlock.subscribe((ev) => { const ort = ownerRt.get(ev.player.id) || {}; ort.breakAt = Date.now(); ownerRt.set(ev.player.id, ort); });
-world.afterEvents.playerPlaceBlock.subscribe((ev) => { const ort = ownerRt.get(ev.player.id) || {}; ort.placeAt = Date.now(); ownerRt.set(ev.player.id, ort); });
+world.afterEvents.playerBreakBlock.subscribe((ev) => { const ort = ownerRt.get(ev.player.id) || {}; ort.breakAt = Date.now(); try { ort.breakLoc = ev.block?.location ? { x: ev.block.location.x, y: ev.block.location.y, z: ev.block.location.z } : null; } catch { ort.breakLoc = null; } ownerRt.set(ev.player.id, ort); }); // WORKGLANCE-01 (cycle1728): keep event cell for the glance
+world.afterEvents.playerPlaceBlock.subscribe((ev) => { const ort = ownerRt.get(ev.player.id) || {}; ort.placeAt = Date.now(); try { ort.placeLoc = ev.block?.location ? { x: ev.block.location.x, y: ev.block.location.y, z: ev.block.location.z } : null; } catch { ort.placeLoc = null; } ownerRt.set(ev.player.id, ort); }); // WORKGLANCE-01 (cycle1728)
 system.runInterval(() => { for (const p of world.getAllPlayers()) { const ort = ownerRt.get(p.id) || {}; try { const v = p.getVelocity(); if (Math.abs(v.x) + Math.abs(v.z) > 0.05) ort.lastMoveAt = Date.now(); } catch {} ownerRt.set(p.id, ort); } }, 20);
 
 // チャット反応（v0.3.0）: 入力正規化 → 提案収集（指示/QA/ツール/知識/ロア/雑談）→ chat_arbiter 調停 → 応答

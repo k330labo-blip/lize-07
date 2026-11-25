@@ -64,6 +64,10 @@ export function pickaxeItemForLevel(lv) {
   const n = Number(lv) || 0;
   return n >= 4 ? "minecraft:diamond_pickaxe" : n >= 3 ? "minecraft:iron_pickaxe" : n >= 2 ? "minecraft:stone_pickaxe" : "minecraft:wooden_pickaxe";
 }
+// queue0-B (cycle1728, v0.5.19): count tools of the requested tier OR HIGHER (was exact-tier only in ensureTool)
+export function countToolAtLeastFromCounts(counts, kind, tier) { try { const lv = TIER_LEVEL[tier] || 0; let n = 0; for (const t of TIERS) if ((TIER_LEVEL[t]||0) >= lv) n += (counts?.[toolItemId(t, kind)] || 0); if (lv <= 1) n += (counts?.[`minecraft:golden_${kind}`] || 0); if (lv <= 4) n += (counts?.[`minecraft:netherite_${kind}`] || 0); return n; } catch { return 0; } } // counting-side only: golden counts as Lv1, netherite as Lv4 (never crafted by the chain)
+export function bestToolTierFromCounts(counts, kind, tier) { try { const lv = TIER_LEVEL[tier] || 0; let best = null; for (const t of TIERS) if ((TIER_LEVEL[t]||0) >= lv && (counts?.[toolItemId(t, kind)] || 0) > 0) best = t; if (lv <= 4 && (counts?.[`minecraft:netherite_${kind}`] || 0) > 0) best = "netherite"; else if (!best && lv <= 1 && (counts?.[`minecraft:golden_${kind}`] || 0) > 0) best = "golden"; return best; } catch { return null; } }
+export const EXTRA_TOOL_DURABILITY = { golden: 32, netherite: 2031 };
 export function toolItemId(tier, kind) {
   return `minecraft:${TIER_ITEM_PREFIX[tier]}_${kind}`;
 }
@@ -218,19 +222,20 @@ export function planBootstrap(input) {
   const wantCount = {}; // itemId -> 目標本数
   for (const tn of toolsNeeded) {
     let want = 1;
-    const owned = inv[tn.item] || 0;
-    const frac = invDur[tn.item] !== undefined ? invDur[tn.item] : null;
+    const ownedExact = inv[tn.item] || 0;
+    const owned = countToolAtLeastFromCounts(inv, tn.kind, tn.tier); // queue0-B (cycle1728): tier-or-higher counts as owned
+    const frac = ownedExact > 0 && invDur[tn.item] !== undefined ? invDur[tn.item] : null; // queue0-B: frac belongs to the exact item only
     // 主ツールは目標個数ぶんの消費を見積もる（1ブロック≒耐久1消費。道中の掘削は含まない）
     if (tn.kind === mainKind && typeof goal.amount === "number" && goal.amount > 0) {
-      const dur = TIER_DURABILITY[tn.tier];
+      const dur = (owned > ownedExact ? (TIER_DURABILITY[bestToolTierFromCounts(inv, tn.kind, tn.tier)] ?? EXTRA_TOOL_DURABILITY[bestToolTierFromCounts(inv, tn.kind, tn.tier)]) : TIER_DURABILITY[tn.tier]) || TIER_DURABILITY[tn.tier]; // queue0-B: durability of the best owned higher tool
       const availUses = owned > 0 ? (frac !== null ? frac : 1) * dur + Math.max(0, owned - 1) * dur : 0;
       const need = Math.ceil(Math.max(0, goal.amount - availUses) / dur);
       want = Math.max(1, owned + need);
       if (goal.amount > dur * 0.8) notes.push(`目標${goal.amount}個は${TIER_LABEL[tn.tier]}の${TOOL_KINDS[tn.kind].label}の耐久(${dur})に近い/超えるため、予備を含めて${want}本体制で計画した。道中の掘削ぶんは含まない見積もり`);
     }
     // 耐久ポリシー: 傷んだ個体があり予備が無ければ +1 本
-    if (owned > 0) {
-      const h = evaluateToolHealth({ item: tn.item, kind: tn.kind, tier: tn.tier, durabilityFrac: frac, spareCount: Math.max(0, owned - 1), canCraftNow: false });
+    if (ownedExact > 0) { // queue0-B: health policy stays on the exact item
+      const h = evaluateToolHealth({ item: tn.item, kind: tn.kind, tier: tn.tier, durabilityFrac: frac, spareCount: Math.max(0, ownedExact - 1), canCraftNow: false });
       if ((h.action === "craft_spare" || h.action === "warn") && want <= owned) want = owned + 1;
       health.push(h);
     }
@@ -346,7 +351,7 @@ export function planBootstrap(input) {
   // ツールを total 本そろえる（技術ツリーの再帰本体）
   function ensureTool(kind, tier, total) {
     const item = toolItemId(tier, kind);
-    const lack = total - V.count(item);
+    const lack = total - countToolAtLeastFromCounts(V.v, kind, tier); // queue0-B (cycle1728): a higher-tier tool satisfies the requirement; craft only the shortfall
     if (lack <= 0) return;
     const spec = TOOL_KINDS[kind];
     ensureTable();

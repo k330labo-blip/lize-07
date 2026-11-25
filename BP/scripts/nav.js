@@ -529,10 +529,10 @@ export function navTick(nav, pos, dtSec, opts = {}) {
   // ここで加算すると約2秒で無検査の direct へ降格し、塞がったセルを結局踏む)。
   if (nav.destBlocked) nav.stuckSec = 0;
   if (nav.lastPos) {
-    const moved = Math.hypot(pos.x - nav.lastPos.x, pos.z - nav.lastPos.z);
-    if (moved < 0.05 && goalDist > 2) nav.stuckSec += dtSec; else nav.stuckSec = 0;
+    const moved = Math.hypot(pos.x - nav.lastPos.x, (typeof nav.lastPos.y === "number" ? pos.y - nav.lastPos.y : 0), pos.z - nav.lastPos.z); // queue0-A bug1 (cycle1728): 3D moved
+    if (moved < 0.05 && (typeof nav.goal?.y === "number" && nav.lastPos && typeof nav.lastPos.y === "number" ? Math.hypot(goalDist, pos.y - nav.goal.y) : goalDist) > 2) nav.stuckSec += dtSec; else nav.stuckSec = 0; // queue0-A bug1 (cycle1728): 3D goal distance
   }
-  nav.lastPos = { x: pos.x, z: pos.z };
+  nav.lastPos = { x: pos.x, y: pos.y, z: pos.z }; // queue0-A bug1 (cycle1728): keep y
   if (nav.stuckSec >= 1.0) {
     nav.stuckSec = 0;
     nav.repaths++;
