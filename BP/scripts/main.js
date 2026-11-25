@@ -37,7 +37,8 @@ import { applyLookbackYaw, isLookbackActive, shouldLookback } from "./lookback_m
 import { applySkyglancePitch, isSkyglanceActive, shouldSkyglance } from "./sky_glance_math.js";
 import { createHorizonState, noteHorizon, horizonCurrentOffset } from "./horizon_glance_math.js"; // POLISH-ANIM-HORIZONGLANCE-01 (cycle0320): dawn/dusk horizon glance (display only)
 import { pickEscapeBlock, shoreNeedFor, scanShore, lavaStuckStep } from "./env02_math.js"; // ENV-02 (cycle0340): 溶岩足場脱出の知覚・出口の純粋核
-import { createNightwatchState, noteNightwatch, sampleNightwatch, applyNightwatchPitch } from "./nightwatch_math.js"; // POLISH-ANIM-NIGHTWATCH-01 (cycle0340): 夜間見回り視線 (表示層のみ)
+import { createNightwatchState, noteNightwatch, sampleNightwatch, applyNightwatchPitch } from "./nightwatch_math.js";
+import { createDoubletakeState, noteDoubletake, sampleDoubletake } from "./doubletake_math.js"; // POLISH-ANIM-DOUBLETAKE-01 (cycle0403): 主人の急接近への二度見 (表示層のみ) // POLISH-ANIM-NIGHTWATCH-01 (cycle0340): 夜間見回り視線 (表示層のみ)
 import { applyDryoffYaw, isDryoffActive, noteDryoff as noteDryoffState } from "./dryoff_math.js"; // POLISH-ANIM-DRYOFF-01 (cycle1322): 雨上がりに水を払う (表示層のみ・実機確認待ち)
 import { noteBreathCold } from "./breath_cold_math.js"; // POLISH-FX-BREATHCOLD-01 (cycle1343): 寒冷地での白い排気 (表示層のみ・粒子ID未照合のため記録のみ・実機確認待ち)
 import { fromCraftResult } from "./actions_contract.js"; // 6-ML (cycle1322): CRAFT/SMELT 実行結果の正規化 (記録専用) // POLISH-ANIM-SKYGLANCE-01 (cycle1133): 雨の降り始めに空を見上げる (表示層のみ) // POLISH-ANIM-SUMMONSCAN-01 (cycle1110): 召喚・復元直後の見回し (表示層のみ)
@@ -1583,6 +1584,11 @@ function selfRescue(bot, r) {
       if (!r.rescueNoSpot) r.rescueNoSpot = { since: nowMs, noted: false };
       if (nowMs - r.rescueNoSpot.since >= 30000 && !r.rescueNoSpot.noted) {
         r.rescueNoSpot.noted = true; r.rescueBackoffUntil = nowMs + 120000;
+        noteFail(bot, "rescue:no_spot_exhausted", new Error(JSON.stringify(stuck[0])));
+        try { const ow = getPlayer(dp(bot, "cb_owner", "")); if (ow) say(ow, bot, "埋まってしまい、自分では脱出できません。周囲を空けてください", true); } catch {}
+      } else if (r.rescueNoSpot.noted && nowMs >= (r.rescueBackoffUntil || 0)) {
+        // 到達可能性監査是正 (cycle0403-a06 実測): 従来は再武装条件が !noted に閉じ、バックオフ失効後は間引きも再通知も二度と起きない無出口だった。失効後も埋没が続くなら周期的に再通知+再バックオフする
+        r.rescueNoSpot.cycles = (r.rescueNoSpot.cycles || 0) + 1; r.rescueBackoffUntil = nowMs + 120000;
         noteFail(bot, "rescue:no_spot_exhausted", new Error(JSON.stringify(stuck[0])));
         try { const ow = getPlayer(dp(bot, "cb_owner", "")); if (ow) say(ow, bot, "埋まってしまい、自分では脱出できません。周囲を空けてください", true); } catch {}
       }
@@ -3700,6 +3706,7 @@ function applyGaze(bot, owner, ctx, scan) {
   try { const bv = typeof bot.isValid === "function" ? bot.isValid() : bot.isValid; if (bot.isValid !== undefined && !bv) return; if (owner) { const ov = typeof owner.isValid === "function" ? owner.isValid() : owner.isValid; if (owner.isValid !== undefined && !ov) return; } } catch { return; }
   // POLISH-ANIM-OWNERRETURN-01 (cycle1923): 主人の距離遷移だけを発火源にする feeder (表示層のみ・実機確認待ち)
   try { const r0 = rt(bot); if (!r0.ownerreturnState) r0.ownerreturnState = createOwnerReturnState(); const d = ctx?.self?.distOwner; const same = !!owner && !!ctx?.owner?.dimensionSame; let relYaw = 0; try { const gr = gazeRotation(bot.location, { x: owner.location.x, y: owner.location.y + 1.4, z: owner.location.z }); const cur = bot.getRotation(); relYaw = ((gr.y - (cur?.y || 0) + 540) % 360) - 180; } catch {} const rec = noteOwnerReturn(r0.ownerreturnState, { dist: same && Number.isFinite(d) && d < 900 ? d : null, busy: !!r0.work || r0.selfFalling === true, targetYawDeg: relYaw }, Date.now()); if (rec) r0.lastOwnerReturn = r0.ownerreturnState.lastRecord; } catch {}
+  try { if (!r0.doubletakeState) r0.doubletakeState = createDoubletakeState(); const dres = noteDoubletake(r0.doubletakeState, { ownerPresent: !!owner, dist: same && Number.isFinite(d) ? d : null, sameDimension: same }, Date.now(), !!((ctx?.danger?.count ?? 0) > 0) || r0.selfFalling === true || !!r0.work); if (dres === "fired") r0.lastDoubletake = { at: Date.now() }; } catch {} // POLISH-ANIM-DOUBLETAKE-01 (cycle0403) feeder: 既存観測 ctx.self.distOwner のみ (新規走査なし)
   // POLISH-ANIM-MUSICNOD-01 feeder (cycle2006): 音楽ブロック近傍滞在を代理条件とする (再生事実は正式版APIで取れない)。2秒間引き＋scanBlockNear のキャッシュ経由で新規走査は増やさない
   try { const r0 = rt(bot); if (!r0.musicnodState) r0.musicnodState = createMusicnodState(); if (Date.now() - (r0.musicnodCheckAt || 0) >= 2000) { r0.musicnodCheckAt = Date.now(); let near; let src = null; try { const scanUnk = (tid) => { const e = r0.mScanMap?.[tid]; return !!e && (e.failedCells ?? 0) * 2 > (e.totalCells ?? 2601); }; const j = scanBlockNear(bot, r0, "minecraft:jukebox"); const nb = j ? null : scanBlockNear(bot, r0, "minecraft:note_block"); if (j) { near = true; src = "jukebox"; } else if (nb) { near = true; src = "note_block"; } else if (scanUnk("minecraft:jukebox") || scanUnk("minecraft:note_block")) near = undefined; else near = false; } catch { near = undefined; } const rec = noteMusicnod(r0.musicnodState, { nearMusic: near, source: src, inCombat: (ctx?.danger?.count ?? 0) > 0, falling: r0.selfFalling === true, inWater: !!bot.isInWater, working: !!r0.work, ownerFar: typeof ctx?.self?.distOwner === "number" && ctx.self.distOwner > 16 }, Date.now()); if (rec?.entered) r0.lastMusicNod = { at: Date.now(), source: src, fired: true }; } } catch {}
   let gz = null; try { gz = decideGaze(ctx); } catch {}
@@ -3765,6 +3772,7 @@ function applyGaze(bot, owner, ctx, scan) {
     if (rot && r.yieldState) { try { const ys = sampleYield(r.yieldState, Date.now()); if (ys.active) rot = { ...rot, y: rot.y + ys.yawDeg, x: rot.x + ys.gazePitchDeg }; } catch {} } // POLISH-ANIM-YIELD-01 (cycle0153): 重畳の最下位 (表示層のみ・実機確認待ち。lateralOffset は実座標へ流さない)
     if (rot && r.combatendState) { try { const ce = sampleCombatEnd(r.combatendState, Date.now()); if (ce.active) { rot = { ...rot, x: rot.x + ce.pitchDeg }; r.lastCombatEnd = { ...(r.lastCombatEnd || {}), armPitchDeg: ce.armPitchDeg }; } } catch {} } // POLISH-ANIM-COMBATEND-01 (cycle0224): 重畳の最下位 (表示層のみ・実機確認待ち。腕ピッチは記録のみ)
     if (rot && r.horizonState) { try { const ho = horizonCurrentOffset(r.horizonState, Date.now(), rot.y, null); if (ho.active) rot = { ...rot, x: rot.x + ho.pitchDeg }; } catch {} } // POLISH-ANIM-HORIZONGLANCE-01 (cycle0320): pitch-only stage1 (sun yaw unverified), lowest overlay (display only, real-machine check pending)
+    if (rot && r.doubletakeState) { try { const dt2 = sampleDoubletake(r.doubletakeState, Date.now()); if (dt2.active) rot = { ...rot, y: rot.y + dt2.yawDeg, x: rot.x + dt2.pitchDeg }; } catch {} } // POLISH-ANIM-DOUBLETAKE-01 (cycle0403): 重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot && r.nightwatchState) { try { const nw = sampleNightwatch(r.nightwatchState, Date.now()); if (nw.active) rot = { ...rot, y: rot.y + nw.yawDeg, x: applyNightwatchPitch(rot.x, Date.now() - (r.nightwatchState.startedAtMs || Date.now())) }; } catch {} } // POLISH-ANIM-NIGHTWATCH-01 (cycle0340): 重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot) { try { bot.setRotation(rot); } catch {} }
   }
