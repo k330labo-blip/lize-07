@@ -205,7 +205,7 @@ function trackStall(m, s, obs) {
     if (s.routeFrozenObs > REGION_STALL_LIMIT) { s.routeFrozenObs = 0; return true; }
     return false;
   } // Phase2 INSPECT Step 3b (v0.4.12) + Step 3c-2 (v0.4.34): 測れていない時間 (所持/走査/対象/位置) は停滞に数えない
-  if (s.have > s.lastHave) { s.lastHave = s.have; s.stallObs = 0; s.foundStallObs = 0; s.wdFrozenObs = 0; s.routeFrozenObs = 0; return false; } // wdFrozenObs のリセットは進捗認定点でのみ (cycle1003 案B) // foundStallObs のリセットは進捗時のみ (cycle0710)
+  if (s.have > s.lastHave) { s.lastHave = s.have; s.stallObs = 0; s.foundStallObs = 0; s.wdFrozenObs = 0; s.routeFrozenObs = 0; m.suspendCount = 0; return false; } // cycle0033 F1: inventory progress also resets suspendCount // wdFrozenObs のリセットは進捗認定点でのみ (cycle1003 案B) // foundStallObs のリセットは進捗時のみ (cycle0710)
   // 対象が見えている間の作業中は停滞に数えない（掘削・戦闘は実行部側の所要時間がある）
   if (obs.foundTarget) {
     s.foundStallObs = (s.foundStallObs || 0) + 1;

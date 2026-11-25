@@ -42,6 +42,7 @@ import { createSpiral, spiralStepCell, spiralDigCells, spiralStepsTotal, spiralH
 import { steerDecision, collectHints, chooseHint, hintDirection, inDepthBand, SURVEY_HINT, reSteerDir } from "./survey_hint.js"; // cycle2333: R1 reSteerDir 配線 (発火点限定) // キュー7 (cycle1443): surveyヒントで坑道を誘導する純粋核 (ヒント無し時は従来ランダムへ完全フォールバック)
 import { createGuardState, decideResteer, recordBlocked, recordResteerApplied, legKeyOf } from "./resteer_guard_math.js"; // cycle0005: resteer F-1/F-2 ガード純粋核 (元凶方向への復帰禁止・再blocked無効化・blocked累計30秒の出口・距離/深度ガード)
 import { createWakestretchState, noteWakestretch, wakestretchCurrent, applyWakestretchPitch } from "./wakestretch_math.js"; // POLISH-ANIM-WAKESTRETCH-01 (cycle0005): 長い待機明けの小さな伸び (表示層のみ・実機確認待ち)
+import { createOwnerfalltrackState, noteOwnerfalltrack, ownerfalltrackCurrent } from "./ownerfalltrack_math.js"; // POLISH-ANIM-OWNERFALLTRACK-01 (cycle0033): owner fall gaze tracking (display only)
 import { createHeedState, noteHeed as noteHeedState, sampleHeed } from "./heed_math.js";
 import { createThresholdState, noteThreshold as noteThresholdState, sampleThreshold } from "./threshold_math.js"; // POLISH-ANIM-THRESHOLD-01 (cycle1503): くぐり視線 (表示層のみ・実機確認待ち)
 import { createEdgepeekState, noteEdgepeek as noteEdgepeekState, sampleEdgepeek } from "./edgepeek_math.js";
@@ -49,7 +50,7 @@ import { createIcebalanceState, noteIcebalance as noteIcebalanceState, sampleIce
 import { createSnowtreadState, noteSnowtread, snowtreadCurrentOffset, applySnowtreadPitch } from "./snowtread_math.js"; // POLISH-ANIM-SNOWTREAD-01 (cycle2333): 雪上歩行の小さな沈み込み (表示層のみ・実機確認待ち)
 import { createStepupState, noteStepup as noteStepupState, sampleStepup } from "./stepup_math.js";
 import { banKeyFor, matchesBan, isBanned } from "./trunk_ban.js"; // queue0-A bug2 (cycle1728, v0.5.19): trunk-unit ban
-import { createTakeBanState, recordTakeBan, isTakeBanned } from "./take_ban_math.js"; // TR2136-01 (cycle2200): 回収全量失敗の実行側見切り
+import { createTakeBanState, recordTakeBan, isTakeBanned, pruneTakeBans } from "./take_ban_math.js"; // TR2136-01 (cycle2200): 回収全量失敗の実行側見切り
 import { createWorkglanceState, noteWorkglance, sampleWorkglance } from "./workglance_math.js"; // POLISH-ANIM-WORKGLANCE-01 (cycle1728, v0.5.19)
 import { createCatchsightState, noteCatchsight, sampleCatchsight } from "./catchsight_math.js";
 import { createRainShelterState, noteRainShelter, sampleRainShelter } from "./rainshelter_math.js"; // POLISH-ANIM-RAINSHELTER-01 (cycle2231): 持続雨の待機中に屋根方向へ視線を寄せる (表示層のみ・実機確認待ち) // POLISH-ANIM-CATCHSIGHT-01 (cycle2200): 主人が投げた物の追視 (表示層のみ・実機確認待ち)
@@ -171,16 +172,35 @@ function invOf(e) { try { return e.getComponent("minecraft:inventory")?.containe
 function hpOf(e) { try { const h = e.getComponent("minecraft:health"); return { cur: h.currentValue, max: h.effectiveMax || h.maxValue || 20 }; } catch { return { cur: 20, max: 20 }; } }
 // RR-05 (cycle1303): 実測できた HP だけを返す。再開判定は未実測 (UNKNOWN) を満タンと読まない
 function hpOfMeasured(e) { try { const h = e.getComponent("minecraft:health"); if (!h) return null; const cur = h.currentValue, max = h.effectiveMax || h.maxValue || 20; if (!Number.isFinite(cur) || !Number.isFinite(max) || max <= 0) return null; return { cur, max }; } catch { return null; } }
-const SUSPEND_RESUME_WAIT_MS = 180000; // RR-05: cannot_recover の回復待ち上限 (出口のない恒久 suspended を作らない)
+const SUSPEND_RESUME_WAIT_MS = 180000;
+const F1_NO_PROGRESS_RESUME_LIMIT = 3; // cycle0033 F1: progress-less resume cutoff
+const F1_SUSPEND_TOTAL_BACKSTOP = 30; // cycle0033 F1: backstop via persisted suspendCount // RR-05: cannot_recover の回復待ち上限 (出口のない恒久 suspended を作らない)
 // RR-05 (cycle1303): cannot_recover で suspended な mission の再開/待ち/期限切れを集約する唯一の担い手。
 // 戻り値: null=対象外 / "resumed"=HP実測で比>=0.5 を確認し再開 / "waiting"=期限内は破棄しない / "expired"=期限超過 (終了掃除は呼び出し側の文脈別)
 function tickSuspendedResume(bot, r) {
-  const m = r && r.mission; if (!m || m.status !== "suspended" || m.suspendReason !== "cannot_recover") return null;
+  const m = r && r.mission; if (!m || m.status !== "suspended" || (m.suspendReason !== "cannot_recover" && m.suspendReason !== "inv_unreadable")) return null;
   if (!m.suspendWaitSince || !Number.isFinite(m.suspendWaitSince) || m.suspendWaitSince <= 0 || m.suspendWaitSince > Date.now()) { m.suspendWaitSince = Date.now(); persistMission(bot, r, true); } // cycle1807: 初回設定の瞬間に強制保存する (waiting 経路は保存を呼ばないため) / cycle2311: 未来値・文字列等の異常値は現在時刻へ打ち直す (無検証採用だと期限切れに到達しない)
+  if (m.suspendReason === "inv_unreadable") {
+    if (invOf(bot)) { m.blocked = null; m.invUnreadObs = 0; m.status = "active"; m.suspendReason = null; m.suspendWaitSince = null; persistMission(bot, r, true); return "resumed"; }
+    if (Date.now() - m.suspendWaitSince > SUSPEND_RESUME_WAIT_MS) return "expired";
+    return "waiting";
+  }
   const h = hpOfMeasured(bot);
   if (h && (h.cur / h.max) >= 0.5) { m.blocked = null; m.recoverObs = 0; m.status = "active"; m.suspendReason = null; m.suspendWaitSince = null; persistMission(bot, r, true); return "resumed"; }
   if (Date.now() - m.suspendWaitSince > SUSPEND_RESUME_WAIT_MS) return "expired";
   return "waiting";
+}
+function f1ProgressSnap(bot, r) {
+  const m = r?.mission, st = (m && Array.isArray(m.steps)) ? (m.steps[m.currentStep] || null) : null;
+  return { leg: r?.longtask?.legIdx ?? -1, step: m?.currentStep ?? -1, have: st?.have || 0, banked: st?.banked || 0, tSteps: r?.tunnel?.steps || 0, sK: (r?.spiral && Number.isFinite(r.spiral.k)) ? r.spiral.k : -1, y: Math.floor(bot?.location?.y ?? 0) };
+}
+function f1Progressed(prev, cur) { return cur.leg !== prev.leg || cur.step !== prev.step || cur.have > prev.have || cur.banked > prev.banked || cur.tSteps > prev.tSteps || cur.sK > prev.sK || cur.y < prev.y; }
+function f1ResumeDecision(bot, r) {
+  const m = r.mission, cur = f1ProgressSnap(bot, r), prev = r.f1ProgSnap || null;
+  if (!prev) { r.f1ProgSnap = cur; r.f1NoProgResumes = 0; return (m.suspendCount || 0) >= F1_SUSPEND_TOTAL_BACKSTOP ? "terminate" : "resume"; }
+  if (f1Progressed(prev, cur)) { r.f1NoProgResumes = 0; m.suspendCount = 0; } else r.f1NoProgResumes = (r.f1NoProgResumes || 0) + 1;
+  r.f1ProgSnap = { ...cur, y: Math.min(prev.y, cur.y), tSteps: Math.max(prev.tSteps, cur.tSteps), sK: Math.max(prev.sK, cur.sK) };
+  return r.f1NoProgResumes >= F1_NO_PROGRESS_RESUME_LIMIT ? "terminate" : "resume";
 }
 function groundY(dim, x, z, fallback, refY) {
   // BASICS-01: 現在Y近傍の床探索 (窓は fly.js groundNear と同じ +3/-8)。最上部ブロック
@@ -615,6 +635,15 @@ function buildContext(bot, owner) {
     ownerRt.set(owner.id, ort);
     c.x.ownerFallDist = fallDist;
     c.x.falling = vy < 0 && fallDist >= 2;
+    // POLISH-ANIM-OWNERFALLTRACK-01 feeder (cycle0033): reuse existing owner-fall perception, no new scan (display only)
+    try {
+      if (!r.ownerfalltrackState) r.ownerfalltrackState = createOwnerfalltrackState();
+      const gr2 = gazeRotation(bot.location, owner.location); let cur2 = null; try { cur2 = bot.getRotation(); } catch {}
+      const sample = { ownerFalling: !!c.x.falling, fallDist, relYawDeg: (gr2 && cur2) ? ((gr2.y - cur2.y + 540) % 360) - 180 : undefined, relPitchDeg: (gr2 && cur2) ? gr2.x - cur2.x : undefined, inCombat: !!((c?.danger?.count ?? 0) > 0), selfFalling: r.selfFalling === true, working: !!r.work, inWater: !!c?.owner?.inWater };
+      const res2 = noteOwnerfalltrack(r.ownerfalltrackState, sample, Date.now());
+      r.ownerfalltrackSample = sample;
+      if (res2 && res2.fired) r.lastOwnerFallTrack = { at: Date.now(), episode: r.ownerfalltrackState.episode };
+    } catch {}
   } catch {}
   // 拠点チェスト状態
   if (home && home.dim === dim.id) {
@@ -966,6 +995,21 @@ function workStandPoint(bot, loc) {
   }
   return null;
 }
+function noteWorkHold(bot, r, w, why) {
+  try {
+    const now = Date.now();
+    const key = `${w.loc.x},${w.loc.y},${w.loc.z}|${w.typeId}|${why}`;
+    if (!r.workHoldLeg || r.workHoldLeg.key !== key) r.workHoldLeg = { key, totalMs: 0, lastAt: now, left: w.left, noted: false };
+    const wh = r.workHoldLeg;
+    if (w.left < wh.left) wh.totalMs = 0;
+    wh.left = w.left;
+    if (wh.lastAt && now - wh.lastAt < 2000 && now > wh.lastAt) wh.totalMs += now - wh.lastAt;
+    wh.lastAt = now;
+    if (!wh.noted) { wh.noted = true; noteFail(bot, "work:hold", new Error(key)); }
+    if (wh.totalMs > 30000) { noteFail(bot, "work:hold_exhausted", new Error(key)); return false; }
+  } catch {}
+  return true;
+}
 function tickWork(bot, owner, r, ctx) {
   if (!r.work) return false;
   const w = r.work;
@@ -1009,7 +1053,7 @@ function tickWork(bot, owner, r, ctx) {
   // 要望バッチA (v0.4.88): 掘削ゲート。距離だけでなく「目から最初にぶつかる固体か」「開いた空間に面しているか」を掘削の瞬間に検査する。w.left は dig のときだけ進める
   let gate = null;
   try { gate = evaluateDig(digBlockAt(bot), eye, w.loc, { reach: WORK_REACH, feetCell: { x: Math.floor(bot.location.x), y: Math.floor(bot.location.y), z: Math.floor(bot.location.z) }, via: w.gateVia || "work" }); } catch { gate = { action: "hold", why: "gate_error" }; } // 要望バッチA GAP-1 (cycle0821): ゲート例外時は fail-closed (距離のみで掘らない)
-  if (!gate) { r.lastDigHold = { why: "gate_error", loc: { ...w.loc }, at: Date.now() }; return true; }
+  if (!gate) { r.lastDigHold = { why: "gate_error", loc: { ...w.loc }, at: Date.now() }; if (!noteWorkHold(bot, r, w, "gate_error")) { r.work = null; r.workHoldLeg = null; return false; } return true; }
   else if (gate.action === "hold") {
     // cycle0922 キュー0残件: 1マス縦穴では横の立ち位置が無く、via=work の self_support が永久 hold になり
     // 出口のない停止になる (石層停止の残形、a01 実測で work/tunnel 不整合として確定)。
@@ -1021,10 +1065,11 @@ function tickWork(bot, owner, r, ctx) {
         try { const g2 = evaluateDig(digBlockAt(bot), eye, w.loc, { reach: WORK_REACH, feetCell: { x: Math.floor(bot.location.x), y: Math.floor(bot.location.y), z: Math.floor(bot.location.z) }, via: "tunnel" }); if (g2 && g2.action !== "hold") { gate = g2; retried = true; r.lastDigRetry = { why: "self_support_shaft", at: Date.now() }; } } catch {}
       }
     }
-    if (!retried) { r.lastDigHold = { why: gate.why, loc: { ...w.loc }, at: Date.now() }; return true; }
-    if (gate.action === "dig_first") { if (!swapWorkToOccluder(bot, r, w, gate)) r.lastDigHold = { why: "dig_first_unbreakable", loc: { ...w.loc }, at: Date.now() }; return true; }
+    if (!retried) { r.lastDigHold = { why: gate.why, loc: { ...w.loc }, at: Date.now() }; if (!noteWorkHold(bot, r, w, gate.why)) { r.work = null; r.workHoldLeg = null; return false; } return true; }
+    if (gate.action === "dig_first") { if (!swapWorkToOccluder(bot, r, w, gate)) { r.lastDigHold = { why: "dig_first_unbreakable", loc: { ...w.loc }, at: Date.now() }; if (!noteWorkHold(bot, r, w, "dig_first_unbreakable")) { r.work = null; r.workHoldLeg = null; return false; } } else r.workHoldLeg = null; return true; }
   }
-  else if (gate.action === "dig_first") { if (!swapWorkToOccluder(bot, r, w, gate)) r.lastDigHold = { why: "dig_first_unbreakable", loc: { ...w.loc }, at: Date.now() }; return true; }
+  else if (gate.action === "dig_first") { if (!swapWorkToOccluder(bot, r, w, gate)) { r.lastDigHold = { why: "dig_first_unbreakable", loc: { ...w.loc }, at: Date.now() }; if (!noteWorkHold(bot, r, w, "dig_first_unbreakable")) { r.work = null; r.workHoldLeg = null; return false; } } else r.workHoldLeg = null; return true; }
+  r.workHoldLeg = null; // cycle0033 F2: hold escaped into digging = progress, clear the hold counter
   // POLISH-ANIM-LOOKLEAD-01 feeder (cycle2036): 破壊完了 (w.left tick 後) を予定行動とし、残り 250ms から視線を対象へ先行させる (表示層のみ・実機確認待ち)
   try {
     if (!r.lookleadState) r.lookleadState = createLookLeadState();
@@ -1557,7 +1602,7 @@ function missionSig(m) { // Phase 0 負荷対策: 復元に必要な構造だけ
   const qb = (v, q) => Math.floor((v || 0) / q);
   const qSteps = (m.steps || []).map((s) => `${qb(s.stallObs, 6)},${qb(s.foundStallObs, 60)},${qb(s.routeFrozenObs, 190)},${qb(s.wdFrozenObs, 190)},${qb(s.searchFrozenObs, 190)},${qb(s.regionFrozenObs, 190)},${qb(s.regionTotalObs, 2000)}`).join(";");
   const qDetour = m.detour ? `${qb(m.detour.stallObs, 6)},${qb(m.detour.routeFrozenObs, 190)}` : "";
-  return `${m.status}|${m.currentStep}|${m.suspendReason || ""}|${m.suspendCount || 0}|${m.suspendWaitSince || 0}|${m.detour ? m.detour.phase + ":" + m.detour.resumeStep : ""}|${steps}|q:${qb(m.recoverObs, 60)}:${m.blocked ? 1 : 0}:${qSteps}:${qDetour}`; // cycle1807: suspendWaitSince を sig へ含める (cannot_recover の180秒上限が復元をまたいで到達可能になる)
+  return `${m.status}|${m.currentStep}|${m.suspendReason || ""}|${m.suspendCount || 0}|${m.suspendWaitSince || 0}|${m.detour ? m.detour.phase + ":" + m.detour.resumeStep : ""}|${steps}|q:${qb(m.recoverObs, 60)}:${qb(m.invUnreadObs, 60)}:${m.blocked ? 1 : 0}:${qSteps}:${qDetour}`; // cycle1807: suspendWaitSince を sig へ含める (cannot_recover の180秒上限が復元をまたいで到達可能になる)
 }
 function persistMission(bot, r, force = false) {
   const sig = missionSig(r.mission);
@@ -1997,11 +2042,11 @@ function abandonTunnel(bot, owner, r, why) {
 // 掘った道をたどって地上へ戻る。掘り作業中でなく、地中にいて、行き先が 6 ブロック以上先のときだけ
 function exitTunnelIfNeeded(bot, r) {
   try {
-    if (!r.tunnelPath || !r.tunnelPath.length) { r.tunnelExiting = false; return; }
+    if (!r.tunnelPath || !r.tunnelPath.length) { r.tunnelExiting = false; r.tunnelExitHold = null; return; }
     if (r.tunnelExiting && r.work) r.work = null; // 戻る間は掘りかけを捨てる
     const p = bot.location;
     const last = r.tunnelPath[r.tunnelPath.length - 1];
-    if (dist(p, last) > 16) { r.tunnelPath = []; r.tunnelExiting = false; return; } // 呼び戻し等の別手段で離れた: 道はもう使わない
+    if (dist(p, last) > 16) { r.tunnelPath = []; r.tunnelExiting = false; r.tunnelExitHold = null; return; } // 呼び戻し等の別手段で離れた: 道はもう使わない
     if (!r.tunnelExiting) {
       // v0.4.68: 手の届かない場所の古い作業 (掘り終えた後に残った r.work) は「作業中」とみなさない
       let working = !!(r.work && r.work.loc && Date.now() - (r.work.touchedAt || 0) < 3000 && dist({ x: p.x, y: p.y + 1.6, z: p.z }, { x: r.work.loc.x + 0.5, y: r.work.loc.y + 0.5, z: r.work.loc.z + 0.5 }) <= WORK_REACH + 1);
@@ -2014,8 +2059,20 @@ function exitTunnelIfNeeded(bot, r) {
     for (let i = 0; i < 4 && r.tunnelPath.length; i++) {
       const cand = r.tunnelPath.pop();
       const g = tunnelGateDest(bot, r, cand); // queue3 step3: 帰路も tunnel ゲート経由 (再充填セルへ無検査で入らない)
-      if (!g.dest) { r.tunnelPath.push(cand); break; } // hold: step を消費しない (道に戻す)
-      step = g.dest; try { bot.teleport(step); } catch {}
+      if (!g.dest) { // hold: step not consumed (returned to path). cycle0033 F4: cumulative hold clock (branchmine holdHeld shape); over 30s discard path and delegate to normal movement
+        r.tunnelPath.push(cand);
+        try {
+          const now = Date.now(), key = `${cand.x},${cand.y},${cand.z}`;
+          if (!r.tunnelExitHold || r.tunnelExitHold.key !== key) r.tunnelExitHold = { key, totalMs: 0, lastAt: now, noted: false };
+          const th = r.tunnelExitHold;
+          if (th.lastAt && now - th.lastAt < 2000 && now > th.lastAt) th.totalMs += now - th.lastAt;
+          th.lastAt = now;
+          if (!th.noted) { th.noted = true; noteFail(bot, "tunnel:exit_hold", new Error(key)); }
+          if (th.totalMs > 30000) { noteFail(bot, "tunnel:exit_hold_exhausted", new Error(key)); r.tunnelPath = []; r.tunnelExiting = false; r.tunnelExitHold = null; }
+        } catch {}
+        break;
+      }
+      step = g.dest; r.tunnelExitHold = null; try { bot.teleport(step); } catch {}
     }
     if (!r.tunnelPath.length) r.tunnelExiting = false;
     if (step) r.target = { ...step };
@@ -2654,13 +2711,16 @@ function tickLongTask(bot, owner, r, ctx) {
     else if (r.mission.status === "suspended") {
       // RR-05 (cycle1303): cannot_recover は集約ヘルパー tickSuspendedResume が担う (回復待ち→実測再開→期限切れ)。
       // mineLeg の有無で再開可否を決めない (leg の出自でなく mission の回復状態が性質)。expired のときだけ下の終端へ落とす
-      if (r.mission.suspendReason === "cannot_recover") {
+      if (r.mission.suspendReason === "cannot_recover" || r.mission.suspendReason === "inv_unreadable") {
         const sres = tickSuspendedResume(bot, r);
         if (sres === "waiting") return true;
         if (sres === "resumed") return false;
       } else {
-        // 従来経路 (cannot_recover 以外): mineLeg がある間は即再開、それ以外は終端 (現行挙動を維持)
-        if (r.mineLeg) { r.mission.status = "active"; r.mission.suspendReason = null; persistMission(bot, r, true); return false; }
+        // cycle0033 F1: mineLeg resume is gated by f1ResumeDecision (progress-less resumes are cut off)
+        if (r.mineLeg) {
+          if (f1ResumeDecision(bot, r) === "terminate") { noteFail(bot, "longtask:suspend_no_progress_exhausted", new Error(`${r.mission.suspendReason || ""}:${r.mission.suspendCount || 0}`)); }
+          else { r.mission.status = "active"; r.mission.suspendReason = null; persistMission(bot, r, true); return false; }
+        }
       }
       { say(owner, bot, `長期タスクを中断しました。${SUSPEND_JP[r.mission.suspendReason] || "進めなくなりました"}`, true); r.mission = null; clearPlanRecords(r); persistMission(bot, r, true); r.longtask = null; r.mineLeg = null; r.spiral = null; saveLongTask(bot, r); return true; }
     }
@@ -2730,11 +2790,12 @@ function tickLongTask(bot, owner, r, ctx) {
 }
 function cancelMission(bot, owner, r, silent = false) {
   if (r.mission) { r.mission = null; clearPlanRecords(r); persistMission(bot, r, true); dps(bot, "cb_order", ""); }
+  r.work = null; r.workHoldLeg = null; r.workChain = null; // cycle0033 F2: cancelled work must not keep occupying tickAutonomy
   r.buildPlan = null;
   r.buildStallKey = null; r.buildStallSince = 0; r.buildStallBest = null; r.buildDangerSince = null; r.buildDangerNoted = false; r.buildProgressAt = null; r.buildProgressIdx = null; r.buildProgressPlaced = null; // 基礎 R-3 (v0.4.81, cycle0417-a04): 中止した建築の stall/危険時計を残さない + BUILD-HOLD-NOEXIT (cycle1343)
   if (!silent) say(owner, bot, "指示、中止しました。……今の作業はここまでです", true);
 }
-const SUSPEND_JP = { target_not_found: "対象が見つかりませんでした", no_progress: "進捗が止まってしまいました", cannot_reach_area: "指定の場所へ辿り着けませんでした", cannot_return: "帰還できませんでした", cannot_recover: "体力が回復しませんでした", unknown_step: "手順が読み取れませんでした" }; // cannot_recover は cycle0731
+const SUSPEND_JP = { target_not_found: "対象が見つかりませんでした", no_progress: "進捗が止まってしまいました", cannot_reach_area: "指定の場所へ辿り着けませんでした", cannot_return: "帰還できませんでした", cannot_recover: "体力が回復しませんでした", unknown_step: "手順が読み取れませんでした", inv_unreadable: "持ち物が読み取れませんでした" }; // cannot_recover は cycle0731
 function handleMissionSay(bot, owner, r, d) {
   const m = r.mission; if (!m) return;
   if (d.reason === "step_complete") { if (!m.order.legsOnly) say(owner, bot, `${nameOfItem(m.order.target)}、必要数は揃いました。……悪くない進みです`); return; }
@@ -2982,7 +3043,20 @@ function tickMission(bot, owner, ctx, scan) {
   const r = rt(bot); const m = r.mission;
   if (!m || m.status !== "active") return false;
   // 所持品が読めない時は「0個」と誤認して進めない（unknown を 0 と混同しない）
-  if (ctx.x && ctx.x.invOk === false) { noteFail(bot, "mission:inv_unreadable", new Error("inventory unavailable")); return true; }
+  if (ctx.x && ctx.x.invOk === false) {
+    // cycle0033 F3: count consecutive unreadable on mission (persisted); suspend over limit; throttled noteFail
+    const iuPrev = (typeof m.invUnreadObs === "number" && Number.isFinite(m.invUnreadObs) && m.invUnreadObs > 0) ? Math.floor(m.invUnreadObs) : 0;
+    m.invUnreadObs = iuPrev + 1;
+    if ((m.invUnreadObs - 1) % 120 === 0 && Date.now() - (r.invUnreadNoteAt || 0) >= 60000) { r.invUnreadNoteAt = Date.now(); noteFail(bot, "mission:inv_unreadable", new Error("inventory unavailable")); }
+    if (m.invUnreadObs > 600) {
+      m.status = "suspended"; m.suspendReason = "inv_unreadable"; m.suspendCount = (m.suspendCount || 0) + 1; m.suspendWaitSince = Date.now();
+      noteFail(bot, "mission:inv_unreadable_suspended", new Error("inventory unavailable over limit"));
+      persistMission(bot, r, true);
+      return true;
+    }
+    return true;
+  }
+  if (m.invUnreadObs) m.invUnreadObs = 0; // readable tick resets the consecutive counter
   // 寄り道の機会走査（side ステップがある間だけ）
   r.sideTask = null;
   const sideSteps = m.steps.filter((s) => s.type === "side_collect" && s.status !== "done");
@@ -2990,6 +3064,7 @@ function tickMission(bot, owner, ctx, scan) {
     const sideOrders = sideSteps.map((s) => ({ item: s.target, amount: s.need, have: s.have || 0, target: s.target, label: nameOfItem(s.target) }));
     r.sideState.now = Date.now();
     try { pruneCooldowns(r.sideState, Date.now()); } catch {}
+    try { if (r.takeBan) pruneTakeBans(r.takeBan, Date.now()); } catch {} // cycle0033 a07: prune wiring (was test-only, state grew monotonically)
     try { r.sideTask = scanOpportunities(ctx, sideOrders, r.sideState); } catch {}
   }
   const step = m.steps[m.currentStep];
@@ -3526,7 +3601,8 @@ function applyGaze(bot, owner, ctx, scan) {
     if (rot && r.lookleadSample && (r.lookleadSample.active || r.lookleadSample.completed) && Date.now() - (r.lookleadSampleAt || 0) < 200) rot = { ...rot, y: rot.y + r.lookleadSample.yawDeltaDeg, x: rot.x + r.lookleadSample.pitchDeltaDeg }; // POLISH-ANIM-LOOKLEAD-01 (cycle2036): 重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot && r.catchsightState) { const cs = sampleCatchsight(r.catchsightState, Date.now(), catchsightSuppressInput(bot, owner, ctx, gz, r, Date.now())); if (cs.active) rot = { ...rot, y: rot.y + cs.yawDeg, x: rot.x + cs.pitchDeg }; } // POLISH-ANIM-CATCHSIGHT-01 (cycle2200): 重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot && r.rainshelterState) { const rs = sampleRainShelter(r.rainshelterState, Date.now()); if (rs.active) rot = { ...rot, y: rot.y + rs.gazeYawOffsetDeg, x: rot.x + rs.gazePitchDeg }; } // POLISH-ANIM-RAINSHELTER-01 (cycle2231): 重畳の最下位 (表示層のみ・実機確認待ち)
-    if (rot && r.wakestretchState) { try { const wk = wakestretchCurrent(r.wakestretchState, Date.now()); if (wk.active) rot = { ...rot, y: rot.y + wk.yawDeg, x: applyWakestretchPitch(rot.x, Date.now() - (r.wakestretchState.startedAtMs || Date.now())) }; } catch {} } // POLISH-ANIM-WAKESTRETCH-01 (cycle0005): 重畳の最下位 (表示層のみ・実機確認待ち)
+    if (rot && r.wakestretchState) { try { const wk = wakestretchCurrent(r.wakestretchState, Date.now()); if (wk.active) rot = { ...rot, y: rot.y + wk.yawDeg, x: applyWakestretchPitch(rot.x, Date.now() - (r.wakestretchState.startedAtMs || Date.now())) }; } catch {} }
+    if (rot && r.ownerfalltrackState) { try { const oft = ownerfalltrackCurrent(r.ownerfalltrackState, r.ownerfalltrackSample || {}, Date.now()); if (oft.active || oft.pitchDeg || oft.yawOffsetDeg) rot = { ...rot, y: rot.y + (oft.yawOffsetDeg || 0), x: rot.x + (oft.pitchDeg || 0) }; } catch {} } // POLISH-ANIM-OWNERFALLTRACK-01 (cycle0033): lowest overlay (display only) // POLISH-ANIM-WAKESTRETCH-01 (cycle0005): 重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot) { try { bot.setRotation(rot); } catch {} }
   }
   if (gz.say && Math.random() < 0.4) sayAmbient(owner, bot, gz.say);
@@ -3606,7 +3682,7 @@ system.runInterval(() => {
     // hostiles='ignore' の間は guard/zap/flee を selfHp>=0.25 の範囲で抑止する。
     let consumed = false;
     // RR-05 (cycle1303): 通常ミッション (longtask 無し) の cannot_recover suspended にも再開の担い手を持たせる
-    if (!r.longtask && r.mission && r.mission.status === "suspended" && r.mission.suspendReason === "cannot_recover") {
+    if (!r.longtask && r.mission && r.mission.status === "suspended" && (r.mission.suspendReason === "cannot_recover" || r.mission.suspendReason === "inv_unreadable")) {
       const sres = tickSuspendedResume(bot, r);
       if (sres === "waiting") consumed = true;
       else if (sres === "expired") { foldGatherBuildPlan(bot, p, r, "suspend_expired", r.mission); say(p, bot, `体力が回復しなかったため、指示を中断しました`, true); r.mission = null; clearPlanRecords(r); persistMission(bot, r, true); consumed = true; }
@@ -3725,7 +3801,7 @@ world.afterEvents.itemUse.subscribe((ev) => {
 // トンネルの帰り道へ飛んで戻ろうとしていた (探索の中心は指示と一緒に保存されるので、最初に指示した場所へ引き戻されていた)
 function resetPlaceState(bot, r) {
   r.mTargetLoc = null; r.mTargetKey = ""; r.mTargetEntity = null; r.mTargetSince = Date.now(); r.mBanKey = null;
-  r.tunnel = null; r.tunnelPath = []; r.tunnelExiting = false; r.work = null; r.clearDig = null; r.exploreRegion = null;
+  r.tunnel = null; r.tunnelPath = []; r.tunnelExiting = false; r.tunnelExitHold = null; r.work = null; r.clearDig = null; r.exploreRegion = null;
   r.wander = null; r.stuckSec = 0; r.lastPos = null; r.watchHist = []; r.mScanMap = {}; r.percTargets = {};
   try { if (dp(bot, "cb_mode", "") === "stay") setAnchor(bot, r, { ...bot.location }, bot.dimension.id); else setAnchor(bot, r, null); } catch {} // BH-04/BH-06 (cycle1215): リモコンで呼ばれた先が stay の定位置になる (DP 同期)。stay 以外では旧定位置を残さない
   r.target = { x: bot.location.x, y: bot.location.y, z: bot.location.z };
