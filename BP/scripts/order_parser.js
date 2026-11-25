@@ -800,6 +800,17 @@ export function parseOrder(input) {
     }
   }
 
+  // Phase 5 F1 (cycle2231): 単一節の動詞なし訂正文 (「鉄じゃなくて銅にして」) は corrAlone の
+  // 別節条件を満たせず消失していた。同型の聞き返しへ倒し、保持候補は最終候補1件のみとする。
+  {
+    const corrSame = negations.find((n) => NEGATION_PATTERNS.correctionMarkers.includes(n.marker));
+    if (corrSame && candidates.length > 0 && candidates.every((c) => !c.verbClass) && !WANT_RE.test(text)) {
+      const last = candidates[candidates.length - 1];
+      const un = [{ slot: "target", reason: "correction_without_base", negations: [corrSame] }];
+      return { kind: "clarify", target: null, amount: null, constraints, sideTasks: [], negations, unresolved: un, retainedCandidates: [{ target: last.target, amount: last.amount ?? null, verbClass: last.verbClass ?? null }], returnTo, raw };
+    }
+  }
+
   // 6) 発話トリガーが無ければ雑談（所持報告・感想などの誤判定防止）
   if (!anyVerb && !WANT_RE.test(text)) return null;
 

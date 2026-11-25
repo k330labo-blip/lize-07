@@ -48,7 +48,8 @@ import { createStepupState, noteStepup as noteStepupState, sampleStepup } from "
 import { banKeyFor, matchesBan, isBanned } from "./trunk_ban.js"; // queue0-A bug2 (cycle1728, v0.5.19): trunk-unit ban
 import { createTakeBanState, recordTakeBan, isTakeBanned } from "./take_ban_math.js"; // TR2136-01 (cycle2200): 回収全量失敗の実行側見切り
 import { createWorkglanceState, noteWorkglance, sampleWorkglance } from "./workglance_math.js"; // POLISH-ANIM-WORKGLANCE-01 (cycle1728, v0.5.19)
-import { createCatchsightState, noteCatchsight, sampleCatchsight } from "./catchsight_math.js"; // POLISH-ANIM-CATCHSIGHT-01 (cycle2200): 主人が投げた物の追視 (表示層のみ・実機確認待ち)
+import { createCatchsightState, noteCatchsight, sampleCatchsight } from "./catchsight_math.js";
+import { createRainShelterState, noteRainShelter, sampleRainShelter } from "./rainshelter_math.js"; // POLISH-ANIM-RAINSHELTER-01 (cycle2231): 持続雨の待機中に屋根方向へ視線を寄せる (表示層のみ・実機確認待ち) // POLISH-ANIM-CATCHSIGHT-01 (cycle2200): 主人が投げた物の追視 (表示層のみ・実機確認待ち)
 import { notePortalsteady, portalsteadyOffsetsAt, isPortalsteadyActive } from "./portalsteady_math.js";
 import { createSurfacebreathState, stepSurfacebreath, sampleSurfacebreath, applySurfacebreathPitch } from "./surfacebreath_math.js"; // POLISH-ANIM-SURFACEBREATH-01 (cycle1703)
 import { createBubblebreathState, stepBubblebreath } from "./bubblebreath_math.js"; // POLISH-FX-BUBBLEBREATH-01 (cycle1909): 水中滞在中の冷却排気泡 (粒子ID未照合の間は記録のみ・実機確認待ち)
@@ -456,6 +457,7 @@ function buildContext(bot, owner) {
   noteFlinch(bot, r, flinchCand); // POLISH-ANIM-FLINCH-01 (cycle1051): 出現の辺でのみ発火 (表示層のみ)
   noteSkyglance(r, c.env.isRaining, c.danger && c.danger.count > 0); // POLISH-ANIM-SKYGLANCE-01 (cycle1133)
   noteDryoff(r, c); // POLISH-ANIM-DRYOFF-01 (cycle1322)
+  noteRainshelter(bot, dim, r, c); // POLISH-ANIM-RAINSHELTER-01 (cycle2231)
   noteLookback(r, c); // POLISH-ANIM-LOOKBACK-01 (cycle1153)
   noteThreshold(bot, dim, r, c); // POLISH-ANIM-THRESHOLD-01 (cycle1503)
   noteEdgepeek(bot, dim, r, c); // POLISH-ANIM-EDGEPEEK-01 (cycle1518)
@@ -1643,6 +1645,17 @@ function scanCachePeek(r, typeId) {
   if (ent.failedCells === undefined || ent.failedCells * 2 > (ent.totalCells || 2601)) return { state: "unknown" };
   return { state: "absent" };
 }
+// cycle2231 収穫固着是正: 作物は成熟セルのみを走査候補にする (未成熟株の再選択ループ防止)。
+// growth が読めない作物は安全側で候補にしない (crop_maturity の fail-closed と同一)。
+function cropMatureAt(dim, loc, typeId) {
+  if (!isCropBlock(typeId)) return true;
+  try { const b = dim.getBlock(loc); let g = null; try { g = b?.permutation?.getState("growth") ?? b?.permutation?.getState("age"); } catch {} return isCropMature(typeId, g); } catch { return false; }
+}
+function cropCellMature(b, typeId) {
+  if (!isCropBlock(typeId)) return true;
+  let g = null; try { g = b?.permutation?.getState("growth") ?? b?.permutation?.getState("age"); } catch {}
+  return isCropMature(typeId, g);
+}
 function scanBlockNear(bot, r, typeId, ttlJitter = 0) {
   const pt = r.percTargets || {};
   for (const k of ["tree", "ore", "crop"]) if (pt[k] && pt[k].typeId === typeId) return { x: pt[k].x, y: pt[k].y, z: pt[k].z };
@@ -1650,13 +1663,14 @@ function scanBlockNear(bot, r, typeId, ttlJitter = 0) {
   if (!r.mScanMap) r.mScanMap = {};
   const ent = r.mScanMap[typeId];
   if (ent && now - ent.at < ent.ttl) return ent.loc;
-  { const wq = wideQuery(bot, [typeId]); if (wq.ok) { r.mScanMap[typeId] = { at: now, ttl: SCAN_TTL_MS + ttlJitter, loc: wq.best[typeId], failedCells: 0, totalCells: 2601 }; try { r.lastBlockScan = { typeId, failedCells: 0, totalCells: 2601, at: now, wide: true }; } catch {} return wq.best[typeId]; } } // v0.4.66: 広域探索
+  { const wq = wideQuery(bot, [typeId]); if (wq.ok && (!wq.best[typeId] || cropMatureAt(bot.dimension, wq.best[typeId], typeId))) { r.mScanMap[typeId] = { at: now, ttl: SCAN_TTL_MS + ttlJitter, loc: wq.best[typeId], failedCells: 0, totalCells: 2601 }; try { r.lastBlockScan = { typeId, failedCells: 0, totalCells: 2601, at: now, wide: true }; } catch {} return wq.best[typeId]; } } // v0.4.66: 広域探索
   let best = null, bd = 1e9, failedCells = 0;
   const bx = Math.floor(bot.location.x), by = Math.floor(bot.location.y), bz = Math.floor(bot.location.z);
   for (let dx = -8; dx <= 8; dx++) for (let dy = -4; dy <= 4; dy++) for (let dz = -8; dz <= 8; dz++) {
     let b = null; try { b = bot.dimension.getBlock({ x: bx + dx, y: by + dy, z: bz + dz }); } catch {}
     if (!b) { failedCells++; continue; } // Phase2 INSPECT Step0: 失敗セル計数 (例外と未読込を1セル1回だけ数える)
     if (b.typeId !== typeId) continue;
+    if (!cropCellMature(b, typeId)) continue; // cycle2231: 未成熟作物は候補にしない
     const dd = Math.hypot(dx, dy, dz); if (dd < bd) { bd = dd; best = { x: b.location.x, y: b.location.y, z: b.location.z }; }
   }
   r.mScanMap[typeId] = { at: now, ttl: SCAN_TTL_MS + ttlJitter, loc: best, failedCells, totalCells: 2601 };
@@ -1674,13 +1688,14 @@ function scanBlocksNear(bot, r, typeIds) {
   for (const id of typeIds) { best[id] = null; bd[id] = Infinity; }
   const pt = r.percTargets || {};
   for (const k of ["tree", "ore", "crop"]) if (pt[k] && want.has(pt[k].typeId)) best[pt[k].typeId] = { x: pt[k].x, y: pt[k].y, z: pt[k].z };
-  { const wq = wideQuery(bot, typeIds); if (wq.ok) { for (const id of typeIds) r.mScanMap[id] = { at: now, ttl: SCAN_TTL_MS, loc: best[id] || wq.best[id], failedCells: 0, totalCells: 2601 }; try { r.lastBlockScan = { typeId: typeIds[0], failedCells: 0, totalCells: 2601, at: now, wide: true }; } catch {} for (const id of typeIds) if (!best[id]) best[id] = wq.best[id]; return best; } } // v0.4.66: 広域探索
+  { const wq = wideQuery(bot, typeIds); if (wq.ok) { for (const id of typeIds) if (wq.best[id] && !cropMatureAt(bot.dimension, wq.best[id], id)) wq.best[id] = null; for (const id of typeIds) r.mScanMap[id] = { at: now, ttl: SCAN_TTL_MS, loc: best[id] || wq.best[id], failedCells: 0, totalCells: 2601 }; try { r.lastBlockScan = { typeId: typeIds[0], failedCells: 0, totalCells: 2601, at: now, wide: true }; } catch {} for (const id of typeIds) if (!best[id]) best[id] = wq.best[id]; return best; } } // v0.4.66: 広域探索
   let failedCells = 0;
   const bx = Math.floor(bot.location.x), by = Math.floor(bot.location.y), bz = Math.floor(bot.location.z);
   for (let dx = -8; dx <= 8; dx++) for (let dy = -4; dy <= 4; dy++) for (let dz = -8; dz <= 8; dz++) {
     let b = null; try { b = bot.dimension.getBlock({ x: bx + dx, y: by + dy, z: bz + dz }); } catch {}
     if (!b) { failedCells++; continue; }
     if (!want.has(b.typeId)) continue;
+    if (!cropCellMature(b, b.typeId)) continue; // cycle2231: 未成熟作物は候補にしない
     const dd = dx * dx + dy * dy + dz * dz;
     if (dd < bd[b.typeId]) { bd[b.typeId] = dd; best[b.typeId] = { x: b.location.x, y: b.location.y, z: b.location.z }; }
   }
@@ -2774,6 +2789,32 @@ function noteEdgepeek(bot, dim, r, c) {
     if (fired) r.lastEdgepeek = { at: Date.now(), firedCount: r.edgepeekState.firedCount };
   } catch {}
 }
+function noteRainshelter(bot, dim, r, c) {
+  try {
+    if (!r.rainshelterState) r.rainshelterState = createRainShelterState();
+    const now = Date.now();
+    const raining = c?.env?.isRaining === true;
+    if (raining) { if (!r.rainSinceMs) r.rainSinceMs = now; } else { r.rainSinceMs = null; r.rainshelterExposed = null; r.rainshelterCoverYaw = null; }
+    if (raining && r.rainSinceMs && now - r.rainSinceMs >= 20000 && now - (r.rainshelterScanAt || 0) >= 1000) {
+      r.rainshelterScanAt = now;
+      try {
+        const fx = Math.floor(bot.location.x), fy = Math.floor(bot.location.y), fz = Math.floor(bot.location.z);
+        const solid = (x, y, z) => { try { const b = dim.getBlock({ x, y, z }); return !!b && solidOfTypeId(b.typeId) && !b.isLiquid; } catch { return false; } };
+        let exp = true; for (let dy = 2; dy <= 6; dy++) { if (solid(fx, fy + dy, fz)) { exp = false; break; } }
+        r.rainshelterExposed = exp;
+        if (exp) {
+          let bestD = 1e9, bestYaw = null;
+          let botYaw = 0; try { botYaw = bot.getRotation().y; } catch {}
+          for (let k = 0; k < 8; k++) { const ang = k * Math.PI / 4; const dx = Math.round(Math.sin(ang)), dz = Math.round(Math.cos(ang)); if (!dx && !dz) continue; for (let d = 2; d <= 12; d++) { const cx = fx + dx * d, cz = fz + dz * d; let roof = false; for (let dy = 2; dy <= 6; dy++) { if (solid(cx, fy + dy, cz)) { roof = true; break; } } if (roof) { if (d < bestD) { bestD = d; const ayaw = Math.atan2(-(cx + 0.5 - bot.location.x), cz + 0.5 - bot.location.z) * 180 / Math.PI; bestYaw = ((ayaw - botYaw + 540) % 360) - 180; } break; } } }
+          r.rainshelterCoverYaw = bestYaw;
+        } else r.rainshelterCoverYaw = null;
+      } catch {}
+    }
+    const mode = (r.work || r.mission) ? "work" : "idle";
+    const res = noteRainShelter(r.rainshelterState, { isRaining: raining, rainSinceMs: r.rainSinceMs, nowMs: now, mode, exposed: r.rainshelterExposed ?? null, coverRelYawDeg: r.rainshelterCoverYaw ?? null, inCombat: false, dangerNear: !!((c?.danger?.count ?? 0) > 0), falling: r.selfFalling === true, inWater: !!c?.x?.inWater, underground: !!c?.x?.underground, workTargetActive: !!r.work, higherGazeActive: isFlinchActive(r.flinchAnimAt, now) });
+    if (res?.fired) r.lastRainShelter = { at: now, yawDeg: r.rainshelterState.lockedYawDeg };
+  } catch {}
+}
 function noteDryoff(r, c) {
   try {
     if (!r || !c) return;
@@ -3377,6 +3418,7 @@ function applyGaze(bot, owner, ctx, scan) {
     if (rot && r.idleState) { const idl = sampleIdle(r.idleState, Date.now()); if (idl.active) rot = { ...rot, y: rot.y + idl.gazeYawRelDeg, x: rot.x + idl.gazePitchDeg }; } // POLISH-ANIM-IDLE-01 (cycle2020): 重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot && r.lookleadSample && (r.lookleadSample.active || r.lookleadSample.completed) && Date.now() - (r.lookleadSampleAt || 0) < 200) rot = { ...rot, y: rot.y + r.lookleadSample.yawDeltaDeg, x: rot.x + r.lookleadSample.pitchDeltaDeg }; // POLISH-ANIM-LOOKLEAD-01 (cycle2036): 重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot && r.catchsightState) { const cs = sampleCatchsight(r.catchsightState, Date.now(), catchsightSuppressInput(bot, owner, ctx, gz, r, Date.now())); if (cs.active) rot = { ...rot, y: rot.y + cs.yawDeg, x: rot.x + cs.pitchDeg }; } // POLISH-ANIM-CATCHSIGHT-01 (cycle2200): 重畳の最下位 (表示層のみ・実機確認待ち)
+    if (rot && r.rainshelterState) { const rs = sampleRainShelter(r.rainshelterState, Date.now()); if (rs.active) rot = { ...rot, y: rot.y + rs.gazeYawOffsetDeg, x: rot.x + rs.gazePitchDeg }; } // POLISH-ANIM-RAINSHELTER-01 (cycle2231): 重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot) { try { bot.setRotation(rot); } catch {} }
   }
   if (gz.say && Math.random() < 0.4) sayAmbient(owner, bot, gz.say);
