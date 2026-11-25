@@ -73,7 +73,7 @@ import { tickToolCheck, createToolCheckState } from "./toolcheck_math.js"; // PO
 import { createLoadPostureState, noteLoadPosture, sampleLoadPosture } from "./loadposture_math.js";
 import { createPartnerCheckState, notePartnerCheck, partnerCheckOffset } from "./partnercheck_math.js";
 import { createEnderavertState, noteEnderavert, sampleEnderavert } from "./enderavert_math.js"; // POLISH-ANIM-ENDERAVERT-01 (cycle1940): 表示層のみ・実機確認待ち
-import { restoreForbids, mergeSessionForbids, serializeForbids, forbiddenTargetIds, unionForbiddenIds } from "./session_forbids.js"; // cycle0117: G2/G6-b 読み手 (unionForbiddenIds/forbiddenTargetIds) // Phase5 (cycle1923): sessionForbids の復元純粋核 / 読み手R1 (cycle2006) / 保存の単一形 (cycle2036)
+import { restoreForbids, mergeSessionForbids, serializeForbids, forbiddenTargetIds, unionForbiddenIds, normForbiddenId } from "./session_forbids.js"; // cycle0505: forbids G4 record 側の正規化 // cycle0117: G2/G6-b 読み手 (unionForbiddenIds/forbiddenTargetIds) // Phase5 (cycle1923): sessionForbids の復元純粋核 / 読み手R1 (cycle2006) / 保存の単一形 (cycle2036)
 import { createMusicnodState, noteMusicnod, sampleMusicnod } from "./musicnod_math.js"; // POLISH-ANIM-MUSICNOD-01 (cycle2006): 表示層のみ・実機確認待ち
 import { createIdleState, noteIdle, sampleIdle } from "./idle_math.js"; // POLISH-ANIM-IDLE-01 (cycle2020): 待機モーション (表示層のみ・実機確認待ち)
 import { createLookLeadState, tickLookLead } from "./looklead_math.js"; // POLISH-ANIM-LOOKLEAD-01 (cycle2036): 作業対象への視線の先行 (表示層のみ・実機確認待ち)
@@ -82,6 +82,7 @@ import { applyPlacesettlePitch, isPlacesettleActive, shouldPlacesettle } from ".
 import { applyCraftsettlePitch, isCraftsettleActive, shouldCraftsettle } from "./craftsettle_math.js"; // POLISH-ANIM-CRAFTSETTLE-01 (cycle0141): 製作/精錬完了直後の小さな確認視線 (表示層のみ・実機確認待ち)
 import { createDeliverGuardState, noteDeliverOutcome, isDeliverCooling } from "./deliver_guard_math.js"; // A18-TR-01 (cycle0446): planner deliver_to_owner 満杯失敗の出口 (連続全滅3回で60秒冷却し他 goal へ譲る)
 import { applyDeliverBowPitch, isDeliverBowActive, shouldDeliverBow } from "./deliverbow_math.js"; // POLISH-ANIM-DELIVERBOW-01 (cycle0446): 手渡し成功直後の小さな会釈 (表示層のみ・実機確認待ち)
+import { applyStoresettlePitch, isStoresettleActive, shouldStoresettle } from "./storesettle_math.js"; // POLISH-ANIM-STORESETTLE-01 (cycle0505): 格納成功直後の小さな収納の仕草 (表示層のみ・実機確認待ち)
 import { collectInvDurability } from "./inv_durability.js"; // cycle2311: 耐久予備ポリシーへの invDurability 供給者
 import { createSwapSoundState, noteHeldItem } from "./swap_sound_math.js"; // POLISH-FX-SWAP-01 (cycle2311): 持ち替え音の発火決定 (記録のみ・実機確認待ち)
 import { createOwnerReturnState, noteOwnerReturn, ownerReturnOffset } from "./ownerreturn_math.js"; // POLISH-ANIM-OWNERRETURN-01 (cycle1923): 帰還の気付き (表示層のみ・実機確認待ち) // POLISH-ANIM-PARTNERCHECK-01 (cycle1850): 主人被弾の辺で無事確認の視線 (表示層のみ・実機確認待ち)
@@ -3762,6 +3763,9 @@ function applyGaze(bot, owner, ctx, scan) {
     try { const la = r.lastAction; if (la && (la.act === "CRAFT" || la.act === "SMELT") && la.ok && la.seq !== r.craftsettleSeenSeq) { r.craftsettleSeenSeq = la.seq; if (shouldCraftsettle({ crafted: true, suppressed: ((ctx?.danger?.count ?? 0) > 0) || r.selfFalling === true || !!bot.isInWater, lastFiredMs: r.craftsettleLastAt ?? null, nowMs: Date.now() })) { r.craftsettleAnimAt = la.at || Date.now(); r.craftsettleLastAt = r.craftsettleAnimAt; r.lastCraftsettle = { at: r.craftsettleAnimAt, item: la.item || null, act: la.act }; } } } catch {}
     if (rot && isCraftsettleActive(r.craftsettleAnimAt, Date.now())) rot = { ...rot, x: applyCraftsettlePitch(rot.x, Date.now() - r.craftsettleAnimAt) }; // POLISH-ANIM-CRAFTSETTLE-01 (cycle0141): 重畳 (表示層のみ・実機確認待ち)
     if (rot && isDeliverBowActive(r.deliverBowAt, Date.now())) rot = { ...rot, x: applyDeliverBowPitch(rot.x, Date.now() - r.deliverBowAt) }; // POLISH-ANIM-DELIVERBOW-01 (cycle0446): 手渡し成功直後の会釈 (表示層のみ・実機確認待ち)
+    // POLISH-ANIM-STORESETTLE-01 feeder (cycle0505): lastAction の STORE 成功 (seq変化) の辺でのみ発火記録 (表示層のみ・実機確認待ち)
+    try { const la = r.lastAction; if (la && la.act === "STORE" && la.ok && la.seq !== r.storesettleSeenSeq) { r.storesettleSeenSeq = la.seq; if (shouldStoresettle({ stored: true, suppressed: ((ctx?.danger?.count ?? 0) > 0) || r.selfFalling === true || !!bot.isInWater, lastFiredMs: r.storesettleLastAt ?? null, nowMs: Date.now() })) { r.storesettleAnimAt = la.at || Date.now(); r.storesettleLastAt = r.storesettleAnimAt; r.lastStoresettle = { at: r.storesettleAnimAt, item: la.item || null }; } } } catch {}
+    if (rot && isStoresettleActive(r.storesettleAnimAt, Date.now())) rot = { ...rot, x: applyStoresettlePitch(rot.x, Date.now() - r.storesettleAnimAt) }; // POLISH-ANIM-STORESETTLE-01 (cycle0505): 重畳 (表示層のみ・実機確認待ち)
     if (rot && r.snowtreadState) { try { const so = snowtreadCurrentOffset(r.snowtreadState); if (so.active) rot = { ...rot, x: applySnowtreadPitch(rot.x, r.snowtreadState.phase) }; } catch {} } // POLISH-ANIM-SNOWTREAD-01 (cycle2333): 重畳 (表示層のみ・実機確認待ち)
     if (rot && isFlinchActive(r.flinchAnimAt, Date.now())) rot = { ...rot, x: applyFlinchPitch(rot.x, Date.now() - r.flinchAnimAt) }; // POLISH-ANIM-FLINCH-01 (cycle1051)
     // POLISH-ANIM-ENDERAVERT-01 (cycle1940): feeder は既存走査 scan.hostiles から最寄りエンダーマンを取る (新規走査なし)。重畳は FLINCH の直下 (表示層のみ・実機確認待ち)
@@ -4257,7 +4261,8 @@ function recordSessionForbids(bot, r, o) {
   for (const n of o?.negations || []) {
     const id = n?.target?.item || n?.target?.block || n?.target?.entity || null;
     if (!id) continue;
-    if (!r.sessionForbids.some((f) => f.target === id && f.verb === (n.verb ?? null))) r.sessionForbids.push({ target: id, verb: n.verb ?? null, at: Date.now() });
+    const nid = normForbiddenId(id); // forbids G4-3 (cycle0505): 記録側も norm してから dedupe/保存する
+    if (!r.sessionForbids.some((f) => normForbiddenId(f.target) === nid && f.verb === (n.verb ?? null))) r.sessionForbids.push({ target: nid, verb: n.verb ?? null, at: Date.now() });
   }
   if (r.sessionForbids.length > 32) r.sessionForbids = r.sessionForbids.slice(-32);
   try { dps(bot, "cb_forbids", serializeForbids(r.sessionForbids)); } catch {} // Phase5 (cycle1923): 再召喚・再起動を跨いで禁止を保持する // cycle2036: 保存を serializeForbids へ統一 (非文字列 verb の復元時拡大を防ぐ)

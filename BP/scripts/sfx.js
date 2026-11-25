@@ -86,6 +86,7 @@ const GRASS_IDS = new Set([
   "dirt_path", "farmland", "mud", "muddy_mangrove_roots", "clay", "packed_mud",
   "hay_block", "dried_kelp_block", "sponge", "wet_sponge",
   "target", "melon", "pumpkin", "carved_pumpkin", // cycle1543: 草系の実体 (干し草標的・瓜類)
+  "grass_path", "melon_block", // cycle0505 (a16): 別名スペル (dirt_path / melon の別表記) が stone へ落ちていた非対称の是正
   "grass", "short_grass", "tall_grass", "fern", "large_fern",
 ]);
 // cycle1133-a11 Tier1+Tier2: 部分一致を廃し完全一致集合へ狭小化。
@@ -117,6 +118,7 @@ const PLANT_IDS = new Set([
   "nether_sprouts", "warped_roots", "crimson_roots", "nether_wart",
   "wheat", "carrots", "potatoes", "beetroot", "cocoa", "sweet_berry_bush", "chorus_plant",
   "dead_bush", "bush", "firefly_bush", "short_dry_grass", "tall_dry_grass",
+  "deadbush", "waterlily", // cycle0505 (a16): 別名スペル (dead_bush / lily_pad の別表記) の非対称是正
   "mangrove_propagule", "mangrove_roots", "red_mushroom_block", "brown_mushroom_block",
   "melon_stem", "pumpkin_stem", "attached_melon_stem", "attached_pumpkin_stem", "mushroom_stem",
   "open_eyeblossom", "closed_eyeblossom", "pitcher_plant", "torchflower_pod",

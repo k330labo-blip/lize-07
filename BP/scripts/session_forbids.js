@@ -5,14 +5,18 @@
 // 変換とサニタイズだけを担う。レコード形は現行メモリ内形 {target, verb, at} を正とする。
 export const FORBIDS_CAP = 32;
 
+// forbids G4 (cycle0505): 正規化の単一の正。コロンが無ければ minecraft: を補う (既存規則不変)。
+export const normForbiddenId = (id) => (typeof id === "string" && id && !id.includes(":") ? "minecraft:" + id : id);
+
 export function sanitizeForbids(list) {
   const out = [];
   if (!Array.isArray(list)) return out;
   for (const f of list) {
     if (!f || typeof f.target !== "string" || !f.target) continue;
     const verb = typeof f.verb === "string" ? f.verb : null;
-    if (out.some((g) => g.target === f.target && g.verb === verb)) continue;
-    out.push({ target: f.target, verb, at: Number.isFinite(f.at) ? f.at : 0 });
+    const target = normForbiddenId(f.target); // G4-3: norm 後に dedupe し、正規化形で保存する
+    if (out.some((g) => g.target === target && g.verb === verb)) continue;
+    out.push({ target, verb, at: Number.isFinite(f.at) ? f.at : 0 });
   }
   return out.slice(-FORBIDS_CAP);
 }
@@ -38,17 +42,17 @@ export function mergeSessionForbids(forbids, mo) {
     const list = sanitizeForbids(forbids);
     if (!list.length) return { blocked: false, mo };
     const kind = mo.kind || "gather";
-    const norm = (id) => (typeof id === "string" && id && !id.includes(":") ? "minecraft:" + id : id);
+    const norm = normForbiddenId;
     const blocked = typeof mo.target === "string" && list.some((f) => norm(f.target) === norm(mo.target) && forbidVerbMatches(f.verb, kind));
-    const extra = list.filter((f) => forbidVerbMatches(f.verb, kind)).map((f) => f.target);
+    const extra = list.filter((f) => forbidVerbMatches(f.verb, kind)).map((f) => norm(f.target)); // G4-2: 伝播も norm 済みで返す
     const cur = Array.isArray(mo.constraints?.forbiddenTargets) ? mo.constraints.forbiddenTargets : [];
-    const merged = [...new Set([...cur, ...extra])].filter((id) => norm(id) !== norm(mo.target));
+    const merged = [...new Set([...cur.map((id) => norm(id)), ...extra])].filter((id) => norm(id) !== norm(mo.target));
     return { blocked, mo: { ...mo, constraints: { ...(mo.constraints || {}), forbiddenTargets: merged } } };
   } catch { return { blocked: false, mo }; }
 }
 
 // Phase5 読み手 G6-b/G2 (cycle0117): 禁止対象 id の純粋核。verb 規則は forbidVerbMatches を再利用する (二重実装しない)。
-const normForbiddenId = (id) => (typeof id === "string" && id && !id.includes(":") ? "minecraft:" + id : id);
+// normForbiddenId は cycle0505 でファイル上部へ繰り上げて export 化した (定義は1つだけ)。
 export function forbiddenTargetIds(forbids, kind = "gather") {
   try {
     const list = sanitizeForbids(forbids);

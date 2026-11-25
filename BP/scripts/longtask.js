@@ -118,7 +118,7 @@ export function planLongTask(order, invCounts, invDurability) { // cycle2311: �
   if (!target) return null;
   // Phase5 forbidden Slice2 中継: order.constraints.forbiddenTargets を Slice 1
   // (mission.js) と同一作法で正規化し、decomposer の葉ゲートへ渡す。
-  const forbiddenTargets = Array.isArray(order?.constraints?.forbiddenTargets) ? [...new Set(order.constraints.forbiddenTargets.filter((x) => typeof x === "string" && x))] : [];
+  const forbiddenTargets = Array.isArray(order?.constraints?.forbiddenTargets) ? [...new Set(order.constraints.forbiddenTargets.filter((x) => typeof x === "string" && x).map((x) => (x.includes(":") ? x : `minecraft:${x}`)))] : []; // forbids G4 (cycle0505): コメントどおり正規化する防御是正
   let dec = null;
   try { dec = decompose(target, amount, { inventory: invCounts || {}, forbiddenTargets }); } catch { dec = null; }
   if (!dec || !dec.target?.item) return null;

@@ -54,7 +54,8 @@ export const RESTEER_GUARD = {
   DEPTH_BAND: 8,         // survey_hint.js SURVEY_HINT.DEPTH_BAND と同一値 (F-2)
   ARRIVE_H: 1.5,         // survey_hint.js SURVEY_HINT.ARRIVE_H と同一値
   BLOCKED_LIMIT_MS: 30000, // holdUnknown/holdHeld/holdGateHeld の 30 秒と同一値 (仕様3)
-  GAP_RESET_MS: 2000,    // 既存 30 秒時計群と同一: この間隔未満の tick だけ加算
+  GAP_RESET_MS: 2000,    // 旧作法の名残 (cycle0505 以前は この間隔未満の tick だけ加算していた)
+  GAP_CAP_MS: 5000,      // cycle0505 RESTEER-CLOCK-GAP-DEADZONE 是正: 1回の加算上限。間隔が大きくても min(dt, CAP) は加算し、累計が単調に育つ形へ
   REBLOCK_LIMIT: 1,      // resteer 復帰後の再 blocked がこの回数で無効化 (仕様2)
 };
 
@@ -248,8 +249,8 @@ export function recordBlocked(state, event = {}) {
       clock.count = ev.count;
     }
     if (isNum(ev.now)) {
-      if (clock.lastAt != null && ev.now - clock.lastAt >= 0 && ev.now - clock.lastAt < RESTEER_GUARD.GAP_RESET_MS) {
-        clock.totalMs += ev.now - clock.lastAt;
+      if (clock.lastAt != null && ev.now - clock.lastAt >= 0) {
+        clock.totalMs += Math.min(ev.now - clock.lastAt, RESTEER_GUARD.GAP_CAP_MS); // cycle0505: 全捨てを廃し上限つき加算へ (間隔>=2000 でも出口へ到達する)
       }
       clock.lastAt = ev.now;
     }
@@ -288,8 +289,8 @@ export function tickBlockedClock(clock, event = {}) {
       next.count = ev.count;
     }
     if (isNum(ev.now)) {
-      if (next.lastAt != null && ev.now - next.lastAt >= 0 && ev.now - next.lastAt < RESTEER_GUARD.GAP_RESET_MS) {
-        next.totalMs += ev.now - next.lastAt;
+      if (next.lastAt != null && ev.now - next.lastAt >= 0) {
+        next.totalMs += Math.min(ev.now - next.lastAt, RESTEER_GUARD.GAP_CAP_MS); // cycle0505: recordBlocked と同一作法
       }
       next.lastAt = ev.now;
     }
