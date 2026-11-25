@@ -52,7 +52,9 @@ import { createSurfacebreathState, stepSurfacebreath, sampleSurfacebreath, apply
 import { createBubblebreathState, stepBubblebreath } from "./bubblebreath_math.js"; // POLISH-FX-BUBBLEBREATH-01 (cycle1909): 水中滞在中の冷却排気泡 (粒子ID未照合の間は記録のみ・実機確認待ち)
 import { tickToolCheck, createToolCheckState } from "./toolcheck_math.js"; // POLISH-ANIM-TOOLCHECK-01 (cycle1807): 長時間待機中に一度だけ手元の道具を点検する (表示層のみ・実機確認待ち)
 import { createLoadPostureState, noteLoadPosture, sampleLoadPosture } from "./loadposture_math.js";
-import { createPartnerCheckState, notePartnerCheck, partnerCheckOffset } from "./partnercheck_math.js"; // POLISH-ANIM-PARTNERCHECK-01 (cycle1850): 主人被弾の辺で無事確認の視線 (表示層のみ・実機確認待ち)
+import { createPartnerCheckState, notePartnerCheck, partnerCheckOffset } from "./partnercheck_math.js";
+import { restoreForbids } from "./session_forbids.js"; // Phase5 (cycle1923): sessionForbids の復元純粋核
+import { createOwnerReturnState, noteOwnerReturn, ownerReturnOffset } from "./ownerreturn_math.js"; // POLISH-ANIM-OWNERRETURN-01 (cycle1923): 帰還の気付き (表示層のみ・実機確認待ち) // POLISH-ANIM-PARTNERCHECK-01 (cycle1850): 主人被弾の辺で無事確認の視線 (表示層のみ・実機確認待ち)
 import { deriveInspectNeeds } from "./goap_inspect.js"; // Phase6 UNKNOWN→INSPECT段1 (cycle1850): 影記録のみ (読み手なし) // POLISH-ANIM-LOADPOSTURE-01 (cycle1832): 満載が続くと小さく前傾する (表示層のみ・実機確認待ち)
 import { createMoveTracker, moveTrackStep, drainMoveEvents } from "./move_state.js"; // ground-walk Stage 0-B (cycle1703): record-only wiring // POLISH-ANIM-PORTALSTEADY-01 (cycle1640): 次元移動直後の立て直し (表示層のみ・実機確認待ち) // POLISH-ANIM-STEPUP-01 (cycle1603): 1マス段差を上る瞬間の小さな前傾 (表示層のみ・実機確認待ち) // POLISH-ANIM-ICEBALANCE-01 (cycle1543): 氷上のバランス取り (表示層のみ・実機確認待ち)
 import { materialOfTypeId } from "./sfx.js"; // cycle1543: ICEBALANCE の足元カテゴリ供給 (分類の単一の正は sfx.js) // POLISH-ANIM-EDGEPEEK-01 (cycle1518): 段差手前の覗き込み視線 (表示層のみ・実機確認待ち) // POLISH-ANIM-HEED-01 (cycle1443): 主人の発言の辺で頭だけを向ける (表示層のみ・実機確認待ち) // 要望バッチB (v0.4.90): 螺旋階段の純粋幾何
@@ -60,7 +62,7 @@ import { pickaxeItemForLevel } from "./bootstrap.js"; // cycle0942: toolNeed 消
 import { createResidueState, residueTick, emitResidueParticle } from "./env_residue.js"; // POLISH-FX-ENVRESIDUE-01 (cycle0942): 環境残留表現の状態機械 (パーティクルID未照合の間は記録のみ)
 import { createSfxState, sfxDigHit, sfxDigBreak, sfxStep, sfxPlace, sfxPickup, sfxSplash, sfxEat, sfxAttack, sfxLand, sfxHurt } from "./sfx.js"; // POLISH-SND-LAND-01/HURT-01 (cycle0942): 着地音・被弾音も配線 // POLISH-SND-SWIM-01 (cycle0731): 入水/出水音も配線 // POLISH-SND-PICKUP-01 (cycle0710): 回収音も配線 // 要望バッチF (v0.4.88): 素材別サウンド
 import { findSources, planFor } from "./sourcing.js";
-import { createMission, advance, missionSummary, withdrawKeyOf } from "./mission.js";
+import { createMission, advance, missionSummary, withdrawKeyOf, STEP_TYPES } from "./mission.js";
 import { selectWithdrawCandidate, candKeyForFirstStep } from "./withdraw_candidate.js"; // Phase3 candKey B1 (v0.4.26): 候補選定・射影の純粋関数
 import { scanOpportunities, noteAttempt, pruneCooldowns } from "./side_tasks.js";
 import { BLUEPRINTS, buildOrderOf, materialsSummaryOf, resolveMaterialItem } from "./blueprints.js";
@@ -197,7 +199,7 @@ function rt(bot) {
     nav: null, navDim: null, navMode: "direct", mission: undefined, missionKills: 0, deliveredFlag: false, conv: null, fallbackStreak: 0, lastCtx: null, lastChatAt: 0, lastPraiseAt: 0, lastDangerAt: 0, sideState: { cooldowns: {}, now: 0 }, sideTask: null, mTargetLoc: null, mTargetType: null, mTargetEntity: null, mTargetKind: null, mFound: false, mAtReturn: false, mScan: null, percOpps: [], buildPlan: null, hyst: null, suspendNotified: false, usedHonesty: [],
     lastAmbientAt: 0, equipCore: null, equipRestored: false, equipChanged: null, equipChangedAt: 0, equipFromOwner: false, justHealedAt: 0, lastAmmoCount: 0, lastHealCount: 0,
     // v0.3.9: 飛行・目標固定・ウォッチドッグ
-    fly: null, flyDim: null, flyMode: "ground", ownerPosCache: null, moveTracker: null, moveDim: null, moveState: null, moveEvents: [], surfacebreathState: null, workglanceState: null, workglanceSeenAt: 0, toolcheckState: null, loadpostureState: null, partnercheckState: null, idleSinceMs: null, idleAnchor: null, toolcheckSample: null, mTargetKey: "", mTargetSince: 0, mLastHave: -1, mBanKey: "", mBanUntil: 0, watchHist: [], watchAt: 0, lastHopAt: 0,
+    fly: null, flyDim: null, flyMode: "ground", ownerPosCache: null, moveTracker: null, moveDim: null, moveState: null, moveEvents: [], surfacebreathState: null, workglanceState: null, workglanceSeenAt: 0, toolcheckState: null, loadpostureState: null, partnercheckState: null, ownerreturnState: null, idleSinceMs: null, idleAnchor: null, toolcheckSample: null, mTargetKey: "", mTargetSince: 0, mLastHave: -1, mBanKey: "", mBanUntil: 0, watchHist: [], watchAt: 0, lastHopAt: 0,
     // v0.4.0: 長期自律タスク
     longtask: undefined, ltLegActive: false, mineLeg: null, mineDir: null, spiral: null,
     // v0.4.1: 失敗記録・装備破損の監視
@@ -210,7 +212,12 @@ function rt(bot) {
   if (!r.expStore) { try { const rep = restoreExpStore((k) => dp(bot, k, "")); r.expStore = rep.store; try { const m = JSON.parse(dp(bot, "cb_exp", "") || "null"); if (m && Number.isInteger(m.gen)) r.expGen = m.gen; } catch {} r.expSnap = expSnapshot(r); } catch { if (!r.expStore) r.expStore = null; } } // 6-ML (cycle0710): 経験ストア復元。失敗時は null で本体に影響させない
   if (r.mission === undefined) { // DP cb_mission から復元（再召喚・再起動をまたぐ）
     try { const mj = dp(bot, "cb_mission", ""); r.mission = mj ? JSON.parse(mj) : null; } catch { r.mission = null; }
+    // cycle1923 (a08 案B): STEP_TYPES 外のステップを含む mission は fail-closed で破棄する (版跨ぎの旧保存が無出口 mission を抱え続けないため)
+    try { if (r.mission && Array.isArray(r.mission.steps) && r.mission.steps.some((st) => !STEP_TYPES.includes(st?.type))) r.mission = null; } catch {}
     r.missionSig = missionSig(r.mission); // 復元しただけの状態では DP へ書き戻さない
+  }
+  if (r.sessionForbids === undefined) { // Phase5 (cycle1923): セッション禁止を DP cb_forbids から復元 (undefined センチネル方式、mission と同形)
+    try { const fj = dp(bot, "cb_forbids", ""); r.sessionForbids = restoreForbids(fj); } catch { r.sessionForbids = []; }
   }
   if (r.longtask === undefined) { // DP cb_longtask から復元
     try { const lj = dp(bot, "cb_longtask", ""); r.longtask = lj ? JSON.parse(lj) : null; } catch { r.longtask = null; }
@@ -1636,7 +1643,10 @@ function inspectBlockNear(bot, r, typeId) {
       else { const loc = scanBlockNear(bot, r, typeId); const ent = r.mScanMap?.[typeId]; const f = ent?.failedCells ?? 0, t = ent?.totalCells ?? 2601; out = loc ? { state: "present", source: "scan", confidence: 1, loc } : (f * 2 > t ? { state: "unknown", source: "scan", confidence: 0, loc: null } : { state: "absent", source: "scan", confidence: Math.max(0, Math.min(1, 1 - f / t)), loc: null }); }
     }
   } catch { out = { state: "unknown", source: "scan", confidence: 0, loc: null }; }
-  try { r.lastInspect = { act: "INSPECT", state: out.state, source: out.source, confidence: out.confidence, typeId, at: Date.now() }; } catch {}
+  try { const prev = r.lastInspect; r.lastInspect = { act: "INSPECT", state: out.state, source: out.source, confidence: out.confidence, typeId, at: Date.now() };
+    // 6-ML INSPECT 層2 (cycle1923): 整形して commit へ渡す。同 typeId+state の連続観測は間引く (EXPストア占有防止)。素朴形 (ok欠落) の commit は汚染形のため禁止 (a04 §3)
+    if (!prev || prev.typeId !== typeId || prev.state !== out.state) commitLastAction(r, { act: "INSPECT", ok: out.state !== "unknown", reason: out.state === "unknown" ? "TARGET_UNKNOWN" : null, item: typeId, via: out.source, at: r.lastInspect.at, detail: { state: out.state, source: out.source, confidence: out.confidence } });
+  } catch {}
   return out;
 }
 // Phase2 WITHDRAW 実体 (v0.4.8 Step A): withdraw.js executor へ実API ports を接続する。呼び出し口 (mission/planner) は Step B 以降
@@ -2576,7 +2586,7 @@ function cancelMission(bot, owner, r, silent = false) {
   r.buildStallKey = null; r.buildStallSince = 0; r.buildStallBest = null; r.buildDangerSince = null; r.buildDangerNoted = false; r.buildProgressAt = null; r.buildProgressIdx = null; r.buildProgressPlaced = null; // 基礎 R-3 (v0.4.81, cycle0417-a04): 中止した建築の stall/危険時計を残さない + BUILD-HOLD-NOEXIT (cycle1343)
   if (!silent) say(owner, bot, "指示、中止しました。……今の作業はここまでです", true);
 }
-const SUSPEND_JP = { target_not_found: "対象が見つかりませんでした", no_progress: "進捗が止まってしまいました", cannot_reach_area: "指定の場所へ辿り着けませんでした", cannot_return: "帰還できませんでした", cannot_recover: "体力が回復しませんでした" }; // cannot_recover は cycle0731
+const SUSPEND_JP = { target_not_found: "対象が見つかりませんでした", no_progress: "進捗が止まってしまいました", cannot_reach_area: "指定の場所へ辿り着けませんでした", cannot_return: "帰還できませんでした", cannot_recover: "体力が回復しませんでした", unknown_step: "手順が読み取れませんでした" }; // cannot_recover は cycle0731
 function handleMissionSay(bot, owner, r, d) {
   const m = r.mission; if (!m) return;
   if (d.reason === "step_complete") { if (!m.order.legsOnly) say(owner, bot, `${nameOfItem(m.order.target)}、必要数は揃いました。……悪くない進みです`); return; }
@@ -3190,6 +3200,8 @@ function notePortalsteadyTick(bot, dim, r, c) {
 }
 function applyGaze(bot, owner, ctx, scan) {
   try { const bv = typeof bot.isValid === "function" ? bot.isValid() : bot.isValid; if (bot.isValid !== undefined && !bv) return; if (owner) { const ov = typeof owner.isValid === "function" ? owner.isValid() : owner.isValid; if (owner.isValid !== undefined && !ov) return; } } catch { return; }
+  // POLISH-ANIM-OWNERRETURN-01 (cycle1923): 主人の距離遷移だけを発火源にする feeder (表示層のみ・実機確認待ち)
+  try { const r0 = rt(bot); if (!r0.ownerreturnState) r0.ownerreturnState = createOwnerReturnState(); const d = ctx?.self?.distOwner; const same = !!owner && !!ctx?.owner?.dimensionSame; let relYaw = 0; try { const gr = gazeRotation(bot.location, { x: owner.location.x, y: owner.location.y + 1.4, z: owner.location.z }); const cur = bot.getRotation(); relYaw = ((gr.y - (cur?.y || 0) + 540) % 360) - 180; } catch {} const rec = noteOwnerReturn(r0.ownerreturnState, { dist: same && Number.isFinite(d) && d < 900 ? d : null, busy: !!r0.work || r0.selfFalling === true, targetYawDeg: relYaw }, Date.now()); if (rec) r0.lastOwnerReturn = r0.ownerreturnState.lastRecord; } catch {}
   let gz = null; try { gz = decideGaze(ctx); } catch {}
   if (!gz) return;
   const r = rt(bot);
@@ -3222,7 +3234,7 @@ function applyGaze(bot, owner, ctx, scan) {
     if (rot && r.stepupState) { const sub = sampleStepup(r.stepupState, Date.now()); if (sub.active) rot = { ...rot, x: rot.x + sub.gazePitchDeg }; } if (rot && r.portalsteadyState && isPortalsteadyActive(r.portalsteadyState, Date.now())) { const po = portalsteadyOffsetsAt(r.portalsteadyState.startedAtMs, Date.now()); rot = { ...rot, x: rot.x + po.gazePitchDeg, y: rot.y + po.yawSwayDeg }; } if (rot && r.surfacebreathState) { const sb = sampleSurfacebreath(r.surfacebreathState, Date.now()); if (sb.active) rot = { ...rot, x: applySurfacebreathPitch(rot.x, Date.now() - r.surfacebreathState.startedAtMs) }; } if (rot && r.workglanceState) { const wg = sampleWorkglance(r.workglanceState, Date.now()); if (wg.active) rot = { ...rot, y: rot.y + wg.gazeYawOffsetDeg, x: rot.x + wg.gazePitchDeg }; } // WORKGLANCE-01 (cycle1728): lowest-priority overlay (display only) // SURFACEBREATH overlay (clamped) // POLISH-ANIM-PORTALSTEADY-01 (cycle1640): 重畳の最下位 (表示層のみ・実機確認待ち) // POLISH-ANIM-STEPUP-01 (cycle1603): ピッチ重畳の最下位 (icebalance の後ろ。表示層のみ・実機確認待ち) // POLISH-ANIM-ICEBALANCE-01 (cycle1543): ピッチ重畳の最下位 (edgepeek の後ろ。表示層のみ・実機確認待ち)
     if (rot && r.toolcheckSample?.active) rot = { ...rot, x: rot.x + r.toolcheckSample.gazePitchDeg, y: rot.y + r.toolcheckSample.gazeYawDeg }; // POLISH-ANIM-TOOLCHECK-01 (cycle1807): 重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot && r.loadpostureState) { const lp = sampleLoadPosture(r.loadpostureState, Date.now()); if (lp.active) rot = { ...rot, x: rot.x + lp.pitchDeg }; } // POLISH-ANIM-LOADPOSTURE-01 (cycle1832): ピッチ重畳の最下位 (表示層のみ・実機確認待ち)
-    if (rot && r.partnercheckState) { const pc = partnerCheckOffset(r.partnercheckState, Date.now()); if (pc.active) rot = { ...rot, y: rot.y + pc.yawDeg, x: rot.x + pc.pitchDeg }; } // POLISH-ANIM-PARTNERCHECK-01 (cycle1850): 重畳の最下位 (表示層のみ・実機確認待ち)
+    if (rot && r.partnercheckState) { const pc = partnerCheckOffset(r.partnercheckState, Date.now()); if (pc.active) rot = { ...rot, y: rot.y + pc.yawDeg, x: rot.x + pc.pitchDeg }; } if (rot && r.ownerreturnState) { const orc = ownerReturnOffset(r.ownerreturnState, Date.now()); if (orc.active) rot = { ...rot, y: rot.y + orc.yawDeg, x: rot.x + orc.pitchDeg }; } // POLISH-ANIM-OWNERRETURN-01 (cycle1923): 重畳の最下位 (表示層のみ・実機確認待ち) // POLISH-ANIM-PARTNERCHECK-01 (cycle1850): 重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot) { try { bot.setRotation(rot); } catch {} }
   }
   if (gz.say && Math.random() < 0.4) sayAmbient(owner, bot, gz.say);
@@ -3678,7 +3690,7 @@ function parserOrderToMission(o) {
 
 // Phase5 否定配線 (NEGW): 禁止・聞き返しは mission を作らない。記録と復唱/聞き返しのみ。
 const FORBID_VERB_JP = { gather: "集めません", build: "作りません", hunt: "倒しません", deliver: "持ってきません" };
-function recordSessionForbids(r, o) {
+function recordSessionForbids(bot, r, o) {
   if (!Array.isArray(r.sessionForbids)) r.sessionForbids = [];
   for (const n of o?.negations || []) {
     const id = n?.target?.item || n?.target?.block || n?.target?.entity || null;
@@ -3686,12 +3698,13 @@ function recordSessionForbids(r, o) {
     if (!r.sessionForbids.some((f) => f.target === id && f.verb === (n.verb ?? null))) r.sessionForbids.push({ target: id, verb: n.verb ?? null, at: Date.now() });
   }
   if (r.sessionForbids.length > 32) r.sessionForbids = r.sessionForbids.slice(-32);
+  try { dps(bot, "cb_forbids", JSON.stringify(r.sessionForbids)); } catch {} // Phase5 (cycle1923): 再召喚・再起動を跨いで禁止を保持する
 }
 function forbidTargetName(n) { return n?.target?.name || nameOfItem(n?.target?.item || n?.target?.block || n?.target?.entity || ""); }
 function startOrderFromParser(p, bot, r, o) {
   // Phase5 否定配線: build/gather の mission 実行中ガードより前に置くこと
   if (o.kind === "forbid") {
-    recordSessionForbids(r, o);
+    recordSessionForbids(bot, r, o);
     const list = (o.negations || []).filter((n) => n?.target);
     if (list.length === 0) { say(p, bot, "分かりました。その件はしません", true); return; }
     const parts = list.map((n) => `${forbidTargetName(n)}は${n.verb ? (FORBID_VERB_JP[n.verb] || "しません") : "対象にしません"}`);

@@ -513,8 +513,13 @@ export function advance(mission, observation) {
       m.status = "done";
       return { action: "say", reason: "mission_complete", step: "report", missionStatus: m.status };
     }
-    default:
+    default: {
+      // cycle1923 (到達可能性監査 a08): 未知種別は保存データ経由でのみ到達するが、カウンタ無しでは
+      // done/suspended のいずれにも遷移しない無出口だった。単調カウンタで suspend へ落とす。
+      m.unknownStepObs = (m.unknownStepObs || 0) + 1;
+      if (m.unknownStepObs >= STALL_LIMIT) return suspend(m, "unknown_step");
       return { action: "none", reason: "unknown_step", step: s.type, missionStatus: m.status };
+    }
   }
 }
 
