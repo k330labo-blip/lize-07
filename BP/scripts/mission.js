@@ -471,7 +471,7 @@ export function advance(mission, observation) {
       const hostile = hostileDirective(m, s, obs);
       if (hostile) return hostile;
       // 本ステップ（side_collect 自身でない）作業中は寄り道を差し込む
-      if (s.type !== "side_collect") { const side = sideDirective(m, obs); if (side) return side; if ((m.sideStreak || 0) < SIDE_BUDGET) m.sideStreak = 0; } // 到達可能性監査 (cycle1518-a09): 予算枯渇で null になった観測自身がカウンタを消す自己消去を是正。枯渇時はリセットせず、本ステップ指令が返り機会が無い/完了した観測でのみ戻す
+      if (s.type !== "side_collect") { const side = sideDirective(m, obs); if (side) return side; if (!obs.foundSide) m.sideStreak = 0; } // 到達可能性監査 (cycle1518-a09 + cycle0423-a14): 機会提示中の遮断観測では消さない (自己消去防止) が、機会が無い観測では枯渇後も含めて再充填する (旧形は < SIDE_BUDGET 条件のため枯渇からの復帰が構造的に到達不能だった)
       if (obs.foundTarget) {
         s.seen = true; s.lostObs = 0;
         // cycle0710: この分岐は従来 trackStall を経由せず無出口だった。1回だけ呼び累計上限を効かせる
