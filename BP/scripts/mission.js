@@ -63,6 +63,9 @@ export const FOUND_STALL_LIMIT = 600;
 // 回復手段が無い場合に recovering が無期限に続いた (先行実測: 0.20→0.30固定で10,000観測すべて recovering)。
 // HP実測がある観測だけを単調計上し、上限超過で suspend へ抜ける (他の見切りと同型)。
 export const RECOVER_STALL_LIMIT = 600;
+// cycle0057: hostileDirective fight/avoid の単調上限。進捗系カウンタを経由しない早期 return が
+// 発動し続けると done/failed/suspended のいずれにも遷移しなかった (a03 楽観条件100,000観測で active のまま実測)。
+export const HOSTILE_STALL_LIMIT = 600;
 // cycle0753: region 探索 (searchDirective regionMode) の単調上限。region 経路は mission 側カウンタを
 // 一切進めず、searchExhausted が外部要因 (survey 鮮度 TTL との追いかけっこ等) で立たないと無出口だった
 // (cycle0710-a16 / cycle0731-a02 で楽観条件 10,000 観測でも active のままを実測)。
@@ -153,6 +156,8 @@ export function createMission(order, sourcing = null) {
     suspendCount: 0, // 同一ステップでの連続 suspend 回数。finishStep でのみ 0 に戻す (cycle0238-a24)
     blocked: null, // 一時的な中断理由（critical_hp 等）。解消すれば自動で戻る
     recoverObs: 0, // cycle0731: recovering の単調計上 (HP実測がある観測のみ、解除時に 0)
+    hostileObs: 0, // cycle0057: fight/avoid 指令の単調計上 (進捗時のみ 0)
+    hostileHave: 0, // cycle0057: hostileObs の進捗アンカー (have)
     detour: null, // 満杯時の帰還デツアー { phase: 'to_return'|'deliver', resumeStep: number }
     initialRadius: num(sourcing?.initialRadius, SEARCH_STAGES[0]),
     maxRadius: num(sourcing?.maxRadius, SEARCH_STAGES[SEARCH_STAGES.length - 1]),
@@ -171,6 +176,7 @@ function finishStep(m) {
   const s = currentStepOf(m);
   if (s) s.status = "done";
   m.suspendCount = 0; // 進捗が確定したので見切りカウンタを戻す (消去経路はここだけ)
+  m.hostileObs = 0; m.hostileHave = 0; // cycle0057: ステップ完了は進捗認定点
   m.currentStep++;
   const next = currentStepOf(m);
   if (next) next.status = "active";
@@ -264,11 +270,15 @@ function hostileDirective(m, s, obs) {
   }
   m.recoverObs = 0;
   if (obs?.dangerKnown === false) return null; // 敵が見えていない時は番兵距離で戦闘/回避を決めない（瀕死処理は上段で済み）
-  if (danger >= HOSTILE_TRIGGER_DIST) return null;
+  if (danger >= HOSTILE_TRIGGER_DIST) return null; // 帯外観測では hostileObs を戻さない (フラッピングで上限に届かなくなる形を避ける。戻すのは進捗時のみ)
   if (mode === "ignore") return null; // 敵が近くても作業継続（directive は通常処理が返す）
-  if (mode === "fight") return { action: "zap", reason: "hostiles_fight", step: s.type, missionStatus: m.status };
+  // cycle0057: fight/avoid の無出口是正。進捗 (have 増加) の時だけ hostileObs を戻し、
+  // 帯境界のフラッピングでは戻さない (敵が帯外へ出た観測では上の分岐で戻るが、それは指令を返していない観測)。
+  if (typeof s?.have === "number" && s.have > (m.hostileHave || 0)) { m.hostileObs = 0; m.hostileHave = s.have; }
+  const countHostile = () => { m.hostileObs = (m.hostileObs || 0) + 1; return m.hostileObs > HOSTILE_STALL_LIMIT ? suspend(m, "hostile_stuck") : null; };
+  if (mode === "fight") { const ex = countHostile(); if (ex) return ex; return { action: "zap", reason: "hostiles_fight", step: s.type, missionStatus: m.status }; }
   // avoid
-  if (danger < AVOID_DIST) return { action: "move", target: m.order.returnTo, reason: "avoid_hostile", step: s.type, missionStatus: m.status };
+  if (danger < AVOID_DIST) { const ex = countHostile(); if (ex) return ex; return { action: "move", target: m.order.returnTo, reason: "avoid_hostile", step: s.type, missionStatus: m.status }; }
   return null;
 }
 

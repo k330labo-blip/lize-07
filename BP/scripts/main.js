@@ -43,6 +43,7 @@ import { steerDecision, collectHints, chooseHint, hintDirection, inDepthBand, SU
 import { createGuardState, decideResteer, recordBlocked, recordResteerApplied, legKeyOf } from "./resteer_guard_math.js"; // cycle0005: resteer F-1/F-2 ガード純粋核 (元凶方向への復帰禁止・再blocked無効化・blocked累計30秒の出口・距離/深度ガード)
 import { createWakestretchState, noteWakestretch, wakestretchCurrent, applyWakestretchPitch } from "./wakestretch_math.js"; // POLISH-ANIM-WAKESTRETCH-01 (cycle0005): 長い待機明けの小さな伸び (表示層のみ・実機確認待ち)
 import { createOwnerfalltrackState, noteOwnerfalltrack, ownerfalltrackCurrent } from "./ownerfalltrack_math.js"; // POLISH-ANIM-OWNERFALLTRACK-01 (cycle0033): owner fall gaze tracking (display only)
+import { createFallLandState, onVerticalStep, falllandCurrent } from "./fallland_math.js"; // POLISH-ANIM-FALLLAND-01 (cycle0057): 落下ポーズ+着地クッション (表示層のみ・実機確認待ち)
 import { createHeedState, noteHeed as noteHeedState, sampleHeed } from "./heed_math.js";
 import { createThresholdState, noteThreshold as noteThresholdState, sampleThreshold } from "./threshold_math.js"; // POLISH-ANIM-THRESHOLD-01 (cycle1503): くぐり視線 (表示層のみ・実機確認待ち)
 import { createEdgepeekState, noteEdgepeek as noteEdgepeekState, sampleEdgepeek } from "./edgepeek_math.js";
@@ -1255,6 +1256,14 @@ function noteMove(bot, r, engine) {
     const st = moveTrackStep(tr, pos, 0.1, { engine: eng, nowMs: Date.now(), grounded, wet: !!bot.isInWater, getSurface: () => { try { const b = dim.getBlock(belowCell); return b && solidOfTypeId(b.typeId) ? b.typeId : "minecraft:air"; } catch { return "minecraft:air"; } } });
     if (st) r.moveState = st;
     r.moveEvents = drainMoveEvents(tr);
+    // POLISH-ANIM-FALLLAND-01 (cycle0057): 落下/着地の判定は moveTracker の前回位置との dy で供給 (表示層のみ)
+    try {
+      if (!r.falllandState || r.falllandDim !== bot.dimension.id) { r.falllandState = createFallLandState(); r.falllandDim = bot.dimension.id; r.falllandPrevY = null; }
+      const dy = typeof r.falllandPrevY === "number" ? pos.y - r.falllandPrevY : 0;
+      if (eng === "teleport") { r.falllandState = createFallLandState(); }
+      else { const ev = onVerticalStep(r.falllandState, dy, 0.1, grounded, Date.now()); if (ev && ev.event) r.lastFallLand = { at: Date.now(), event: ev.event, landTier: ev.landTier || 0, fallAmount: ev.fallAmount || 0 }; }
+      r.falllandPrevY = pos.y;
+    } catch {}
   } catch {}
 }
 function movementWatchdog(bot, r, pos) {
@@ -3603,6 +3612,7 @@ function applyGaze(bot, owner, ctx, scan) {
     if (rot && r.rainshelterState) { const rs = sampleRainShelter(r.rainshelterState, Date.now()); if (rs.active) rot = { ...rot, y: rot.y + rs.gazeYawOffsetDeg, x: rot.x + rs.gazePitchDeg }; } // POLISH-ANIM-RAINSHELTER-01 (cycle2231): 重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot && r.wakestretchState) { try { const wk = wakestretchCurrent(r.wakestretchState, Date.now()); if (wk.active) rot = { ...rot, y: rot.y + wk.yawDeg, x: applyWakestretchPitch(rot.x, Date.now() - (r.wakestretchState.startedAtMs || Date.now())) }; } catch {} }
     if (rot && r.ownerfalltrackState) { try { const oft = ownerfalltrackCurrent(r.ownerfalltrackState, r.ownerfalltrackSample || {}, Date.now()); if (oft.active || oft.pitchDeg || oft.yawOffsetDeg) rot = { ...rot, y: rot.y + (oft.yawOffsetDeg || 0), x: rot.x + (oft.pitchDeg || 0) }; } catch {} } // POLISH-ANIM-OWNERFALLTRACK-01 (cycle0033): lowest overlay (display only) // POLISH-ANIM-WAKESTRETCH-01 (cycle0005): 重畳の最下位 (表示層のみ・実機確認待ち)
+    if (rot && r.falllandState) { try { const fl = falllandCurrent(r.falllandState, Date.now()); if (fl.active) { rot = { ...rot, x: rot.x + fl.pitchDeg }; if (fl.mode === "land") r.lastFallLand = { ...(r.lastFallLand || {}), at: Date.now(), mode: "land", landTier: fl.landTier, sink: fl.sink }; } } catch {} } // POLISH-ANIM-FALLLAND-01 (cycle0057): 重畳の最下位 (表示層のみ・実機確認待ち。sink は RP 受け口が無い間は記録のみ)
     if (rot) { try { bot.setRotation(rot); } catch {} }
   }
   if (gz.say && Math.random() < 0.4) sayAmbient(owner, bot, gz.say);
