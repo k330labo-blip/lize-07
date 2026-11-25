@@ -70,7 +70,8 @@ import { createRainShelterState, noteRainShelter, sampleRainShelter } from "./ra
 import { notePortalsteady, portalsteadyOffsetsAt, isPortalsteadyActive } from "./portalsteady_math.js";
 import { createSurfacebreathState, stepSurfacebreath, sampleSurfacebreath, applySurfacebreathPitch } from "./surfacebreath_math.js"; // POLISH-ANIM-SURFACEBREATH-01 (cycle1703)
 import { createBubblebreathState, stepBubblebreath } from "./bubblebreath_math.js"; // POLISH-FX-BUBBLEBREATH-01 (cycle1909): 水中滞在中の冷却排気泡 (粒子ID未照合の間は記録のみ・実機確認待ち)
-import { tickToolCheck, createToolCheckState } from "./toolcheck_math.js"; // POLISH-ANIM-TOOLCHECK-01 (cycle1807): 長時間待機中に一度だけ手元の道具を点検する (表示層のみ・実機確認待ち)
+import { tickToolCheck, createToolCheckState } from "./toolcheck_math.js";
+import { createWarmhandsState, noteWarmhands, sampleWarmhands } from "./warmhands_math.js"; // POLISH-ANIM-WARMHANDS-01 (cycle0740) // POLISH-ANIM-TOOLCHECK-01 (cycle1807): 長時間待機中に一度だけ手元の道具を点検する (表示層のみ・実機確認待ち)
 import { createLoadPostureState, noteLoadPosture, sampleLoadPosture } from "./loadposture_math.js";
 import { createPartnerCheckState, notePartnerCheck, partnerCheckOffset } from "./partnercheck_math.js";
 import { createEnderavertState, noteEnderavert, sampleEnderavert } from "./enderavert_math.js"; // POLISH-ANIM-ENDERAVERT-01 (cycle1940): 表示層のみ・実機確認待ち
@@ -84,7 +85,7 @@ import { applySettlePitch, isSettleActive, shouldSettle } from "./settle_math.js
 import { applyPlacesettlePitch, isPlacesettleActive, shouldPlacesettle } from "./placesettle_math.js"; // POLISH-ANIM-PLACESETTLE-01 (cycle2248): 設置完了直後の小さな確認視線 (表示層のみ・実機確認待ち)
 import { applyCraftsettlePitch, isCraftsettleActive, shouldCraftsettle } from "./craftsettle_math.js"; // POLISH-ANIM-CRAFTSETTLE-01 (cycle0141): 製作/精錬完了直後の小さな確認視線 (表示層のみ・実機確認待ち)
 import { createDeliverGuardState, noteDeliverOutcome, isDeliverCooling } from "./deliver_guard_math.js";
-import { createDepositGuardState, noteDepositOutcome, isDepositCooling, nextDepositDeliverFail } from "./deposit_guard_math.js"; // cycle0659: deposit F1/F3 guard
+import { createDepositGuardState, noteDepositOutcome, isDepositCooling, nextDepositDeliverFail, planDepositDecision } from "./deposit_guard_math.js"; // cycle0740: planDepositDecision 配線 (deposit_at_home) // cycle0659: deposit F1/F3 guard
 import { ownerLavaNearFromIds, lavaBelowFromIds, LAVA_BELOW_SCAN } from "./lava_detect_math.js"; // cycle0721: LAVA-01/02 検知分離 // A18-TR-01 (cycle0446): planner deliver_to_owner 満杯失敗の出口 (連続全滅3回で60秒冷却し他 goal へ譲る)
 import { applyDeliverBowPitch, isDeliverBowActive, shouldDeliverBow } from "./deliverbow_math.js"; // POLISH-ANIM-DELIVERBOW-01 (cycle0446): 手渡し成功直後の小さな会釈 (表示層のみ・実機確認待ち)
 import { applyStoresettlePitch, isStoresettleActive, shouldStoresettle } from "./storesettle_math.js";
@@ -387,6 +388,7 @@ function buildContext(bot, owner) {
   // distHome/home.dist の両方がこの homeDist を使う (片方だけ直すと読み手が分裂する)。
   // home.registered は不変 (登録の有無は次元と独立)。dim 欠落の旧保存も不一致として 999。
   const homeSameDim = !!home && home.dim === dim.id;
+  let depositBlocked = false; try { depositBlocked = !!(r.depositGuard && isDepositCooling(r.depositGuard, Date.now())) || (r.depositHomeSuppressedUntil || 0) > Date.now(); } catch {} // cycle0740 deposit P2
   const homeDist = homeSameDim ? dist(bot.location, home) : 999;
   const c = {
     mode,
@@ -396,7 +398,7 @@ function buildContext(bot, owner) {
     env: { isNight: false, isDawn: false, isDusk: false, isRaining: false, isThundering: false },
     danger: { nearestDist: 999, count: 0, creeperDist: 999, rangedDist: 999, lavaNear: false, ownerLavaNear: false, lavaBelow: false, lavaBelowDist: 999, ownerTargeted: false },
     drops: { count: 0, nearestDist: -1, valuableDist: -1, foodDist: -1, ownerDroppedDist: -1 },
-    home: { registered: !!home, chestFull: false, chestMissing: false, dist: homeDist },
+    home: { registered: !!home, chestFull: false, chestMissing: false, dist: homeDist, dimensionSame: homeSameDim, depositBlocked }, // cycle0740 deposit P2
     flags: { warnOk: true, justDelivered: !!r.justDelivered, justDeposited: !!r.justDeposited, bond: dp(bot, "cb_bond", 30), trust: dp(bot, "cb_trust", 30) },
     x: {},
   };
@@ -537,6 +539,7 @@ function buildContext(bot, owner) {
   noteSurfacebreathTick(bot, r, c); // POLISH-ANIM-SURFACEBREATH-01 (cycle1703)
   noteBubblebreathTick(bot, r, c); // POLISH-FX-BUBBLEBREATH-01 (cycle1909)
   noteToolCheckTick(bot, r, c); // POLISH-ANIM-TOOLCHECK-01 (cycle1807)
+  noteWarmhandsTick(bot, r, c); // POLISH-ANIM-WARMHANDS-01 (cycle0740)
   noteIdleTick(bot, r, c); // POLISH-ANIM-IDLE-01 (cycle2020)
   noteWakestretchTick(bot, r, c); // POLISH-ANIM-WAKESTRETCH-01 (cycle0005)
   noteLoadPostureTick(bot, r, c); // POLISH-ANIM-LOADPOSTURE-01 (cycle1832)
@@ -648,7 +651,7 @@ function buildContext(bot, owner) {
   if (Date.now() - r.percAt > 4000 || !r.perc) {
     r.percAt = Date.now(); r.percTargets = {};
     const pcOpps = [];
-    const pc = { tree: -1, ore: -1, crop: -1, stone: -1, oreValuable: false, nearCraft: false, nearFurnace: false, nearMachine: false, nearBed: false, darkness: false, shrieker: false, failedCells: 0, totalCells: 245 };
+    const pc = { tree: -1, ore: -1, crop: -1, stone: -1, oreValuable: false, nearCraft: false, nearFurnace: false, nearHeat: false, nearMachine: false, nearBed: false, darkness: false, shrieker: false, failedCells: 0, totalCells: 245 };
     const selD = { tree: -1, ore: -1, stone: -1, crop: -1 }; // forbids G6-c (cycle0628): 候補選出専用の距離 (統計 pc.* と分ける。禁止候補が距離だけ更新して非禁止候補を塞ぐ事故を防ぐ)
     const forbT = (tid) => { try { return isForbiddenWorkTarget(r.sessionForbids, tid, dropOfWorkTarget); } catch { return false; } };
     const bx = Math.floor(bot.location.x), by = Math.floor(bot.location.y), bz = Math.floor(bot.location.z);
@@ -664,6 +667,7 @@ function buildContext(bot, owner) {
       }
       if (/flower/.test(tid) || tid === "minecraft:snow_layer" || tid === "minecraft:short_grass" || tid === "minecraft:tall_grass" || tid === "minecraft:fern" || tid === "minecraft:sugar_cane") pcOpps.push({ kind: "block", typeId: tid, pos: { x: b.location.x, y: b.location.y, z: b.location.z } }); // 基礎 N2 (v0.4.65): サトウキビも side 採取の機会に載せる (side_tasks の現行IDと対)
       if (tid === "minecraft:crafting_table") { pc.nearCraft = true; try { if (wm?.recordWorkstation) wm.recordWorkstation(b.location, dim.id, tid); } catch {} }
+      if (tid === "minecraft:campfire" || tid === "minecraft:soul_campfire" || tid === "minecraft:lit_furnace" || tid === "minecraft:lit_blast_furnace" || tid === "minecraft:lit_smoker") pc.nearHeat = true; // cycle0740 WARMHANDS feeder: 点火中熱源のみ (分類1分岐・新規走査なし)
       if (/furnace|smoker/.test(tid)) { pc.nearFurnace = true; try { if (wm?.recordWorkstation) wm.recordWorkstation(b.location, dim.id, tid); } catch {} }
       if (tid.startsWith("orbital_foundry:")) pc.nearMachine = true;
       if (tid.includes("bed")) { pc.nearBed = true; try { if (wm?.recordBed) wm.recordBed(b.location, dim.id); } catch {} }
@@ -676,7 +680,7 @@ function buildContext(bot, owner) {
   }
   if (r.perc) {
     c.x.nearestTreeDist = r.perc.tree; c.x.nearestOreDist = r.perc.ore; c.x.cropReadyDist = r.perc.crop; c.x.nearestStoneDist = r.perc.stone; c.x.oreValuable = !!r.perc.oreValuable;
-    c.x.nearCraft = r.perc.nearCraft; c.x.nearFurnace = r.perc.nearFurnace; c.x.nearMachine = r.perc.nearMachine; c.x.nearCrop = r.perc.crop >= 0; c.x.cropMature = r.perc.crop >= 0; c.x.shriekerNear = !!r.perc.shrieker; c.x.nearBed = !!r.perc.nearBed;
+    c.x.nearCraft = r.perc.nearCraft; c.x.nearFurnace = r.perc.nearFurnace; c.x.nearHeat = !!r.perc.nearHeat; c.x.nearMachine = r.perc.nearMachine; c.x.nearCrop = r.perc.crop >= 0; c.x.cropMature = r.perc.crop >= 0; c.x.shriekerNear = !!r.perc.shrieker; c.x.nearBed = !!r.perc.nearBed;
     const dark = (c.owner.underground || c.env.isNight) && !r.perc.nearFurnace;
     c.x.lightLevel = c.owner.underground ? 5 : c.env.isNight ? 7 : 13;
     c.x.darkness = dark && c.x.lightLevel <= 7;
@@ -993,7 +997,7 @@ function startWork(bot, r, target, opts = {}) {
   if (r.work && r.work.typeId === target.typeId && r.work.loc.x === target.x && r.work.loc.y === target.y && r.work.loc.z === target.z) return true;
   // v0.4.76 遮蔽除去: 先掘り中は主対象 (main) が一致すれば先掘り対象の進捗を保持する
   if (r.work && r.work.main && r.work.main.typeId === target.typeId && r.work.main.loc.x === target.x && r.work.main.loc.y === target.y && r.work.main.loc.z === target.z) return true;
-  if (structureGuard(bot.dimension, target) && !CROP_DROPS[target.typeId]) { r.lastWorkReject = { reason: "STRUCTURE_GUARD", typeId: target.typeId, at: Date.now() }; return false; } // cycle0659 HV1c: crops exempt + record
+  if (structureGuard(bot.dimension, target) && !isCropBlock(target.typeId)) { r.lastWorkReject = { reason: "STRUCTURE_GUARD", typeId: target.typeId, at: Date.now() }; return false; } // cycle0659 HV1c: crops exempt + record
   stashWorkProgress(r, workHardOf, Date.now()); // A06-03 (cycle0224): 差替確定点で現行 work の掘削進捗を退避する
   const hardOf = workHardOf; // v0.4.88: 単一の正は workHardOf (tickWork の dig_first 差し替えと共用)
   const hard = hardOf(target.typeId);
@@ -1298,7 +1302,18 @@ function tickAutonomy(bot, owner, ctx, effMove) {
     case "place_torch_dark": { // cycle2117 torchfix: 足元へ降りる目標を張り syncFlyGoal の interact 降下に載せる (張るだけでは消費しない)
       try { r.target = { x: Math.floor(bot.location.x) + 0.5, y: Math.floor(bot.location.y), z: Math.floor(bot.location.z) + 0.5 }; r.moveAct = "place_torch"; } catch {}
       placeTorch(bot, r, ctx); break; }
-    case "deposit_at_home": { const h = homeOf(bot); if (h && h.dim === bot.dimension.id) { r.target = { x: h.x + 0.5, y: h.y + 1, z: h.z + 0.5 }; execArrive(bot, owner, { act: "deposit" }, ctx, null); } break; } // cycle0659 F4 dim gate
+    case "deposit_at_home": { // cycle0740 deposit P3: planDepositDecision を単一判断点にする (P1 planner ゲートとセット)
+      const h = homeOf(bot); try { if (!r.depositGuard) r.depositGuard = createDepositGuardState(); } catch {}
+      const nowD = Date.now(); const coolingD = !!(r.depositGuard && isDepositCooling(r.depositGuard, nowD)); const suppressedD = (r.depositHomeSuppressedUntil || 0) > nowD;
+      const distD = h ? dist(bot.location, { x: h.x + 0.5, y: h.y + 1, z: h.z + 0.5 }) : null;
+      const decD = planDepositDecision({ homePresent: !!h, homeDim: h?.dim ?? null, botDim: bot.dimension.id, distToHome: distD, range: DELIVER_RANGE, cooling: coolingD || suppressedD });
+      if (decD.action === "attempt") { r.depositCoolSeen = false; r.target = { x: h.x + 0.5, y: h.y + 1, z: h.z + 0.5 }; execArrive(bot, owner, { act: "deposit" }, ctx, null); }
+      else if (decD.action === "approach") { r.depositCoolSeen = false; r.target = { x: h.x + 0.5, y: h.y + 1, z: h.z + 0.5 }; }
+      else { // yield: 目標を張らず主人へ寄って他 goal へ譲る。冷却周期3回で10分抑制する終端を持つ
+        if (decD.reason === "cooldown" && !suppressedD) { if (!r.depositCoolSeen) { r.depositCoolSeen = true; r.depositCoolCycles = (r.depositCoolCycles || 0) + 1; if (r.depositCoolCycles >= 3) { r.depositCoolCycles = 0; r.depositHomeSuppressedUntil = nowD + 600000; try { noteFail(bot, "planner:deposit_home_suppressed", new Error("deposit_at_home suppressed after 3 cooldown cycles")); } catch {} try { say(owner, bot, "拠点のチェストがいっぱいのようです。しばらく入庫は止めておきます", true); } catch {} } } }
+        else if (decD.reason !== "cooldown") r.depositCoolSeen = false;
+        try { r.target = behindOf(owner, 2); r.moveAct = "follow"; } catch {}
+      } break; }
     case "deliver_to_owner": { // cycle1807 U1: 距離・次元ゲート無しの即時転送を是正 (DELIVER_RANGE が単一の正、範囲外は主人へ接近目標を張る)
       let inRange = false; try { inRange = owner.dimension.id === bot.dimension.id && dist(bot.location, owner.location) <= DELIVER_RANGE; } catch {}
       if (inRange) {
@@ -3532,7 +3547,7 @@ function tickBuild(bot, owner, r, ctx) {
     r.target = { ...bot.location }; return true;
   }
   if (r.buildDimSince != null) { // 次元が戻った: 保留時間を stall 時計から差し引く (危険停止と同型)
-    if (r.buildStallSince) r.buildStallSince += Date.now() - r.buildDimSince;
+    if (r.buildStallSince) r.buildStallSince += Math.max(0, Date.now() - r.buildDimSince); // cycle0740 BUILDSTALL-SHIFT-NEGGUARD
     r.buildDimSince = null; r.buildDimNoted = false;
   }
   if (ctx.danger.nearestDist < 5) {
@@ -3543,7 +3558,7 @@ function tickBuild(bot, owner, r, ctx) {
     r.target = { ...bot.location }; return true;
   }
   if (r.buildDangerSince != null) { // 危険が去った: 停止していた時間を stall 時計から差し引く (R-2 形B の解消)
-    if (r.buildStallSince) r.buildStallSince += Date.now() - r.buildDangerSince;
+    if (r.buildStallSince) r.buildStallSince += Math.max(0, Date.now() - r.buildDangerSince); // cycle0740 BUILDSTALL-SHIFT-NEGGUARD
     r.buildDangerSince = null; r.buildDangerNoted = false;
   }
   while (bp.idx < bp.cells.length) {
@@ -3560,7 +3575,7 @@ function tickBuild(bot, owner, r, ctx) {
       if (r.buildUnknownSince == null) { r.buildUnknownSince = Date.now(); r.buildUnknownNoted = false; try { r.lastPlace = { act: "PLACE", mode: "build", ok: false, reason: "CELL_UNKNOWN", item, at: Date.now() }; commitLastAction(r, r.lastPlace); } catch {} }
       else if (!r.buildUnknownNoted && Date.now() - r.buildUnknownSince > 60000) { r.buildUnknownNoted = true; try { say(owner, bot, "セルの状態が分からず、建築を止めています。読み込めたら、続けます", true); } catch {} }
       r.target = { ...bot.location }; return true; }
-    if (r.buildUnknownSince != null) { if (r.buildStallSince) r.buildStallSince += Date.now() - r.buildUnknownSince; r.buildUnknownSince = null; r.buildUnknownNoted = false; }
+    if (r.buildUnknownSince != null) { if (r.buildStallSince) r.buildStallSince += Math.max(0, Date.now() - r.buildUnknownSince); r.buildUnknownSince = null; r.buildUnknownNoted = false; }
     // Phase2 PLACE build: 非 air は上書きしない (L-15)
     if (cur.typeId !== "minecraft:air") { try { r.lastPlace = { act: "PLACE", mode: "build", ok: false, reason: "CELL_OCCUPIED", item, at: Date.now() }; commitLastAction(r, r.lastPlace); } catch {} bp.skipped.push({ item, reason: "CELL_OCCUPIED", pos }); bp.idx++; continue; }
     if (!hasItem(bot, item)) { try { r.lastPlace = { act: "PLACE", mode: "build", ok: false, reason: "NO_MATERIAL", item, at: Date.now() }; commitLastAction(r, r.lastPlace); } catch {} bp.skipped.push({ item, reason: "NO_MATERIAL", pos }); bp.idx++; continue; }
@@ -3778,6 +3793,19 @@ function catchsightSuppressInput(bot, owner, ctx, gz, r, now) {
     };
   } catch { return { suppressed: true }; }
 }
+// POLISH-ANIM-WARMHANDS-01 (cycle0740): 火のそばで待機中、手をかざして温まる小さな仕草 (表示層のみ・実機確認待ち)
+// feeder: nearHeat は知覚ライト走査の分類 (c.x.nearHeat)、待機は noteToolCheckTick の idleSinceMs、移動量は専用 prevPos で測る (新規走査なし)
+function noteWarmhandsTick(bot, r, c) {
+  try {
+    if (!bot || !r) return;
+    if (!r.warmhandsState) r.warmhandsState = createWarmhandsState();
+    const now = Date.now(); const p = bot.location;
+    let stepDist = 0; if (r.warmhandsPrevPos) stepDist = Math.hypot(p.x - r.warmhandsPrevPos.x, p.z - r.warmhandsPrevPos.z); r.warmhandsPrevPos = { x: p.x, z: p.z };
+    let inWater = false; try { inWater = !!bot.isInWater; } catch {}
+    const out = noteWarmhands(r.warmhandsState, { nearHeat: c?.x?.nearHeat === true, idle: r.idleSinceMs != null, stepDist, working: !!r.work || !!r.mission || !!r.longtask || !!r.buildPlan, danger: !!((c?.danger?.count ?? 0) > 0), falling: r.selfFalling === true, inWater }, now);
+    if (out?.fired) r.lastWarmhands = { at: now, fired: true, armPitchDeg: -30 };
+  } catch {}
+}
 function applyGaze(bot, owner, ctx, scan) {
   try { const bv = typeof bot.isValid === "function" ? bot.isValid() : bot.isValid; if (bot.isValid !== undefined && !bv) return; if (owner) { const ov = typeof owner.isValid === "function" ? owner.isValid() : owner.isValid; if (owner.isValid !== undefined && !ov) return; } } catch { return; }
   // POLISH-ANIM-OWNERRETURN-01 (cycle1923): 主人の距離遷移だけを発火源にする feeder (表示層のみ・実機確認待ち)
@@ -3846,6 +3874,7 @@ function applyGaze(bot, owner, ctx, scan) {
     if (rot && r.icebalanceState) { const isb = sampleIcebalance(r.icebalanceState, Date.now()); if (isb.active) rot = { ...rot, x: rot.x + isb.gazePitchDeg }; }
     if (rot && r.stepupState) { const sub = sampleStepup(r.stepupState, Date.now()); if (sub.active) rot = { ...rot, x: rot.x + sub.gazePitchDeg }; } if (rot && r.portalsteadyState && isPortalsteadyActive(r.portalsteadyState, Date.now())) { const po = portalsteadyOffsetsAt(r.portalsteadyState.startedAtMs, Date.now()); rot = { ...rot, x: rot.x + po.gazePitchDeg, y: rot.y + po.yawSwayDeg }; } if (rot && r.surfacebreathState) { const sb = sampleSurfacebreath(r.surfacebreathState, Date.now()); if (sb.active) rot = { ...rot, x: applySurfacebreathPitch(rot.x, Date.now() - r.surfacebreathState.startedAtMs) }; } if (rot && r.workglanceState) { const wg = sampleWorkglance(r.workglanceState, Date.now()); if (wg.active) rot = { ...rot, y: rot.y + wg.gazeYawOffsetDeg, x: rot.x + wg.gazePitchDeg }; } // WORKGLANCE-01 (cycle1728): lowest-priority overlay (display only) // SURFACEBREATH overlay (clamped) // POLISH-ANIM-PORTALSTEADY-01 (cycle1640): 重畳の最下位 (表示層のみ・実機確認待ち) // POLISH-ANIM-STEPUP-01 (cycle1603): ピッチ重畳の最下位 (icebalance の後ろ。表示層のみ・実機確認待ち) // POLISH-ANIM-ICEBALANCE-01 (cycle1543): ピッチ重畳の最下位 (edgepeek の後ろ。表示層のみ・実機確認待ち)
     if (rot && r.toolcheckSample?.active) rot = { ...rot, x: rot.x + r.toolcheckSample.gazePitchDeg, y: rot.y + r.toolcheckSample.gazeYawDeg }; // POLISH-ANIM-TOOLCHECK-01 (cycle1807): 重畳の最下位 (表示層のみ・実機確認待ち)
+    if (rot && r.warmhandsState) { try { const wh = sampleWarmhands(r.warmhandsState, Date.now()); if (wh.active) { rot = { ...rot, x: rot.x + wh.pitchDeg }; r.lastWarmhands = { at: Date.now(), pitchDeg: wh.pitchDeg, armPitchDeg: wh.armPitchDeg }; } } catch {} } // POLISH-ANIM-WARMHANDS-01 (cycle0740): 重畳の最下位 (表示層のみ・実機確認待ち。腕は記録のみ)
     if (rot && r.loadpostureState) { const lp = sampleLoadPosture(r.loadpostureState, Date.now()); if (lp.active) rot = { ...rot, x: rot.x + lp.pitchDeg }; } // POLISH-ANIM-LOADPOSTURE-01 (cycle1832): ピッチ重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot && r.partnercheckState) { const pc = partnerCheckOffset(r.partnercheckState, Date.now()); if (pc.active) rot = { ...rot, y: rot.y + pc.yawDeg, x: rot.x + pc.pitchDeg }; } if (rot && r.ownerreturnState) { const orc = ownerReturnOffset(r.ownerreturnState, Date.now()); if (orc.active) rot = { ...rot, y: rot.y + orc.yawDeg, x: rot.x + orc.pitchDeg }; } // POLISH-ANIM-OWNERRETURN-01 (cycle1923): 重畳の最下位 (表示層のみ・実機確認待ち) // POLISH-ANIM-PARTNERCHECK-01 (cycle1850): 重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot && r.musicnodState) { const mn = sampleMusicnod(r.musicnodState, Date.now()); if (mn.active) rot = { ...rot, x: rot.x + mn.gazePitchDeg }; } // POLISH-ANIM-MUSICNOD-01 (cycle2006): 重畳の最下位 (表示層のみ・実機確認待ち、近傍滞在が代理条件)

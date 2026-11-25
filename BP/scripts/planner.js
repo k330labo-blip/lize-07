@@ -120,6 +120,8 @@ function uPickupDrops(c) {
 
 function uDepositAtHome(c) {
   if (!c.home?.registered) return 0;
+  if (c.home?.dimensionSame === false) return 0; // cycle0740 deposit P1: 別次元では占有しない (UNKNOWN は不可と読まない)
+  if (c.home?.depositBlocked) return 0; // cycle0740 deposit P1: 冷却/抑制中は他 goal へ譲る
   if (c.home?.chestFull || c.home?.chestMissing) return 0;
   if (c.flags?.justDeposited) return 0.02; // 入れたばかり
   const ratio = num(c.inv?.size, 27) > 0 ? num(c.inv?.used, 0) / num(c.inv?.size, 27) : 0;

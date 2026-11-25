@@ -106,6 +106,7 @@ const METAL_IDS = new Set([
   "heavy_core", "vault", "trial_spawner", "crafter", "brewing_stand", "tripwire_hook", // cycle1543: 金属筐体・スタンド・仕掛け
   "iron_golem_statue", // cycle2058 (a13): copper_golem_statue→copper との非対称解消 (stone 落下だった1形)
   "ominous_vault", "ominous_trial_spawner", // cycle0252: 基礎形 vault/trial_spawner と同素材 (不吉変種の非対称解消)
+  "mob_spawner", "spawner", // cycle0740 (a12): 試練系は metal なのに通常スポナーだけ未収載だった非対称を是正
 ]);
 // Tier2: ガラス音グループだが "glass" を含まない発光系 (sea_lantern は Tier1 とセット)
 const GLASSLIKE_IDS = new Set(["glowstone", "redstone_lamp", "lit_redstone_lamp", "sea_lantern", "beacon"]); // cycle1543: beacon を追加 / cycle0252: lit_redstone_lamp は基礎形と同素材
@@ -127,7 +128,7 @@ const PLANT_IDS = new Set([
   "deadbush", "waterlily", // cycle0505 (a16): 別名スペル (dead_bush / lily_pad の別表記) の非対称是正
   "mangrove_propagule", "mangrove_roots", "red_mushroom_block", "brown_mushroom_block",
   "melon_stem", "pumpkin_stem", "attached_melon_stem", "attached_pumpkin_stem", "mushroom_stem",
-  "eyeblossom", "open_eyeblossom", "closed_eyeblossom", "pitcher_plant", "torchflower_pod", // cycle0628 (a09 N1): 素形だけ stone へ落ちていた非対称を是正
+  "eyeblossom", "open_eyeblossom", "closed_eyeblossom", "pitcher_plant", "torchflower_pod", "small_dripleaf_stem", // cycle0740 (a12): big_dripleaf_stem と同形に揃える // cycle0628 (a09 N1): 素形だけ stone へ落ちていた非対称を是正
   "torchflower", "torchflower_crop", "pitcher_pod", "pitcher_crop",
 ]);
 // cycle0922 (a05): 木製家具・設備
@@ -135,12 +136,12 @@ const WOODWORK_IDS = new Set([
   "chest", "trapped_chest", "barrel", "bookshelf", "chiseled_bookshelf", "crafting_table",
   "cartography_table", "fletching_table", "loom", "lectern", "note_block", "jukebox",
   "composter", "ladder", "campfire", "soul_campfire", "beehive", "bee_nest", "scaffolding", "creaking_heart",
-  "sign", "wall_sign", "hanging_sign", "wall_hanging_sign", "wooden_button", "wooden_pressure_plate", "shelf", "wooden_slab", // cycle0522 (a13): 無樹種・旧式形の wood 是正
+  "sign", "wall_sign", "hanging_sign", "wall_hanging_sign", "standing_sign", "wooden_button", "wooden_pressure_plate", "shelf", "wooden_slab", // cycle0740 (a12): standing_sign のみ欠落していた // cycle0522 (a13): 無樹種・旧式形の wood 是正
   "torch", "wall_torch", "soul_torch", "soul_wall_torch", "redstone_torch", "redstone_wall_torch", "unlit_redstone_torch", // cycle0606 (a10): 松明系が stone へ落ちていた誤分類を wood へ是正 / cycle0628 (a09 N2): unlit 形の非対称を是正
   "armor_stand", "item_frame", "glow_item_frame", "smithing_table", "jack_o_lantern", "lit_pumpkin", // cycle0659 (a09): lit_pumpkin only fell to stone vs jack_o_lantern wood
 ]);
 // cycle0922 (a05): 樹種×部品の直積 (素朴なサフィックス追加は stone_stairs を巻き込むため直積必須)
-const WOOD_SPECIES = ["oak", "spruce", "birch", "jungle", "acacia", "dark_oak", "mangrove", "cherry", "pale_oak", "bamboo"];
+const WOOD_SPECIES = ["oak", "spruce", "birch", "jungle", "acacia", "dark_oak", "mangrove", "cherry", "pale_oak", "bamboo", "poplar"]; // cycle0740 (a12): poplar 部品だけ直積から漏れていた
 const NETHER_SPECIES = ["crimson", "warped"];
 const WOOD_PARTS = ["_stairs", "_slab", "_double_slab", "_sign", "_standing_sign", "_hanging_sign", "_wall_sign", "_wall_hanging_sign", "_button", "_pressure_plate", "_fence_gate", "_door", "_trapdoor", "_fence", "_shelf"]; // cycle0522 (a13): *_standing_sign / *_double_slab の直積漏れ是正 (petrified_oak_slab は stone のまま=負ガード) // POLISH-SND-CLASS-SHELF-01 (cycle0224): 木製棚 *_shelf を wood へ (crimson/warped は stem 判定が先行)
 const speciesPart = (species, id) => species.some((s) => WOOD_PARTS.some((p) => id === s + p));
@@ -164,7 +165,8 @@ export function materialOfTypeId(typeId) {
   if (id.endsWith("_wool") || id.endsWith("_carpet")
       || id.endsWith("_bed") || id.endsWith("_banner") || id === "banner"
       || id === "bed" || id === "carpet" || id === "wool"
-      || id === "candle" || id.endsWith("_candle")) return "cloth";   // 10 (+a11 bed/banner 全色 / cycle0553: 素の banner / cycle0721: 素の bed/carpet/wool と ろうそく17形も stone へ落ちていた非対称を是正)
+      || id === "candle" || id.endsWith("_candle")
+      || id === "cake" || id === "candle_cake" || id.endsWith("_candle_cake")) return "cloth"; // cycle0740 (a12): ケーキ系18形が stone へ落ちていた   // 10 (+a11 bed/banner 全色 / cycle0553: 素の banner / cycle0721: 素の bed/carpet/wool と ろうそく17形も stone へ落ちていた非対称を是正)
   if (id === "netherite_block") return "netherite";                      // 11a (cycle1303): 完全一致のみ。ancient_debris は巻き込まない
   if (id === "ice" || id === "packed_ice" || id === "blue_ice" || id === "frosted_ice") return "ice"; // 11b (cycle1322): 完全一致集合のみ (includes("ice") は将来の無関係 ID を巻き込むため不採用)
   if (id.includes("vines")) return "vines";                               // 11c (cycle1322): 複数形のみ。単数 vine は grass のまま (PLANT 側に "vines" を含む ID は無い)
