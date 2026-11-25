@@ -39,11 +39,12 @@ import { applyDryoffYaw, isDryoffActive, noteDryoff as noteDryoffState } from ".
 import { noteBreathCold } from "./breath_cold_math.js"; // POLISH-FX-BREATHCOLD-01 (cycle1343): 寒冷地での白い排気 (表示層のみ・粒子ID未照合のため記録のみ・実機確認待ち)
 import { fromCraftResult } from "./actions_contract.js"; // 6-ML (cycle1322): CRAFT/SMELT 実行結果の正規化 (記録専用) // POLISH-ANIM-SKYGLANCE-01 (cycle1133): 雨の降り始めに空を見上げる (表示層のみ) // POLISH-ANIM-SUMMONSCAN-01 (cycle1110): 召喚・復元直後の見回し (表示層のみ)
 import { createSpiral, spiralStepCell, spiralDigCells, spiralStepsTotal, spiralHeading, spiralLocateK, chooseSpiralVariant } from "./spiral.js";
-import { steerDecision, collectHints, chooseHint, hintDirection } from "./survey_hint.js"; // キュー7 (cycle1443): surveyヒントで坑道を誘導する純粋核 (ヒント無し時は従来ランダムへ完全フォールバック)
+import { steerDecision, collectHints, chooseHint, hintDirection, reSteerDir } from "./survey_hint.js"; // cycle2333: R1 reSteerDir 配線 (発火点限定) // キュー7 (cycle1443): surveyヒントで坑道を誘導する純粋核 (ヒント無し時は従来ランダムへ完全フォールバック)
 import { createHeedState, noteHeed as noteHeedState, sampleHeed } from "./heed_math.js";
 import { createThresholdState, noteThreshold as noteThresholdState, sampleThreshold } from "./threshold_math.js"; // POLISH-ANIM-THRESHOLD-01 (cycle1503): くぐり視線 (表示層のみ・実機確認待ち)
 import { createEdgepeekState, noteEdgepeek as noteEdgepeekState, sampleEdgepeek } from "./edgepeek_math.js";
 import { createIcebalanceState, noteIcebalance as noteIcebalanceState, sampleIcebalance } from "./icebalance_math.js";
+import { createSnowtreadState, noteSnowtread, snowtreadCurrentOffset, applySnowtreadPitch } from "./snowtread_math.js"; // POLISH-ANIM-SNOWTREAD-01 (cycle2333): 雪上歩行の小さな沈み込み (表示層のみ・実機確認待ち)
 import { createStepupState, noteStepup as noteStepupState, sampleStepup } from "./stepup_math.js";
 import { banKeyFor, matchesBan, isBanned } from "./trunk_ban.js"; // queue0-A bug2 (cycle1728, v0.5.19): trunk-unit ban
 import { createTakeBanState, recordTakeBan, isTakeBanned } from "./take_ban_math.js"; // TR2136-01 (cycle2200): 回収全量失敗の実行側見切り
@@ -465,6 +466,7 @@ function buildContext(bot, owner) {
   noteThreshold(bot, dim, r, c); // POLISH-ANIM-THRESHOLD-01 (cycle1503)
   noteEdgepeek(bot, dim, r, c); // POLISH-ANIM-EDGEPEEK-01 (cycle1518)
   noteIcebalanceTick(bot, dim, r, c); // POLISH-ANIM-ICEBALANCE-01 (cycle1543)
+  noteSnowtreadTick(bot, dim, r, c); // POLISH-ANIM-SNOWTREAD-01 (cycle2333)
   noteStepupTick(bot, dim, r, c); // POLISH-ANIM-STEPUP-01 (cycle1603)
   notePortalsteadyTick(bot, dim, r, c); // POLISH-ANIM-PORTALSTEADY-01 (cycle1640)
   noteSurfacebreathTick(bot, r, c); // POLISH-ANIM-SURFACEBREATH-01 (cycle1703)
@@ -1780,7 +1782,7 @@ function handleWithdrawResult(bot, r, m, cand, res) {
   try {
     if (!(r.withdrawBlocked instanceof Set)) r.withdrawBlocked = new Set();
     const key = `${m?.currentStep ?? 0}:${cand.dim || bot.dimension.id}:${cand.x},${cand.y},${cand.z}:${cand.item}`;
-    const block = () => { r.withdrawBlocked.add(key); if (r.withdrawBlocked.size > 64) r.withdrawBlocked.clear(); };
+    const block = () => { r.withdrawBlocked.add(key); if (r.withdrawBlocked.size > 64) { const cur = `${m?.currentStep ?? 0}:`; r.withdrawBlocked = new Set([...r.withdrawBlocked].filter((k) => String(k).startsWith(cur))); } }; // cycle2333 WITHDRAW-BLOCKED-CLEARALL 是正: 全消去をやめ現ステップ以外のキーだけ落とす (候補枯渇の完了状態へ到達可能にする)
     const cool = () => { r.withdrawCooldownUntil = Date.now() + 30000; };
     if (!res) { cool(); return; }
     if (res.ok) { if (res.detail?.partial && (res.detail.stock ?? 0) <= (res.detail.taken ?? 0)) block(); return; }
@@ -2311,6 +2313,25 @@ function tickBranchMine(bot, owner, r, ctx) {
       return dir;
     } catch { return null; }
   };
+  // キュー7 R1 (cycle2333): ヒント座標を返す版 (surveyHintDir と同じ絞り込み。座標は捨てない)
+  const surveyHintLoc = () => {
+    try {
+      const hints = collectHints(surveys, { dimId: bot.dimension?.id, now: Date.now() });
+      const ore = hints.filter((h) => h.typeId === leg?.item || /_ore$/.test(h.typeId || ""));
+      if (!ore.length) return null;
+      const best = chooseHint(bot.location, ore, { depth: leg?.depth });
+      return best?.loc || null;
+    } catch { return null; }
+  };
+  // キュー7 R1 (cycle2333): 方向転換した直後だけヒントへ寄せ直す。毎tick呼び出し禁止 (blocked 回避を潰すため発火点は2種に限定)
+  const applyReSteer = () => {
+    try {
+      const loc = surveyHintLoc(); if (!loc || !r.mineDir) return;
+      const rs = reSteerDir(pos, loc, r.mineDir);
+      try { r.lastSurveyHint = { mode: "resteer", changed: !!rs.changed, overshoot: !!rs.overshoot, loc, at: Date.now() }; } catch {}
+      if (rs.changed && rs.dir) r.mineDir = rs.dir;
+    } catch {}
+  };
   const pos = bot.location, dim = bot.dimension;
   const targetY = leg.depth;
   const digAt = (x, y, z) => {
@@ -2388,7 +2409,7 @@ function tickBranchMine(bot, owner, r, ctx) {
     const st0 = r.spiral, k0 = `${leg.item || ""}@${leg.depth ?? ""}`;
     if (st0 && st0.key === k0) {
       const lk0 = spiralLocateK(st0, pos), tot0 = spiralStepsTotal(st0);
-      if (lk0 != null && lk0 >= tot0) { const h0 = spiralHeading(st0, tot0); r.mineDir = { x: h0[0], z: h0[1] }; r.spiral = null; }
+      if (lk0 != null && lk0 >= tot0) { const h0 = spiralHeading(st0, tot0); r.mineDir = { x: h0[0], z: h0[1] }; r.spiral = null; applyReSteer(); }
     }
   } catch {}
   if (pos.y > targetY + 2) {
@@ -2410,7 +2431,7 @@ function tickBranchMine(bot, owner, r, ctx) {
       } else st.k = lk;
     }
     const total = spiralStepsTotal(st);
-    if (st.k >= total) { const h = spiralHeading(st, total); r.mineDir = { x: h[0], z: h[1] }; r.spiral = null; /* 到達: この tick は前方掘りへ落とす */ }
+    if (st.k >= total) { const h = spiralHeading(st, total); r.mineDir = { x: h[0], z: h[1] }; r.spiral = null; applyReSteer(); /* 到達: この tick は前方掘りへ落とす */ }
     else {
       for (const c of spiralDigCells(st, st.k + 1)) { // 頭上→足元の順 (順序がゲート成立の要)
         if (lavaNear(dim, c)) { r.mineLeg = null; r.spiral = null; r.target = { x: pos.x, y: pos.y, z: pos.z }; return; }
@@ -2449,7 +2470,7 @@ function tickBranchMine(bot, owner, r, ctx) {
   for (const yy of [fy, fy + 1]) {
     const res = digAt(fx, yy, fz);
     if (res === "tool") { r.mineLeg = null; r.target = { x: pos.x, y: pos.y, z: pos.z }; return; } // cycle0922: 道具不足で leg を畳み無限再試行を断つ
-    if (res === "blocked" || res === "liquid") { r.mineDir = { x: d.z, z: -d.x }; return; }
+    if (res === "blocked" || res === "liquid") { r.mineDir = { x: d.z, z: -d.x }; applyReSteer(); return; } // cycle2333 R1: 回転直後にヒントへ寄せ直す (ヒント方向自体が元凶なら changed=false で回転が維持される)
     if (res === "unknown") { holdUnknown(); return; } // 片方でも未読なら前進しない (方向転換もしない: 未読は壁の証拠ではない)
     if (res === "held") { holdHeld(); return; } // M-1051-1 (cycle1153)
     if (res === "digging") return;
@@ -2761,6 +2782,27 @@ function noteIcebalanceTick(bot, dim, r, c) {
     let flying = false; try { flying = bot.isFlying === true; } catch {}
     const fired = noteIcebalanceState(r.icebalanceState, { groundCategory, horizSpeed, yawDeg, nowMs: Date.now(), danger: !!(c?.danger && c.danger.count > 0), hasWorkTarget: !!r.work, falling: r.selfFalling === true, selfFalling: r.selfFalling === true, inWater: !!c?.x?.inWater, flying, flinchActive: isFlinchActive(r.flinchAnimAt, Date.now()), intentionalDescent: !!(r.mission?.descent || r.spiralDescent) });
     if (fired) { const s = sampleIcebalance(r.icebalanceState, Date.now()); r.lastIcebalance = { at: Date.now(), firedCount: r.icebalanceState.firedCount, trigger: s.trigger, rollSign: s.rollSign }; }
+  } catch {}
+}
+
+// POLISH-ANIM-SNOWTREAD-01 (cycle2333): 雪カテゴリの足元を歩行し続ける間だけ沈み込み位相を進める (表示層のみ・実機確認待ち)。
+// 足元カテゴリは sfx.js の分類が単一の正。体の沈みは RP 受け口が無いため r.lastSnowtread 記録のみ、ピッチだけ applyGaze へ重畳する。
+function noteSnowtreadTick(bot, dim, r, c) {
+  try {
+    if (!bot || !dim || !r) return;
+    if (!r.snowtreadState) r.snowtreadState = createSnowtreadState();
+    let surfaceCategory;
+    try { const gb = dim.getBlock({ x: Math.floor(bot.location.x), y: Math.floor(bot.location.y) - 1, z: Math.floor(bot.location.z) }); if (gb) surfaceCategory = materialOfTypeId(gb.typeId); } catch {}
+    const now = Date.now();
+    let speed = 0, moved = 0;
+    try {
+      const lp = r.snowtreadLastPos, lt = r.snowtreadLastAt || 0;
+      if (lp) { moved = Math.hypot(bot.location.x - lp.x, bot.location.z - lp.z); const dt = (now - lt) / 1000; if (dt > 0) speed = moved / dt; r.snowtreadDist = (r.snowtreadDist || 0) + moved; }
+      r.snowtreadLastPos = { x: bot.location.x, z: bot.location.z }; r.snowtreadLastAt = now;
+    } catch {}
+    let flying = false; try { flying = bot.isFlying === true; } catch {}
+    const ev = noteSnowtread(r.snowtreadState, { surfaceCategory, grounded: !flying && r.selfFalling !== true, moving: moved > 0.01, speed, falling: r.selfFalling === true, flying, inWater: !!bot.isInWater, combat: !!((c?.danger?.count ?? 0) > 0) }, r.snowtreadDist || 0);
+    if (ev && ev.entered) r.lastSnowtread = { at: now, episode: r.snowtreadState.episode };
   } catch {}
 }
 
@@ -3407,6 +3449,7 @@ function applyGaze(bot, owner, ctx, scan) {
     // POLISH-ANIM-PLACESETTLE-01 feeder (cycle2248): lastAction の PLACE 成功 (seq変化) の辺でのみ発火記録 (表示層のみ・実機確認待ち)
     try { const la = r.lastAction; if (la && la.act === "PLACE" && la.ok && la.seq !== r.placesettleSeenSeq) { r.placesettleSeenSeq = la.seq; if (shouldPlacesettle({ placed: true, suppressed: ((ctx?.danger?.count ?? 0) > 0) || r.selfFalling === true || !!bot.isInWater, lastFiredMs: r.placesettleLastAt ?? null, nowMs: Date.now() })) { r.placesettleAnimAt = la.at || Date.now(); r.placesettleLastAt = r.placesettleAnimAt; r.lastPlacesettle = { at: r.placesettleAnimAt, item: la.item || null }; } } } catch {}
     if (rot && isPlacesettleActive(r.placesettleAnimAt, Date.now())) rot = { ...rot, x: applyPlacesettlePitch(rot.x, Date.now() - r.placesettleAnimAt) }; // POLISH-ANIM-PLACESETTLE-01 (cycle2248): 重畳 (表示層のみ・実機確認待ち)
+    if (rot && r.snowtreadState) { try { const so = snowtreadCurrentOffset(r.snowtreadState); if (so.active) rot = { ...rot, x: applySnowtreadPitch(rot.x, r.snowtreadState.phase) }; } catch {} } // POLISH-ANIM-SNOWTREAD-01 (cycle2333): 重畳 (表示層のみ・実機確認待ち)
     if (rot && isFlinchActive(r.flinchAnimAt, Date.now())) rot = { ...rot, x: applyFlinchPitch(rot.x, Date.now() - r.flinchAnimAt) }; // POLISH-ANIM-FLINCH-01 (cycle1051)
     // POLISH-ANIM-ENDERAVERT-01 (cycle1940): feeder は既存走査 scan.hostiles から最寄りエンダーマンを取る (新規走査なし)。重畳は FLINCH の直下 (表示層のみ・実機確認待ち)
     if (rot) { try { if (!r.enderavertState) r.enderavertState = createEnderavertState(); const em = (scan?.hostiles || []).filter((x) => x.typeId === "minecraft:enderman").sort((a, b) => dist(bot.location, a.location) - dist(bot.location, b.location))[0] || null; const base = { falling: r.selfFalling === true, inWater: !!bot.isInWater, inCombat: gz.gaze === "danger" || gz.gaze === "danger_then_owner", otherOverlayActive: isFlinchActive(r.flinchAnimAt, Date.now()) }; let smp = { hasTarget: false, ...base }; if (em) { const gr = gazeRotation(bot.location, { x: em.location.x, y: em.location.y + 1.4, z: em.location.z }); let ry = ((gr.y - rot.y + 540) % 360) - 180; smp = { hasTarget: true, dist: dist(bot.location, em.location), relYawDeg: ry, ...base }; } const ev = noteEnderavert(r.enderavertState, smp, Date.now()); if (ev && (ev.entered || ev.exited)) r.lastEnderAvert = { at: Date.now(), entered: !!ev.entered, exited: !!ev.exited, reason: ev.reason || null }; const ea = sampleEnderavert(r.enderavertState, Date.now()); if (ea.active) rot = { ...rot, y: rot.y + ea.gazeYawOffsetDeg, x: rot.x + ea.gazePitchDeg }; } catch {} }
