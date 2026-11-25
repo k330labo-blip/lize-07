@@ -65,3 +65,26 @@ export function unionForbiddenIds(ltIds, forbids, kind = "gather") {
     return [...new Set([...base, ...forbiddenTargetIds(forbids, kind)])];
   } catch { return []; }
 }
+
+// --- forbids G6-c (cycle0628): 自律作業対象の禁止照合 (B案・純粋核) ---
+function dropCandidatesG6c(dropOf, typeId) {
+  if (typeof dropOf !== "function") return [];
+  let d;
+  try { d = dropOf(typeId); } catch { return []; }
+  if (typeof d === "string" && d) return [d];
+  if (Array.isArray(d)) return d.filter((x) => typeof x === "string" && x);
+  return [];
+}
+export function isForbiddenWorkTarget(forbids, typeId, dropOf) {
+  try {
+    if (typeof typeId !== "string" || !typeId) return false;
+    const ids = forbiddenTargetIds(forbids, "gather");
+    if (!ids.length) return false;
+    const set = new Set(ids);
+    if (set.has(normForbiddenId(typeId))) return true;
+    for (const cand of dropCandidatesG6c(dropOf, typeId)) {
+      if (set.has(normForbiddenId(cand))) return true;
+    }
+    return false;
+  } catch { return false; }
+}

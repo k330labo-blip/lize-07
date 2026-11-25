@@ -74,7 +74,9 @@ import { tickToolCheck, createToolCheckState } from "./toolcheck_math.js"; // PO
 import { createLoadPostureState, noteLoadPosture, sampleLoadPosture } from "./loadposture_math.js";
 import { createPartnerCheckState, notePartnerCheck, partnerCheckOffset } from "./partnercheck_math.js";
 import { createEnderavertState, noteEnderavert, sampleEnderavert } from "./enderavert_math.js"; // POLISH-ANIM-ENDERAVERT-01 (cycle1940): 表示層のみ・実機確認待ち
-import { restoreForbids, mergeSessionForbids, serializeForbids, forbiddenTargetIds, unionForbiddenIds, normForbiddenId } from "./session_forbids.js"; // cycle0505: forbids G4 record 側の正規化 // cycle0117: G2/G6-b 読み手 (unionForbiddenIds/forbiddenTargetIds) // Phase5 (cycle1923): sessionForbids の復元純粋核 / 読み手R1 (cycle2006) / 保存の単一形 (cycle2036)
+import { createSurveyLatch, recoverSurveyLatch, surveyLatchAvailable, tripSurveyLatch, applySurveyChunkOutcome, shouldTripGlobalLatch, pruneGlobalErrorEvents } from "./survey_broken.js"; // SURVEY-BROKEN-PERMANENT 是正 (cycle0628): 進捗で fails リセット＋区画隔離＋全体ラッチのクールダウン回復
+import { createXpGlanceState, noteXpGlance, sampleXpGlance, blendXpGlanceGaze } from "./xpglance_math.js"; // POLISH-ANIM-XPGLANCE-01 (cycle0628): 表示層のみ・実機確認待ち
+import { restoreForbids, mergeSessionForbids, serializeForbids, forbiddenTargetIds, unionForbiddenIds, normForbiddenId, isForbiddenWorkTarget } from "./session_forbids.js"; // cycle0505: forbids G4 record 側の正規化 // cycle0117: G2/G6-b 読み手 (unionForbiddenIds/forbiddenTargetIds) // Phase5 (cycle1923): sessionForbids の復元純粋核 / 読み手R1 (cycle2006) / 保存の単一形 (cycle2036)
 import { createMusicnodState, noteMusicnod, sampleMusicnod } from "./musicnod_math.js"; // POLISH-ANIM-MUSICNOD-01 (cycle2006): 表示層のみ・実機確認待ち
 import { createIdleState, noteIdle, sampleIdle } from "./idle_math.js"; // POLISH-ANIM-IDLE-01 (cycle2020): 待機モーション (表示層のみ・実機確認待ち)
 import { createLookLeadState, tickLookLead } from "./looklead_math.js"; // POLISH-ANIM-LOOKLEAD-01 (cycle2036): 作業対象への視線の先行 (表示層のみ・実機確認待ち)
@@ -460,6 +462,7 @@ function buildContext(bot, owner) {
   const ENTITY_SCAN_R = 32, itemR = busy ? 32 : radius, dangerR = Math.max(radius, 16);
   const scan = { hostiles: [], items: [], animals: [], opportunities: [], nearestItem: null, valuableItem: null, foodItem: null, ownerItem: null, nearestHostile: null };
   const flinchCand = []; // POLISH-ANIM-FLINCH-01 (cycle1051): 予兆エンティティ候補 (落雷/点火TNT)
+  let xpOrbCand = null; // POLISH-ANIM-XPGLANCE-01 (cycle0628): 既存エンティティ走査で最寄り経験値オーブを拾うだけ (新規走査なし)
   const curItemIds = new Set(); // POLISH-ANIM-CATCHSIGHT-01 (cycle2200): アイテム出現の辺検出用 (既存走査の id 集合)
   let deathLoc = null; try { deathLoc = JSON.parse(wdp(`cb_death:${owner.id}`, "null")); } catch {}
   let scanOk = true; // 走査が最後まで回ったか（false＝「何もいない」ではなく「分からない」）
@@ -485,6 +488,7 @@ function buildContext(bot, owner) {
       }
       if (e.typeId === "minecraft:player") { if (d > dangerR || bodies.isBody(e)) continue; if (e.id !== owner.id) { c.x.othersNear = (c.x.othersNear || 0) + 1; c.x.otherDist = Math.min(c.x.otherDist ?? 999, d); } continue; }
       if (e.typeId === "minecraft:lightning_bolt" || e.typeId === "minecraft:tnt") { flinchCand.push({ id: e.id, typeId: e.typeId, horizDist: Math.hypot(e.location.x - bot.location.x, e.location.z - bot.location.z) }); }
+      if (e.typeId === "minecraft:xp_orb") { if (!xpOrbCand || d < xpOrbCand.d) xpOrbCand = { id: e.id, d, loc: { x: e.location.x, y: e.location.y, z: e.location.z } }; }
       if (e.typeId.includes("villager")) { if (d > dangerR) continue; c.x.nearVillage = true; c.x.villagerDist = Math.min(c.x.villagerDist ?? 999, d); continue; }
       if (["minecraft:sheep", "minecraft:cow", "minecraft:pig", "minecraft:chicken"].includes(e.typeId)) { scan.animals.push(e); scan.opportunities.push({ kind: "entity", typeId: e.typeId, pos: { x: e.location.x, y: e.location.y, z: e.location.z }, id: e.id }); continue; }
       const isHostile = GVC_HOSTILE_SET.has(e.typeId) || (() => { try { return e.getComponent("minecraft:type_family")?.hasTypeFamily("monster"); } catch { return false; } })();
@@ -514,6 +518,7 @@ function buildContext(bot, owner) {
       r.catchsightPrevItemIds = curItemIds;
     }
   } catch {}
+  try { if (!r.xpglanceState) r.xpglanceState = createXpGlanceState(); const resX = noteXpGlance(r.xpglanceState, { orbId: xpOrbCand ? xpOrbCand.id : "", orbPos: xpOrbCand ? xpOrbCand.loc : null, selfPos: bot.location, sameDimension: true, suppressed: (c.danger?.count ?? 0) > 0 || r.selfFalling === true }, Date.now()); if (resX === "fired") r.lastXpGlance = { at: Date.now(), orbId: xpOrbCand?.id || null }; } catch {} // POLISH-ANIM-XPGLANCE-01 (cycle0628): feeder は既存走査のオーブ候補のみ (表示層のみ・実機確認待ち)
   noteFlinch(bot, r, flinchCand); // POLISH-ANIM-FLINCH-01 (cycle1051): 出現の辺でのみ発火 (表示層のみ)
   noteSkyglance(r, c.env.isRaining, c.danger && c.danger.count > 0); // POLISH-ANIM-SKYGLANCE-01 (cycle1133)
   noteHorizonGlance(bot, r, c); // POLISH-ANIM-HORIZONGLANCE-01 (cycle0320)
@@ -629,16 +634,18 @@ function buildContext(bot, owner) {
     r.percAt = Date.now(); r.percTargets = {};
     const pcOpps = [];
     const pc = { tree: -1, ore: -1, crop: -1, stone: -1, oreValuable: false, nearCraft: false, nearFurnace: false, nearMachine: false, nearBed: false, darkness: false, shrieker: false, failedCells: 0, totalCells: 245 };
+    const selD = { tree: -1, ore: -1, stone: -1, crop: -1 }; // forbids G6-c (cycle0628): 候補選出専用の距離 (統計 pc.* と分ける。禁止候補が距離だけ更新して非禁止候補を塞ぐ事故を防ぐ)
+    const forbT = (tid) => { try { return isForbiddenWorkTarget(r.sessionForbids, tid, dropOfWorkTarget); } catch { return false; } };
     const bx = Math.floor(bot.location.x), by = Math.floor(bot.location.y), bz = Math.floor(bot.location.z);
     for (let dx = -3; dx <= 3; dx++) for (let dy = -2; dy <= 2; dy++) for (let dz = -3; dz <= 3; dz++) {
       let b = null; try { b = dim.getBlock({ x: bx + dx, y: by + dy, z: bz + dz }); } catch {}
       if (!b) { pc.failedCells++; continue; } const tid = b.typeId; const dd = Math.hypot(dx, dy, dz);
-      if (tid.includes("_log") || tid.includes("_wood") || tid.includes("_stem")) { if (pc.tree < 0 || dd < pc.tree) { pc.tree = dd; r.percTargets.tree = { x: b.location.x, y: b.location.y, z: b.location.z, typeId: tid }; } }
-      else if (tid.includes("_ore") || tid === "minecraft:ancient_debris") { if (VALUABLE_ORES.has(tid)) pc.oreValuable = true; if (pc.ore < 0 || dd < pc.ore) { pc.ore = dd; r.percTargets.ore = { x: b.location.x, y: b.location.y, z: b.location.z, typeId: tid }; } }
-      else if (NATURAL_STONE.has(tid)) { if (pc.stone < 0 || dd < pc.stone) { pc.stone = dd; r.percTargets.stone = { x: b.location.x, y: b.location.y, z: b.location.z, typeId: tid }; } }
+      if (tid.includes("_log") || tid.includes("_wood") || tid.includes("_stem")) { if (pc.tree < 0 || dd < pc.tree) pc.tree = dd; if (!forbT(tid) && (selD.tree < 0 || dd < selD.tree)) { selD.tree = dd; r.percTargets.tree = { x: b.location.x, y: b.location.y, z: b.location.z, typeId: tid }; } }
+      else if (tid.includes("_ore") || tid === "minecraft:ancient_debris") { if (VALUABLE_ORES.has(tid)) pc.oreValuable = true; if (pc.ore < 0 || dd < pc.ore) pc.ore = dd; if (!forbT(tid) && (selD.ore < 0 || dd < selD.ore)) { selD.ore = dd; r.percTargets.ore = { x: b.location.x, y: b.location.y, z: b.location.z, typeId: tid }; } }
+      else if (NATURAL_STONE.has(tid)) { if (pc.stone < 0 || dd < pc.stone) pc.stone = dd; if (!forbT(tid) && (selD.stone < 0 || dd < selD.stone)) { selD.stone = dd; r.percTargets.stone = { x: b.location.x, y: b.location.y, z: b.location.z, typeId: tid }; } }
       else if (Object.prototype.hasOwnProperty.call(CROP_MATURITY_MAX, tid)) {
         let g = null; try { g = b.permutation?.getState("growth") ?? b.permutation?.getState("age"); } catch {}
-        if (isCropMature(tid, g)) { if (pc.crop < 0 || dd < pc.crop) { pc.crop = dd; r.percTargets.crop = { x: b.location.x, y: b.location.y, z: b.location.z, typeId: tid }; } }
+        if (isCropMature(tid, g)) { if (pc.crop < 0 || dd < pc.crop) pc.crop = dd; if (!forbT(tid) && (selD.crop < 0 || dd < selD.crop)) { selD.crop = dd; r.percTargets.crop = { x: b.location.x, y: b.location.y, z: b.location.z, typeId: tid }; } }
       }
       if (/flower/.test(tid) || tid === "minecraft:snow_layer" || tid === "minecraft:short_grass" || tid === "minecraft:tall_grass" || tid === "minecraft:fern" || tid === "minecraft:sugar_cane") pcOpps.push({ kind: "block", typeId: tid, pos: { x: b.location.x, y: b.location.y, z: b.location.z } }); // 基礎 N2 (v0.4.65): サトウキビも side 採取の機会に載せる (side_tasks の現行IDと対)
       if (tid === "minecraft:crafting_table") { pc.nearCraft = true; try { if (wm?.recordWorkstation) wm.recordWorkstation(b.location, dim.id, tid); } catch {} }
@@ -934,6 +941,8 @@ function takeFromInv(bot, typeId, n) {
 }
 const ORE_DROPS = [[/diamond_ore$/, "minecraft:diamond", 1], [/emerald_ore$/, "minecraft:emerald", 1], [/coal_ore$/, "minecraft:coal", 1], [/iron_ore$/, "minecraft:raw_iron", 1], [/nether_gold_ore$/, "minecraft:gold_nugget", 3], [/gold_ore$/, "minecraft:raw_gold", 1], [/copper_ore$/, "minecraft:raw_copper", 2], [/lapis_ore$/, "minecraft:lapis_lazuli", 4], [/redstone_ore$/, "minecraft:redstone", 4], [/quartz_ore$/, "minecraft:quartz", 1], [/ancient_debris/, "minecraft:ancient_debris", 1], [/^minecraft:stone$/, "minecraft:cobblestone", 1], [/^minecraft:deepslate$/, "minecraft:cobbled_deepslate", 1]];
 const CROP_DROPS = { "minecraft:wheat": ["minecraft:wheat", 1], "minecraft:carrots": ["minecraft:carrot", 2], "minecraft:potatoes": ["minecraft:potato", 2], "minecraft:beetroot": ["minecraft:beetroot", 1] };
+// forbids G6-c (cycle0628): 自律作業対象のドロップ id アダプタ (表は既存 ORE_DROPS/CROP_DROPS が単一の正、純粋核へは埋め込まない)
+const dropOfWorkTarget = (typeId) => { try { const c = CROP_DROPS[typeId]; if (c) return c[0]; } catch {} try { for (const [re, item] of ORE_DROPS) if (re.test(typeId)) return item; } catch {} return null; };
 // Phase 6 (v0.4.78): 自律Goal gather_stone の知覚分類。部分一致でなく完全一致集合（stone_bricks 等の人工ブロック誤掘防止、cycle0312-a02）
 const NATURAL_STONE = new Set(["minecraft:stone", "minecraft:deepslate", "minecraft:andesite", "minecraft:diorite", "minecraft:granite", "minecraft:tuff", "minecraft:calcite", "minecraft:cobblestone", "minecraft:mossy_cobblestone", "minecraft:netherrack", "minecraft:basalt", "minecraft:smooth_basalt", "minecraft:blackstone", "minecraft:end_stone"]);
 const VALUABLE_ORES = new Set(["minecraft:diamond_ore", "minecraft:deepslate_diamond_ore", "minecraft:emerald_ore", "minecraft:deepslate_emerald_ore", "minecraft:ancient_debris"]);
@@ -1264,7 +1273,7 @@ function tickAutonomy(bot, owner, ctx, effMove) {
   if (!g) return;
   if (g.goal !== r.goal) { r.goal = g.goal; r.goalAt = Date.now(); if (mode === "free" && g.reason) say(owner, bot, g.reason); try { const gev = mapGoalEvent({ goal: g.goal, utility: g.utility, scores: Array.isArray(g.scores) ? g.scores.map((s) => [s?.goal, s?.utility]) : undefined, x: { hp: ctx.self?.hpPct ?? null, dg: ctx.danger?.count ?? null, scan: ctx.x?.obs?.scan ?? null, inv: ctx.x?.obs?.inv ?? null } }); if (gev) r.trace?.record(gev); } catch {} }
   switch (g.goal) {
-    case "gather_wood": case "mine_ore": case "farm_crops": case "gather_stone": if (!startWork(bot, r, r.percTargets?.[GATHER_TARGETS[g.goal]])) wanderTo(r, bot, owner); break;
+    case "gather_wood": case "mine_ore": case "farm_crops": case "gather_stone": { const t0628 = r.percTargets?.[GATHER_TARGETS[g.goal]]; let blocked0628 = false; try { blocked0628 = !!t0628 && isForbiddenWorkTarget(r.sessionForbids, t0628.typeId, dropOfWorkTarget); } catch {} if (blocked0628) wanderTo(r, bot, owner); else if (!startWork(bot, r, t0628)) wanderTo(r, bot, owner); break; } // forbids G6-c (cycle0628): 禁止対象は startWork へ渡さない (知覚選出の除外の防衛線)
     case "place_torch_dark": { // cycle2117 torchfix: 足元へ降りる目標を張り syncFlyGoal の interact 降下に載せる (張るだけでは消費しない)
       try { r.target = { x: Math.floor(bot.location.x) + 0.5, y: Math.floor(bot.location.y), z: Math.floor(bot.location.z) + 0.5 }; r.moveAct = "place_torch"; } catch {}
       placeTorch(bot, r, ctx); break; }
@@ -2000,7 +2009,8 @@ const SURVEY_ITER_CAP = 1200;           // 1 チャンクで見る一致位置�
 const EXPLORE_MAX_RING = 3;             // 探索開始区画から何区画先まで調べに行くか (±3 = 7×7 区画 ≒ ±220 ブロック)
 const surveys = new Map();              // "dim:rx,rz" -> { dim, rx, rz, at, doneMask, fails, hits: { typeId: [{x,y,z}] } }
 let surveyIds = SURVEY_IDS.slice();     // 使えない ID が見つかったら外す
-let surveyBroken = false;
+let surveyLatch = createSurveyLatch(); // cycle0628: 旧 surveyBroken (恒久ラッチ) を survey_broken.js のラッチ (クールダウン回復つき) へ置換
+let surveyGlobalEvents = []; // cycle0628: 区画隔離イベントの直近ログ (全体 trip の拡散判定用)
 let surveySlowUntil = 0;
 let surveyRR = 0; // 調査する区画の巡回カウンタ (今いる区画を優先しつつ、隣の区画も少しずつ進める)
 const regionOf = (x, z) => ({ rx: Math.floor(x / REGION_SIZE), rz: Math.floor(z / REGION_SIZE) });
@@ -2011,7 +2021,7 @@ function surveyFresh(sv) { return !!sv && Date.now() - sv.at < SURVEY_TTL_MS; }
 function surveyDone(sv) { return !!sv && sv.doneMask === 0xffff && sv.doneAt != null; }
 // 完了の書き込みはこの1箇所に寄せる: doneMask と doneAt と at を同一 now で書く。
 function markSurveyDone(sv) { const now = Date.now(); sv.doneMask = 0xffff; sv.doneAt = now; sv.at = now; }
-function surveyAvailable() { return !surveyBroken && !!mcServer.BlockVolume; }
+function surveyAvailable() { try { surveyLatch = recoverSurveyLatch(surveyLatch, Date.now()).latch; } catch {} return surveyLatchAvailable(surveyLatch, Date.now()) && !!mcServer.BlockVolume; } // cycle0628: 述語の呼び出し時に遅延回復を書き戻す (実行部が止まっていてもクールダウンで回復する)
 function requestSurvey(dimId, rx, rz, prio = 1) {
   if (!surveyAvailable()) return null;
   const key = surveyKeyOf(dimId, rx, rz);
@@ -2084,7 +2094,7 @@ function surveyChunk(sv, idx) {
 system.runInterval(() => {
   if (!surveyAvailable() || Date.now() < surveySlowUntil) return;
   const queue = [];
-  for (const v of surveys.values()) if (surveyFresh(v) && v.doneMask !== 0xffff && Date.now() - (v.wantAt || 0) < 10000) queue.push(v);
+  for (const v of surveys.values()) if (surveyFresh(v) && v.doneMask !== 0xffff && Date.now() - (v.wantAt || 0) < 10000 && !(v.quarantinedUntil > Date.now())) queue.push(v); // cycle0628: 隔離中の区画は選ばない (隔離は当該区画だけ・全体は止めない)
   if (!queue.length) return;
   queue.sort((a, b) => (b.prio || 0) - (a.prio || 0) || (b.wantAt || 0) - (a.wantAt || 0));
   // 偶数 tick は最優先 (今いる区画)、奇数 tick は残りを順番に。今いる区画が終わっていれば隣だけを進める
@@ -2099,10 +2109,10 @@ system.runInterval(() => {
     const ms = Date.now() - t0;
     if (ms > 25) surveySlowUntil = Date.now() + ms * 2; // 処理落ち防止: 重かった分だけ次を遅らせる
     sv.nextIdx = (idx + 1) % 16;
-    if (res === "done") { sv.doneMask |= (1 << idx); sv.at = Date.now(); if (sv.doneMask === 0xffff && sv.doneAt == null) sv.doneAt = sv.at; }
-    else if (res === "partial") { sv.at = Date.now(); } // B-prime: progress refreshes freshness only
-    else if (res === "error") { sv.fails++; if (sv.fails > 40) { surveyBroken = true; console.warn("[LIZE] chunk survey disabled (getBlocks keeps failing)"); } }
-    // unloaded は次の tick に別のチャンクを試す (リゼが近づけば読み込まれる)
+    if (res === "done") { sv.fails = 0; sv.doneMask |= (1 << idx); sv.at = Date.now(); if (sv.doneMask === 0xffff && sv.doneAt == null) sv.doneAt = sv.at; }
+    else if (res === "partial") { sv.fails = 0; sv.at = Date.now(); } // B-prime: progress refreshes freshness only / cycle0628: 進捗で fails リセット (survey_broken.js の nextFails と同義。断片抽出ハーネスと両立させるため実行部は自己完結形で書く)
+    else if (res === "error") { sv.fails++; if (sv.fails > 40) { sv.quarantinedUntil = Date.now() + 900000; try { surveyGlobalEvents = pruneGlobalErrorEvents([...surveyGlobalEvents, { key: surveyKeyOf(sv.dim, sv.rx, sv.rz), at: Date.now() }], Date.now()); if (shouldTripGlobalLatch(surveyGlobalEvents, Date.now())) { surveyLatch = tripSurveyLatch(surveyLatch, Date.now()); console.warn("[LIZE] chunk survey paused (failures spread across regions, cooldown recovery)"); } } catch {} } } // cycle0628: 単一区画の失敗では全体を止めず当該区画だけ15分隔離。全体停止は複数区画への拡散時のみ＋5分クールダウンで回復 (恒久ラッチ surveyBroken は廃止)
+// unloaded は次の tick に別のチャンクを試す (リゼが近づけば読み込まれる)
     break;
   }
 }, 1);
@@ -3832,6 +3842,7 @@ function applyGaze(bot, owner, ctx, scan) {
     if (rot && r.doubletakeState) { try { const dt2 = sampleDoubletake(r.doubletakeState, Date.now()); if (dt2.active) rot = { ...rot, y: rot.y + dt2.yawDeg, x: rot.x + dt2.pitchDeg }; } catch {} } // POLISH-ANIM-DOUBLETAKE-01 (cycle0403): 重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot && r.darkentryState && darkEntryActive(r.darkentryState, Date.now())) { try { const deo = darkEntryOffset(Date.now() - r.darkentryState.activeFromMs); if (deo) rot = { ...rot, y: rot.y + deo.yawDeg, x: Math.min(75, Math.max(-60, rot.x + deo.pitchDeg)) }; } catch {} } // POLISH-ANIM-DARKENTRY-01 (cycle0423): 重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot && r.nightwatchState) { try { const nw = sampleNightwatch(r.nightwatchState, Date.now()); if (nw.active) rot = { ...rot, y: rot.y + nw.yawDeg, x: applyNightwatchPitch(rot.x, Date.now() - (r.nightwatchState.startedAtMs || Date.now())) }; } catch {} } // POLISH-ANIM-NIGHTWATCH-01 (cycle0340): 重畳の最下位 (表示層のみ・実機確認待ち)
+    if (rot && r.xpglanceState) { try { const xs = sampleXpGlance(r.xpglanceState, Date.now()); if (xs.active) { const bl = blendXpGlanceGaze({ yawDeg: rot.y, pitchDeg: rot.x }, xs); if (bl) rot = { ...rot, y: bl.yawDeg, x: bl.pitchDeg }; } } catch {} } // POLISH-ANIM-XPGLANCE-01 (cycle0628): 重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot) { try { bot.setRotation(rot); } catch {} }
   }
   if (gz.say && Math.random() < 0.4) sayAmbient(owner, bot, gz.say);

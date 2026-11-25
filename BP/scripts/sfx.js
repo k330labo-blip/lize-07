@@ -127,7 +127,7 @@ const PLANT_IDS = new Set([
   "deadbush", "waterlily", // cycle0505 (a16): 別名スペル (dead_bush / lily_pad の別表記) の非対称是正
   "mangrove_propagule", "mangrove_roots", "red_mushroom_block", "brown_mushroom_block",
   "melon_stem", "pumpkin_stem", "attached_melon_stem", "attached_pumpkin_stem", "mushroom_stem",
-  "open_eyeblossom", "closed_eyeblossom", "pitcher_plant", "torchflower_pod",
+  "eyeblossom", "open_eyeblossom", "closed_eyeblossom", "pitcher_plant", "torchflower_pod", // cycle0628 (a09 N1): 素形だけ stone へ落ちていた非対称を是正
   "torchflower", "torchflower_crop", "pitcher_pod", "pitcher_crop",
 ]);
 // cycle0922 (a05): 木製家具・設備
@@ -136,7 +136,7 @@ const WOODWORK_IDS = new Set([
   "cartography_table", "fletching_table", "loom", "lectern", "note_block", "jukebox",
   "composter", "ladder", "campfire", "soul_campfire", "beehive", "bee_nest", "scaffolding", "creaking_heart",
   "sign", "wall_sign", "hanging_sign", "wall_hanging_sign", "wooden_button", "wooden_pressure_plate", "shelf", "wooden_slab", // cycle0522 (a13): 無樹種・旧式形の wood 是正
-  "torch", "wall_torch", "soul_torch", "soul_wall_torch", "redstone_torch", "redstone_wall_torch", // cycle0606 (a10): 松明系が stone へ落ちていた誤分類を wood へ是正
+  "torch", "wall_torch", "soul_torch", "soul_wall_torch", "redstone_torch", "redstone_wall_torch", "unlit_redstone_torch", // cycle0606 (a10): 松明系が stone へ落ちていた誤分類を wood へ是正 / cycle0628 (a09 N2): unlit 形の非対称を是正
   "armor_stand", "item_frame", "glow_item_frame", "smithing_table", "jack_o_lantern",
 ]);
 // cycle0922 (a05): 樹種×部品の直積 (素朴なサフィックス追加は stone_stairs を巻き込むため直積必須)
