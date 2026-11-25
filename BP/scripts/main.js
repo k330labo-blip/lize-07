@@ -84,6 +84,7 @@ import { applyCraftsettlePitch, isCraftsettleActive, shouldCraftsettle } from ".
 import { createDeliverGuardState, noteDeliverOutcome, isDeliverCooling } from "./deliver_guard_math.js"; // A18-TR-01 (cycle0446): planner deliver_to_owner 満杯失敗の出口 (連続全滅3回で60秒冷却し他 goal へ譲る)
 import { applyDeliverBowPitch, isDeliverBowActive, shouldDeliverBow } from "./deliverbow_math.js"; // POLISH-ANIM-DELIVERBOW-01 (cycle0446): 手渡し成功直後の小さな会釈 (表示層のみ・実機確認待ち)
 import { applyStoresettlePitch, isStoresettleActive, shouldStoresettle } from "./storesettle_math.js";
+import { applyNospaceYaw, isNospaceActive, shouldNospace } from "./nospace_math.js"; // POLISH-ANIM-NOSPACE-01 (cycle0537): 満杯で拾えない辺の小さな首振り (表示層のみ・実機確認待ち)
 import { createStowState, noteStowWork, noteStowTick, applyStowPitch, isStowActive, STOW_MAX_ARM_DEG } from "./stow_math.js"; // POLISH-ANIM-STOW-01 (cycle0522): 作業セッション終了時の道具をしまう仕草 (表示層のみ・実機確認待ち) // POLISH-ANIM-STORESETTLE-01 (cycle0505): 格納成功直後の小さな収納の仕草 (表示層のみ・実機確認待ち)
 import { collectInvDurability } from "./inv_durability.js"; // cycle2311: 耐久予備ポリシーへの invDurability 供給者
 import { createSwapSoundState, noteHeldItem } from "./swap_sound_math.js"; // POLISH-FX-SWAP-01 (cycle2311): 持ち替え音の発火決定 (記録のみ・実機確認待ち)
@@ -789,12 +790,12 @@ function setAnchor(bot, r, loc, dimId) { try { if (r) r.anchor = loc ? { x: loc.
 function execTarget(bot, owner, rule, ctx, scan) {
   const r = rt(bot); const act = rule ? rule.act : "follow";
   const o = owner.location; const vd = (() => { try { return owner.getViewDirection(); } catch { return { x: 0, z: 1 }; } })();
-  const behind = (d) => ({ x: o.x - vd.x * d, y: o.y, z: o.z - vd.z * d });
+  const behind = (d) => { const m = Math.hypot(vd.x, vd.z); const ux = m > 1e-4 ? vd.x / m : 0, uz = m > 1e-4 ? vd.z / m : 1; return { x: o.x - ux * d, y: o.y, z: o.z - uz * d }; }; // FW-01 (cycle0537): 視線の水平成分を正規化 (ピッチで距離が潰れないように)。真上/真下は既存フォールバック方向 {0,1}
   const home = homeOf(bot);
   switch (act) {
     case "follow_close": case "greet": case "celebrate": case "say_only": return behind(1.8);
     case "follow_high": return behind(4);
-    case "go_owner": case "warn_owner_low": return { ...o };
+    case "go_owner": case "warn_owner_low": return behind(1.5); // FW-02 (cycle0537): 主人セルそのものは体が入れないため背後オフセットへ
     case "catchup": {
       if (ctx.self.distOwner > 20 || !ctx.owner.dimensionSame) { try { teleportNearOwnerGuarded(bot, r, owner.dimension, behind(2), owner.location); } catch {} } // queue3 step2: place ゲート共通ヘルパー経由 (無検査フォールバック廃止)
       return behind(2.5);
@@ -1739,7 +1740,7 @@ function returnPoint(bot, owner, m) {
   if (m.order.returnTo === "home") { const h = homeOf(bot); if (h && h.dim === bot.dimension.id) return { x: h.x + 0.5, y: h.y + 1, z: h.z + 0.5 }; }
   return { ...owner.location };
 }
-function behindOf(owner, d) { const vd = (() => { try { return owner.getViewDirection(); } catch { return { x: 0, z: 1 }; } })(); return { x: owner.location.x - vd.x * d, y: owner.location.y, z: owner.location.z - vd.z * d }; }
+function behindOf(owner, d) { const vd = (() => { try { return owner.getViewDirection(); } catch { return { x: 0, z: 1 }; } })(); const m = Math.hypot(vd.x, vd.z); const ux = m > 1e-4 ? vd.x / m : 0, uz = m > 1e-4 ? vd.z / m : 1; return { x: owner.location.x - ux * d, y: owner.location.y, z: owner.location.z - uz * d }; } // FW-01 (cycle0537): execTarget の behind と同じ水平正規化
 const SCAN_TTL_MS = 4000;         // Phase 0 負荷対策: 型別キャッシュの保持時間 (v0.4.66: 広域化に合わせ 2.5→4 秒)
 // v0.4.66: 広域ブロック探索。dimension.getBlocks (ネイティブ) で一致ブロックの位置だけを受け取る。
 // 近い範囲から順に広げ (8→16→32)、最初に見つかった範囲で止める。石のような大量にある対象でも
@@ -3771,6 +3772,9 @@ function applyGaze(bot, owner, ctx, scan) {
     // POLISH-ANIM-STORESETTLE-01 feeder (cycle0505): lastAction の STORE 成功 (seq変化) の辺でのみ発火記録 (表示層のみ・実機確認待ち)
     try { const la = r.lastAction; if (la && la.act === "STORE" && la.ok && la.seq !== r.storesettleSeenSeq) { r.storesettleSeenSeq = la.seq; if (shouldStoresettle({ stored: true, suppressed: ((ctx?.danger?.count ?? 0) > 0) || r.selfFalling === true || !!bot.isInWater, lastFiredMs: r.storesettleLastAt ?? null, nowMs: Date.now() })) { r.storesettleAnimAt = la.at || Date.now(); r.storesettleLastAt = r.storesettleAnimAt; r.lastStoresettle = { at: r.storesettleAnimAt, item: la.item || null }; } } } catch {}
     if (rot && isStoresettleActive(r.storesettleAnimAt, Date.now())) rot = { ...rot, x: applyStoresettlePitch(rot.x, Date.now() - r.storesettleAnimAt) }; // POLISH-ANIM-STORESETTLE-01 (cycle0505): 重畳 (表示層のみ・実機確認待ち)
+    // POLISH-ANIM-NOSPACE-01 feeder (cycle0537): TAKE の INVENTORY_FULL (r.lastTake の at 変化) の辺でのみ発火 (表示層のみ・実機確認待ち)
+    try { const lt = r.lastTake; if (lt && lt.act === "TAKE" && !lt.ok && lt.reason === "INVENTORY_FULL" && lt.at !== r.nospaceSeenAt) { r.nospaceSeenAt = lt.at; if (shouldNospace({ full: true, suppressed: ((ctx?.danger?.count ?? 0) > 0) || r.selfFalling === true || !!bot.isInWater, lastFiredMs: r.nospaceLastAt ?? null, nowMs: Date.now() })) { r.nospaceAnimAt = lt.at || Date.now(); r.nospaceLastAt = r.nospaceAnimAt; r.lastNospace = { at: r.nospaceAnimAt, item: lt.item || null }; } } } catch {}
+    if (rot && isNospaceActive(r.nospaceAnimAt, Date.now())) rot = { ...rot, y: applyNospaceYaw(rot.y, Date.now() - r.nospaceAnimAt) }; // POLISH-ANIM-NOSPACE-01 (cycle0537): ヨー重畳は最下位 (表示層のみ・実機確認待ち)
     // POLISH-ANIM-STOW-01 feeder (cycle0522): 作業セッション (BREAK/PLACE/CRAFT/SMELT成功の連なり) の終了の辺でのみ発火 (表示層のみ・実機確認待ち。腕は記録のみ)
     try { if (!r.stowState) r.stowState = createStowState(); const la = r.lastAction; if (la && la.ok && la.seq !== r.stowSeenSeq) { r.stowSeenSeq = la.seq; r.stowState = noteStowWork(r.stowState, { nowMs: la.at || Date.now(), kind: la.act, success: true }); } const supS = ((ctx?.danger?.count ?? 0) > 0) || r.selfFalling === true || !!bot.isInWater; const ovS = isSettleActive(r.settleAnimAt, Date.now()) || isPlacesettleActive(r.placesettleAnimAt, Date.now()) || isCraftsettleActive(r.craftsettleAnimAt, Date.now()) || isStoresettleActive(r.storesettleAnimAt, Date.now()); const tk = noteStowTick(r.stowState, { nowMs: Date.now(), workActive: !!(r.work || r.buildPlan || r.mission), suppressed: supS, overlayActive: ovS, toolTypeId: null }); r.stowState = tk.state; if (tk.fired) { r.stowAnimAt = Date.now(); r.lastStow = { atMs: r.stowAnimAt, toolTypeId: tk.toolTypeId, armPitchDeg: STOW_MAX_ARM_DEG }; } } catch {}
     if (rot && isStowActive(r.stowAnimAt, Date.now())) rot = { ...rot, x: applyStowPitch(rot.x, Date.now() - r.stowAnimAt) }; // POLISH-ANIM-STOW-01 (cycle0522): 重畳は最下位 (表示層のみ・実機確認待ち)

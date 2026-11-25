@@ -88,6 +88,7 @@ const GRASS_IDS = new Set([
   "target", "melon", "pumpkin", "carved_pumpkin", // cycle1543: 草系の実体 (干し草標的・瓜類)
   "grass_path", "melon_block", // cycle0505 (a16): 別名スペル (dirt_path / melon の別表記) が stone へ落ちていた非対称の是正
   "grass", "short_grass", "tall_grass", "fern", "large_fern",
+  "tnt", // cycle0537 (a08 N2): 火薬+砂の軟素材が stone へ落ちていた是正
 ]);
 // cycle1133-a11 Tier1+Tier2: 部分一致を廃し完全一致集合へ狭小化。
 // lantern/chain の部分一致が sea_lantern/jack_o_lantern/chain_command_block を誤爆していた。
@@ -114,7 +115,7 @@ const PLANT_IDS = new Set([
   "blue_orchid", "allium", "azure_bluet", "oxeye_daisy", "cornflower", "lily_of_the_valley", "wither_rose",
   "sunflower", "lilac", "rose_bush", "peony", "pink_petals", "wildflowers", "leaf_litter", "spore_blossom",
   "azalea", "flowering_azalea", "moss_block", "pale_moss_block", "pale_hanging_moss", "moss_carpet", "pale_moss_carpet",
-  "vine", "glow_lichen", "hanging_roots", "big_dripleaf", "small_dripleaf",
+  "vine", "glow_lichen", "hanging_roots", "big_dripleaf", "small_dripleaf", "big_dripleaf_stem", // cycle0537 (a08 N4): 茎だけ stem へ漏れていた是正
   "kelp", "seagrass", "lily_pad", "sea_pickle", "sugar_cane", "cactus",
   "nether_sprouts", "warped_roots", "crimson_roots", "nether_wart",
   "wheat", "carrots", "potatoes", "beetroot", "cocoa", "sweet_berry_bush", "chorus_plant",
@@ -143,6 +144,7 @@ export function materialOfTypeId(typeId) {
   const id = bare(typeId);
   if (!id || id === "air") return null;                                   // 1: 無音
   if (id === "water" || id === "flowing_water" || id === "lava" || id === "flowing_lava") return null; // 2: 液体そのもののみ無音 (a11 狭小化: water_cauldron 等を無音化しない)
+  if (id === "web" || id === "cobweb" || id === "fire" || id === "soul_fire" || id === "portal" || id === "end_portal" || id === "end_gateway" || id === "bubble_column" || id === "structure_void") return null; // 2b (cycle0537 a08 N1): 無音であるべき形が stone へ落ちていた是正 (完全一致のみ)
   if (id.includes("glass")) return "glass";                               // 3
   if (GLASSLIKE_IDS.has(id)) return "glass";                              // 3b (a11): 発光ガラス系
   if (id.endsWith("_leaves")) return "grass";                             // 4: 葉は草系
