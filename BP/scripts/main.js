@@ -63,6 +63,8 @@ import { createIdleState, noteIdle, sampleIdle } from "./idle_math.js"; // POLIS
 import { createLookLeadState, tickLookLead } from "./looklead_math.js"; // POLISH-ANIM-LOOKLEAD-01 (cycle2036): 作業対象への視線の先行 (表示層のみ・実機確認待ち)
 import { applySettlePitch, isSettleActive, shouldSettle } from "./settle_math.js"; // POLISH-ANIM-SETTLE-01 (cycle2058): 掘削完了直後の小さな確認視線 (表示層のみ・実機確認待ち)
 import { applyPlacesettlePitch, isPlacesettleActive, shouldPlacesettle } from "./placesettle_math.js"; // POLISH-ANIM-PLACESETTLE-01 (cycle2248): 設置完了直後の小さな確認視線 (表示層のみ・実機確認待ち)
+import { collectInvDurability } from "./inv_durability.js"; // cycle2311: 耐久予備ポリシーへの invDurability 供給者
+import { createSwapSoundState, noteHeldItem } from "./swap_sound_math.js"; // POLISH-FX-SWAP-01 (cycle2311): 持ち替え音の発火決定 (記録のみ・実機確認待ち)
 import { createOwnerReturnState, noteOwnerReturn, ownerReturnOffset } from "./ownerreturn_math.js"; // POLISH-ANIM-OWNERRETURN-01 (cycle1923): 帰還の気付き (表示層のみ・実機確認待ち) // POLISH-ANIM-PARTNERCHECK-01 (cycle1850): 主人被弾の辺で無事確認の視線 (表示層のみ・実機確認待ち)
 import { deriveInspectNeeds } from "./goap_inspect.js"; // Phase6 UNKNOWN→INSPECT段1 (cycle1850): 影記録。読み手は 6-ML 層1 (cycle1940) で source スコープ限定・記録のみ接続済み // POLISH-ANIM-LOADPOSTURE-01 (cycle1832): 満載が続くと小さく前傾する (表示層のみ・実機確認待ち)
 import { createMoveTracker, moveTrackStep, drainMoveEvents } from "./move_state.js"; // ground-walk Stage 0-B (cycle1703): record-only wiring // POLISH-ANIM-PORTALSTEADY-01 (cycle1640): 次元移動直後の立て直し (表示層のみ・実機確認待ち) // POLISH-ANIM-STEPUP-01 (cycle1603): 1マス段差を上る瞬間の小さな前傾 (表示層のみ・実機確認待ち) // POLISH-ANIM-ICEBALANCE-01 (cycle1543): 氷上のバランス取り (表示層のみ・実機確認待ち)
@@ -171,7 +173,7 @@ const SUSPEND_RESUME_WAIT_MS = 180000; // RR-05: cannot_recover の回復待ち�
 // 戻り値: null=対象外 / "resumed"=HP実測で比>=0.5 を確認し再開 / "waiting"=期限内は破棄しない / "expired"=期限超過 (終了掃除は呼び出し側の文脈別)
 function tickSuspendedResume(bot, r) {
   const m = r && r.mission; if (!m || m.status !== "suspended" || m.suspendReason !== "cannot_recover") return null;
-  if (!m.suspendWaitSince) { m.suspendWaitSince = Date.now(); persistMission(bot, r, true); } // cycle1807: 初回設定の瞬間に強制保存する (waiting 経路は保存を呼ばないため)
+  if (!m.suspendWaitSince || !Number.isFinite(m.suspendWaitSince) || m.suspendWaitSince <= 0 || m.suspendWaitSince > Date.now()) { m.suspendWaitSince = Date.now(); persistMission(bot, r, true); } // cycle1807: 初回設定の瞬間に強制保存する (waiting 経路は保存を呼ばないため) / cycle2311: 未来値・文字列等の異常値は現在時刻へ打ち直す (無検証採用だと期限切れに到達しない)
   const h = hpOfMeasured(bot);
   if (h && (h.cur / h.max) >= 0.5) { m.blocked = null; m.recoverObs = 0; m.status = "active"; m.suspendReason = null; m.suspendWaitSince = null; persistMission(bot, r, true); return "resumed"; }
   if (Date.now() - m.suspendWaitSince > SUSPEND_RESUME_WAIT_MS) return "expired";
@@ -658,6 +660,7 @@ function buildContext(bot, owner) {
       const dur = durabilityPcts(bot);
       if (dur.weapon !== undefined) c.x.weaponDurabilityPct = dur.weapon;
       if (dur.armor !== undefined) c.x.armorDurabilityPct = dur.armor;
+      try { let mh = null; try { mh = eqCore.getEquipped("Mainhand"); } catch {} const heldId = mh?.typeId || null; if (!r.swapSoundState) r.swapSoundState = createSwapSoundState(); const sd = noteHeldItem(r.swapSoundState, { typeId: heldId, nowMs: Date.now(), suppressed: false }); r.swapSoundState = sd.state; if (sd.decision && sd.decision.fire) r.lastSwapSound = { at: Date.now(), from: sd.decision.fromTypeId, to: sd.decision.toTypeId, kind: sd.decision.reason, volume: sd.decision.volume, pitch: sd.decision.pitch }; } catch {} // POLISH-FX-SWAP-01 (cycle2311): 持ち替えの辺を記録のみ (音 ID 未照合のため実音なし・表示層のみ)
     } catch {}
   }
   c.x.equipChanged = r.equipChangedAt && Date.now() - r.equipChangedAt < 6000 ? r.equipChanged : null;
@@ -1558,6 +1561,7 @@ function persistMission(bot, r, force = false) {
   dps(bot, "cb_mission", r.mission ? JSON.stringify(r.mission) : "");
 }
 function countInv(e) { const out = Object.create(null); const cont = invOf(e); if (cont) for (let i = 0; i < cont.size; i++) { const it = cont.getItem(i); if (it) out[it.typeId] = (out[it.typeId] || 0) + it.amount; } return out; }
+function invDurabilityOf(e) { const cont = invOf(e); return cont ? collectInvDurability(cont) : {}; } // cycle2311: planBootstrap の invDurability 入力の供給者
 function hasItem(bot, typeId) { return (countInv(bot)[typeId] || 0) > 0; }
 function returnPoint(bot, owner, m) {
   if (m.order.returnTo === "home") { const h = homeOf(bot); if (h && h.dim === bot.dimension.id) return { x: h.x + 0.5, y: h.y + 1, z: h.z + 0.5 }; }
@@ -1934,6 +1938,7 @@ function lookupSurvey(bot, ids, banKey = null) {
   for (const c of cands.slice(0, 12)) {
     let b = null; try { b = bot.dimension.getBlock(c.loc); } catch {}
     if (b && b.typeId !== c.id) { const arr = c.sv.hits[c.id]; const i = arr.indexOf(c.loc); if (i >= 0) arr.splice(i, 1); continue; } // もう無い (掘られた等)
+    if (b && !cropMatureAt(bot.dimension, c.loc, c.id)) continue; // cycle2311: survey 経由でも未成熟作物は候補にしない (記録は消さない: 成熟すれば候補に戻る)
     return { loc: { ...c.loc }, typeId: c.id };
   }
   return null;
@@ -2148,9 +2153,9 @@ function startMission(bot, owner, r, mo, announce = true, opts = {}) {
   // 工程（クラフト/精錬/ツール自作）が要る注文は、長期自律タスクとして自分で手段を組み立てる
   if (!opts.noLongTask && !mo.legsOnly) {
     let ltPlan = null;
-    try { ltPlan = planLongTask(mo, countInv(bot)); } catch { ltPlan = null; }
+    try { ltPlan = planLongTask(mo, countInv(bot), invDurabilityOf(bot)); } catch { ltPlan = null; }
     // v0.4.67: 計画処理は ID によって minecraft: が無いと失敗する (stone_axe 等)。読み取り側は付けないので付けて再試行
-    if (!(ltPlan && ltPlan.feasible) && typeof mo.target === "string" && !mo.target.includes(":")) { try { const p2 = planLongTask({ ...mo, target: "minecraft:" + mo.target }, countInv(bot)); if (p2 && p2.feasible) { ltPlan = p2; mo = { ...mo, target: "minecraft:" + mo.target }; } } catch {} }
+    if (!(ltPlan && ltPlan.feasible) && typeof mo.target === "string" && !mo.target.includes(":")) { try { const p2 = planLongTask({ ...mo, target: "minecraft:" + mo.target }, countInv(bot), invDurabilityOf(bot)); if (p2 && p2.feasible) { ltPlan = p2; mo = { ...mo, target: "minecraft:" + mo.target }; } } catch {} }
     if (ltPlan && ltPlan.feasible) { startLongTask(bot, owner, r, mo, ltPlan, announce); return null; }
   }
   const m = createMission(mo, null);
@@ -2561,7 +2566,7 @@ function tickLongTask(bot, owner, r, ctx) {
     // (従来は終端が無く、元の leg 再開→再発→再消費の緩いループが残っていた)。
     const toolCapReached = (lt.toolRepairs || 0) >= 3 || lt.legs.length > 60;
     let ins = null;
-    if (!toolCapReached) { try { const sub = planLongTask({ target: pickId, amount: 1 }, countInv(bot)); if (sub && sub.feasible && sub.legs && sub.legs.length) ins = sub.legs; } catch {} }
+    if (!toolCapReached) { try { const sub = planLongTask({ target: pickId, amount: 1 }, countInv(bot), invDurabilityOf(bot)); if (sub && sub.feasible && sub.legs && sub.legs.length) ins = sub.legs; } catch {} }
     r.toolNeed = null; // 成否どちらでも消費する (同じ不足で毎tick差し込み続けない)
     if (!ins && toolCapReached) {
       say(owner, bot, `長期タスクを中断しました。ツルハシを用意できませんでした`, true); r.longtask = null; saveLongTask(bot, r); return true;
@@ -2627,7 +2632,7 @@ function tickLongTask(bot, owner, r, ctx) {
         const stationId = leg.type === "smelt" ? "minecraft:furnace" : "minecraft:crafting_table";
         leg.stationRepairs = (leg.stationRepairs || 0) + 1;
         let ins = null;
-        if (!hasItem(bot, stationId) && leg.stationRepairs <= 3 && lt.legs.length <= 60) { try { const sub = planLongTask({ target: stationId, amount: 1 }, countInv(bot)); if (sub && sub.feasible && sub.legs && sub.legs.length) ins = sub.legs; } catch {} }
+        if (!hasItem(bot, stationId) && leg.stationRepairs <= 3 && lt.legs.length <= 60) { try { const sub = planLongTask({ target: stationId, amount: 1 }, countInv(bot), invDurabilityOf(bot)); if (sub && sub.feasible && sub.legs && sub.legs.length) ins = sub.legs; } catch {} }
         if (ins) { lt.legs.splice(lt.legIdx, 0, ...ins); saveLongTask(bot, r); continue; }
         say(owner, bot, `長期タスクを中断しました。${leg.type === "smelt" ? "かまど" : "作業台"}を用意できませんでした`, true); r.longtask = null; saveLongTask(bot, r); return true;
       }
@@ -2655,7 +2660,7 @@ function tickLongTask(bot, owner, r, ctx) {
         const inv = countInv(bot);
         const needTotal = countOfGroup(inv, res.missing) + (res.missingCount || 1); // 必要数は「手持ち + 不足分」の合計
         let ins = null;
-        try { const sub = planLongTask({ target: concreteItemOf(res.missing, inv), amount: needTotal }, inv); if (sub && sub.feasible && sub.legs && sub.legs.length) ins = sub.legs; } catch {}
+        try { const sub = planLongTask({ target: concreteItemOf(res.missing, inv), amount: needTotal }, inv, invDurabilityOf(bot)); if (sub && sub.feasible && sub.legs && sub.legs.length) ins = sub.legs; } catch {}
         if (!ins) ins = [{ type: "gather", item: res.missing, need: needTotal, via: null, yRange: null, depth: mineDepthFor(res.missing), crafts: 0, needs: null, station: null }];
         lt.legs.splice(lt.legIdx, 0, ...ins);
         saveLongTask(bot, r); continue;
@@ -3938,7 +3943,7 @@ function startOrderFromParser(p, bot, r, o) {
       let craftable = false;
       if (mo0.target) {
         mo0.amount = o.amount ?? 1;
-        for (const t of [mo0.target, String(mo0.target).includes(":") ? null : "minecraft:" + mo0.target]) { if (!t || craftable) continue; try { const pl = planLongTask({ ...mo0, target: t }, countInv(bot)); if (pl && pl.feasible) { craftable = true; mo0.target = t; } } catch {} }
+        for (const t of [mo0.target, String(mo0.target).includes(":") ? null : "minecraft:" + mo0.target]) { if (!t || craftable) continue; try { const pl = planLongTask({ ...mo0, target: t }, countInv(bot), invDurabilityOf(bot)); if (pl && pl.feasible) { craftable = true; mo0.target = t; } } catch {} }
       }
       if (!craftable) { say(p, bot, "その建物は、まだ図面がありません。……小屋なら建てられます", true); return; }
       if (r.mission && r.mission.status === "active") { say(p, bot, "今の指示の途中です。やめるなら「やめて」と言ってください", true); return; }

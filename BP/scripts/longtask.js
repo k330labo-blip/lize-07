@@ -112,7 +112,7 @@ export function normalizePlankLegs(legs, invCounts) {
 
 // 注文 → 長期タスク計画。工程が無い純採取なら null（通常ミッションで足りる）。
 // 分解不能なら { feasible:false, warnings } を返す。
-export function planLongTask(order, invCounts) {
+export function planLongTask(order, invCounts, invDurability) { // cycle2311: 第3引数 invDurability を planBootstrap へ中継 (従来は供給者が無く耐久予備が発動しなかった)
   const target = order?.target;
   const amount = Math.max(1, Math.floor(order?.amount || 1));
   if (!target) return null;
@@ -135,7 +135,7 @@ export function planLongTask(order, invCounts) {
   const reqTier = reqLevel > 0 ? TIERS[reqLevel - 1] : null;
 
   let boot = null;
-  try { boot = planBootstrap({ invCounts: invCounts || {}, goal: { targetItem: dec.target.item, ...(reqTier ? { targetTier: reqTier } : {}), activity: "gather" } }); } catch { boot = null; }
+  try { boot = planBootstrap({ invCounts: invCounts || {}, invDurability: invDurability || {}, goal: { targetItem: dec.target.item, ...(reqTier ? { targetTier: reqTier } : {}), activity: "gather", amount } }); } catch { boot = null; } // cycle2311: amount も中継 (消費見積もり・数量予備が従来は届いていなかった)
 
   const legs = [];
   if (boot && boot.status !== "ready" && Array.isArray(boot.steps)) for (const s of boot.steps) legs.push(normalizeBootStep(s));
