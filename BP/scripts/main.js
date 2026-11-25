@@ -54,7 +54,8 @@ import { tickToolCheck, createToolCheckState } from "./toolcheck_math.js"; // PO
 import { createLoadPostureState, noteLoadPosture, sampleLoadPosture } from "./loadposture_math.js";
 import { createPartnerCheckState, notePartnerCheck, partnerCheckOffset } from "./partnercheck_math.js";
 import { createEnderavertState, noteEnderavert, sampleEnderavert } from "./enderavert_math.js"; // POLISH-ANIM-ENDERAVERT-01 (cycle1940): 表示層のみ・実機確認待ち
-import { restoreForbids } from "./session_forbids.js"; // Phase5 (cycle1923): sessionForbids の復元純粋核
+import { restoreForbids, mergeSessionForbids } from "./session_forbids.js"; // Phase5 (cycle1923): sessionForbids の復元純粋核 / 読み手R1 (cycle2006)
+import { createMusicnodState, noteMusicnod, sampleMusicnod } from "./musicnod_math.js"; // POLISH-ANIM-MUSICNOD-01 (cycle2006): 表示層のみ・実機確認待ち
 import { createOwnerReturnState, noteOwnerReturn, ownerReturnOffset } from "./ownerreturn_math.js"; // POLISH-ANIM-OWNERRETURN-01 (cycle1923): 帰還の気付き (表示層のみ・実機確認待ち) // POLISH-ANIM-PARTNERCHECK-01 (cycle1850): 主人被弾の辺で無事確認の視線 (表示層のみ・実機確認待ち)
 import { deriveInspectNeeds } from "./goap_inspect.js"; // Phase6 UNKNOWN→INSPECT段1 (cycle1850): 影記録。読み手は 6-ML 層1 (cycle1940) で source スコープ限定・記録のみ接続済み // POLISH-ANIM-LOADPOSTURE-01 (cycle1832): 満載が続くと小さく前傾する (表示層のみ・実機確認待ち)
 import { createMoveTracker, moveTrackStep, drainMoveEvents } from "./move_state.js"; // ground-walk Stage 0-B (cycle1703): record-only wiring // POLISH-ANIM-PORTALSTEADY-01 (cycle1640): 次元移動直後の立て直し (表示層のみ・実機確認待ち) // POLISH-ANIM-STEPUP-01 (cycle1603): 1マス段差を上る瞬間の小さな前傾 (表示層のみ・実機確認待ち) // POLISH-ANIM-ICEBALANCE-01 (cycle1543): 氷上のバランス取り (表示層のみ・実機確認待ち)
@@ -87,6 +88,7 @@ import { openEquipUI } from "./equip_ui.js";
 import { createEquipCore, createEquipmentApi, durabilityPcts } from "./equip_api.js";
 import { createTrace, mapGoalEvent, mapPlanEvent, mapReplanEvent, mapInterruptAct, shouldRecordAct, formatTraceSummaryLines } from "./trace.js"; // Phase4 cb_trace (v0.4.56): 判断トレースの器 (記録専用)。v0.4.57: goal/plan 配線を追加。v0.4.60: replan 配線を追加。v0.4.62: 表示 U1 (selection 6 のみ)。v0.4.65: act 配線を追加
 import { createFailAgg, recordAction, recordNote, formatFailSummaryLines, serializeFailAggShards, restoreFailAggShardsWithReport, planShardWrites, failRate } from "./fail_vocab.js"; // Phase4 failAgg (v0.4.64): 失敗集計の純粋核。記録は noteFail/commitLastAction の内側2点だけ (S2)。読み手は状態表示のみ (S3a)。v0.4.77: S3b 永続化 (cb_failagg キー分割)
+import { pickSurveyEvictions } from "./survey_evict.js"; // survey 案C (cycle2006): 容量削除の複合キー純粋核
 import { dropTupleForBlock } from "./block_drops.js";
 import { isUndergroundColumn } from "./underground_math.js"; // キュー0副次 (cycle1400): 地下判定の数え上げを純粋核へ (雪層は地形に数えない規則を回帰テストで固定)
 import { applyTossPitch, isTossActive, shouldToss } from "./toss_math.js"; // POLISH-ANIM-TOSS-01 (cycle1400): アイテム出現時の投げ出し表現 (表示層のみ・実機確認待ち)
@@ -1754,7 +1756,7 @@ function requestSurvey(dimId, rx, rz, prio = 1) {
   else if (!surveyFresh(sv) && !surveyDone(sv)) { sv.doneMask = 0; sv.doneAt = null; sv.fails = 0; sv.hits = {}; sv.units = undefined; sv.nextIdx = 0; sv.at = Date.now(); }
   // ラッチ済み sv は失効しても作り直さない: doneMask/doneAt/hits は保持し、wantAt/prio のみ更新する。
   sv.wantAt = Date.now(); sv.prio = prio;
-  if (surveys.size > 400) { const old = [...surveys.entries()].sort((a, b) => (a[1].wantAt || 0) - (b[1].wantAt || 0)).slice(0, 100); for (const [k] of old) surveys.delete(k); }
+  if (surveys.size > 400) { const old = pickSurveyEvictions([...surveys.entries()], 100, Date.now(), SURVEY_TTL_MS); for (const [k] of old) surveys.delete(k); } // survey 案C (cycle2006): 複合削除キー (survey_evict.js)
   return sv;
 }
 // survey CAP B-prime (cycle1703): unit-based progress helpers. splitVolume untouched (shared utility)
@@ -2069,6 +2071,8 @@ function pickupItemEntity(bot, owner, itemEnt, ctx) {
   else { recordTake(r, "pickupItemEntity", { ok: false, reason: "INVENTORY_FULL", item: stack.typeId }); noteTakeFull(bot, r, String(itemEnt.id) + ":" + stack.typeId, stack.typeId); }
 }
 function startMission(bot, owner, r, mo, announce = true, opts = {}) {
+  // Phase5 読み手R1 (cycle2006): セッション禁止を入口でマージする。主対象自体が禁止なら leg でない注文は立てない (legsOnly は decomposer 側の完全一致除外に任せる)
+  try { const mg = mergeSessionForbids(r.sessionForbids, mo); if (mg.mo) mo = mg.mo; if (mg.blocked && !mo.legsOnly) { if (announce) say(owner, bot, `その対象は、しないと約束しています。${nameOfItem(mo.target)}は対象にしません`, true); return null; } } catch {}
   if (!mo.legsOnly) r.toolPrepTotal = 0; // キュー0副次 R1 (cycle1421): 道具準備の通算上限は新規注文ごとに数え直す (leg 子ミッションでは消さない)
   // 工程（クラフト/精錬/ツール自作）が要る注文は、長期自律タスクとして自分で手段を組み立てる
   if (!opts.noLongTask && !mo.legsOnly) {
@@ -3205,6 +3209,8 @@ function applyGaze(bot, owner, ctx, scan) {
   try { const bv = typeof bot.isValid === "function" ? bot.isValid() : bot.isValid; if (bot.isValid !== undefined && !bv) return; if (owner) { const ov = typeof owner.isValid === "function" ? owner.isValid() : owner.isValid; if (owner.isValid !== undefined && !ov) return; } } catch { return; }
   // POLISH-ANIM-OWNERRETURN-01 (cycle1923): 主人の距離遷移だけを発火源にする feeder (表示層のみ・実機確認待ち)
   try { const r0 = rt(bot); if (!r0.ownerreturnState) r0.ownerreturnState = createOwnerReturnState(); const d = ctx?.self?.distOwner; const same = !!owner && !!ctx?.owner?.dimensionSame; let relYaw = 0; try { const gr = gazeRotation(bot.location, { x: owner.location.x, y: owner.location.y + 1.4, z: owner.location.z }); const cur = bot.getRotation(); relYaw = ((gr.y - (cur?.y || 0) + 540) % 360) - 180; } catch {} const rec = noteOwnerReturn(r0.ownerreturnState, { dist: same && Number.isFinite(d) && d < 900 ? d : null, busy: !!r0.work || r0.selfFalling === true, targetYawDeg: relYaw }, Date.now()); if (rec) r0.lastOwnerReturn = r0.ownerreturnState.lastRecord; } catch {}
+  // POLISH-ANIM-MUSICNOD-01 feeder (cycle2006): 音楽ブロック近傍滞在を代理条件とする (再生事実は正式版APIで取れない)。2秒間引き＋scanBlockNear のキャッシュ経由で新規走査は増やさない
+  try { const r0 = rt(bot); if (!r0.musicnodState) r0.musicnodState = createMusicnodState(); if (Date.now() - (r0.musicnodCheckAt || 0) >= 2000) { r0.musicnodCheckAt = Date.now(); let near; let src = null; try { const scanUnk = (tid) => { const e = r0.mScanMap?.[tid]; return !!e && (e.failedCells ?? 0) * 2 > (e.totalCells ?? 2601); }; const j = scanBlockNear(bot, r0, "minecraft:jukebox"); const nb = j ? null : scanBlockNear(bot, r0, "minecraft:note_block"); if (j) { near = true; src = "jukebox"; } else if (nb) { near = true; src = "note_block"; } else if (scanUnk("minecraft:jukebox") || scanUnk("minecraft:note_block")) near = undefined; else near = false; } catch { near = undefined; } const rec = noteMusicnod(r0.musicnodState, { nearMusic: near, source: src, inCombat: (ctx?.danger?.count ?? 0) > 0, falling: r0.selfFalling === true, inWater: !!bot.isInWater, working: !!r0.work, ownerFar: typeof ctx?.self?.distOwner === "number" && ctx.self.distOwner > 16 }, Date.now()); if (rec?.entered) r0.lastMusicNod = { at: Date.now(), source: src, fired: true }; } } catch {}
   let gz = null; try { gz = decideGaze(ctx); } catch {}
   if (!gz) return;
   const r = rt(bot);
@@ -3240,6 +3246,7 @@ function applyGaze(bot, owner, ctx, scan) {
     if (rot && r.toolcheckSample?.active) rot = { ...rot, x: rot.x + r.toolcheckSample.gazePitchDeg, y: rot.y + r.toolcheckSample.gazeYawDeg }; // POLISH-ANIM-TOOLCHECK-01 (cycle1807): 重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot && r.loadpostureState) { const lp = sampleLoadPosture(r.loadpostureState, Date.now()); if (lp.active) rot = { ...rot, x: rot.x + lp.pitchDeg }; } // POLISH-ANIM-LOADPOSTURE-01 (cycle1832): ピッチ重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot && r.partnercheckState) { const pc = partnerCheckOffset(r.partnercheckState, Date.now()); if (pc.active) rot = { ...rot, y: rot.y + pc.yawDeg, x: rot.x + pc.pitchDeg }; } if (rot && r.ownerreturnState) { const orc = ownerReturnOffset(r.ownerreturnState, Date.now()); if (orc.active) rot = { ...rot, y: rot.y + orc.yawDeg, x: rot.x + orc.pitchDeg }; } // POLISH-ANIM-OWNERRETURN-01 (cycle1923): 重畳の最下位 (表示層のみ・実機確認待ち) // POLISH-ANIM-PARTNERCHECK-01 (cycle1850): 重畳の最下位 (表示層のみ・実機確認待ち)
+    if (rot && r.musicnodState) { const mn = sampleMusicnod(r.musicnodState, Date.now()); if (mn.active) rot = { ...rot, x: rot.x + mn.gazePitchDeg }; } // POLISH-ANIM-MUSICNOD-01 (cycle2006): 重畳の最下位 (表示層のみ・実機確認待ち、近傍滞在が代理条件)
     if (rot) { try { bot.setRotation(rot); } catch {} }
   }
   if (gz.say && Math.random() < 0.4) sayAmbient(owner, bot, gz.say);

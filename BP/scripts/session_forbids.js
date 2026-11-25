@@ -26,3 +26,23 @@ export function restoreForbids(json) {
 export function serializeForbids(list) {
   return JSON.stringify(sanitizeForbids(list));
 }
+
+// Phase5 読み手 R1 (cycle2006): セッション禁止を注文へマージする純粋核。
+// verb の一致規則は main の forbid ヒット判定と同一 (null=全動詞 / deliver は gather と同義)。
+export function forbidVerbMatches(fVerb, kind) {
+  return fVerb == null || fVerb === kind || (fVerb === "deliver" && kind === "gather");
+}
+export function mergeSessionForbids(forbids, mo) {
+  try {
+    if (!mo || typeof mo !== "object") return { blocked: false, mo };
+    const list = sanitizeForbids(forbids);
+    if (!list.length) return { blocked: false, mo };
+    const kind = mo.kind || "gather";
+    const norm = (id) => (typeof id === "string" && id && !id.includes(":") ? "minecraft:" + id : id);
+    const blocked = typeof mo.target === "string" && list.some((f) => norm(f.target) === norm(mo.target) && forbidVerbMatches(f.verb, kind));
+    const extra = list.filter((f) => forbidVerbMatches(f.verb, kind)).map((f) => f.target);
+    const cur = Array.isArray(mo.constraints?.forbiddenTargets) ? mo.constraints.forbiddenTargets : [];
+    const merged = [...new Set([...cur, ...extra])].filter((id) => norm(id) !== norm(mo.target));
+    return { blocked, mo: { ...mo, constraints: { ...(mo.constraints || {}), forbiddenTargets: merged } } };
+  } catch { return { blocked: false, mo }; }
+}
