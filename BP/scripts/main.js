@@ -43,7 +43,8 @@ import { steerDecision, collectHints, chooseHint, hintDirection, inDepthBand, SU
 import { createGuardState, decideResteer, recordBlocked, recordResteerApplied, legKeyOf } from "./resteer_guard_math.js"; // cycle0005: resteer F-1/F-2 ガード純粋核 (元凶方向への復帰禁止・再blocked無効化・blocked累計30秒の出口・距離/深度ガード)
 import { createWakestretchState, noteWakestretch, wakestretchCurrent, applyWakestretchPitch } from "./wakestretch_math.js"; // POLISH-ANIM-WAKESTRETCH-01 (cycle0005): 長い待機明けの小さな伸び (表示層のみ・実機確認待ち)
 import { createOwnerfalltrackState, noteOwnerfalltrack, ownerfalltrackCurrent } from "./ownerfalltrack_math.js"; // POLISH-ANIM-OWNERFALLTRACK-01 (cycle0033): owner fall gaze tracking (display only)
-import { createFallLandState, onVerticalStep, falllandCurrent } from "./fallland_math.js"; // POLISH-ANIM-FALLLAND-01 (cycle0057): 落下ポーズ+着地クッション (表示層のみ・実機確認待ち)
+import { createFallLandState, onVerticalStep, falllandCurrent } from "./fallland_math.js";
+import { createRoutecheckState, noteRoutecheck, sampleRoutecheck } from "./routecheck_math.js"; // POLISH-ANIM-ROUTECHECK-01 (cycle0117): 長距離移動中の進路確認 (表示層のみ・実機確認待ち) // POLISH-ANIM-FALLLAND-01 (cycle0057): 落下ポーズ+着地クッション (表示層のみ・実機確認待ち)
 import { createHeedState, noteHeed as noteHeedState, sampleHeed } from "./heed_math.js";
 import { createThresholdState, noteThreshold as noteThresholdState, sampleThreshold } from "./threshold_math.js"; // POLISH-ANIM-THRESHOLD-01 (cycle1503): くぐり視線 (表示層のみ・実機確認待ち)
 import { createEdgepeekState, noteEdgepeek as noteEdgepeekState, sampleEdgepeek } from "./edgepeek_math.js";
@@ -62,7 +63,7 @@ import { tickToolCheck, createToolCheckState } from "./toolcheck_math.js"; // PO
 import { createLoadPostureState, noteLoadPosture, sampleLoadPosture } from "./loadposture_math.js";
 import { createPartnerCheckState, notePartnerCheck, partnerCheckOffset } from "./partnercheck_math.js";
 import { createEnderavertState, noteEnderavert, sampleEnderavert } from "./enderavert_math.js"; // POLISH-ANIM-ENDERAVERT-01 (cycle1940): 表示層のみ・実機確認待ち
-import { restoreForbids, mergeSessionForbids, serializeForbids } from "./session_forbids.js"; // Phase5 (cycle1923): sessionForbids の復元純粋核 / 読み手R1 (cycle2006) / 保存の単一形 (cycle2036)
+import { restoreForbids, mergeSessionForbids, serializeForbids, forbiddenTargetIds, unionForbiddenIds } from "./session_forbids.js"; // cycle0117: G2/G6-b 読み手 (unionForbiddenIds/forbiddenTargetIds) // Phase5 (cycle1923): sessionForbids の復元純粋核 / 読み手R1 (cycle2006) / 保存の単一形 (cycle2036)
 import { createMusicnodState, noteMusicnod, sampleMusicnod } from "./musicnod_math.js"; // POLISH-ANIM-MUSICNOD-01 (cycle2006): 表示層のみ・実機確認待ち
 import { createIdleState, noteIdle, sampleIdle } from "./idle_math.js"; // POLISH-ANIM-IDLE-01 (cycle2020): 待機モーション (表示層のみ・実機確認待ち)
 import { createLookLeadState, tickLookLead } from "./looklead_math.js"; // POLISH-ANIM-LOOKLEAD-01 (cycle2036): 作業対象への視線の先行 (表示層のみ・実機確認待ち)
@@ -1264,6 +1265,15 @@ function noteMove(bot, r, engine) {
       else { const ev = onVerticalStep(r.falllandState, dy, 0.1, grounded, Date.now()); if (ev && ev.event) r.lastFallLand = { at: Date.now(), event: ev.event, landTier: ev.landTier || 0, fallAmount: ev.fallAmount || 0 }; }
       r.falllandPrevY = pos.y;
     } catch {}
+    // POLISH-ANIM-ROUTECHECK-01 (cycle0117): 累積水平距離は moveTracker の前回位置から供給 (新規走査なし・表示層のみ)
+    try {
+      if (!r.routecheckState || r.routecheckDim !== bot.dimension.id) { r.routecheckState = createRoutecheckState(); r.routecheckDim = bot.dimension.id; r.routecheckPrevPos = null; }
+      const rp2 = r.routecheckPrevPos;
+      const stepH = rp2 ? Math.hypot(pos.x - rp2.x, pos.z - rp2.z) : 0;
+      const rcEv = noteRoutecheck(r.routecheckState, { moving: stepH > 0.01, stepDist: stepH, arrived: eng === "idle", falling: !grounded, inWater: !!bot.isInWater, justTeleported: eng === "teleport", working: !!r.work, danger: !!(((r.lastCtx?.danger?.count) ?? 0) > 0) }, Date.now());
+      if (rcEv && rcEv.fired) r.lastRoutecheck = { at: Date.now(), reason: rcEv.reason, armPitchDeg: -30 };
+      r.routecheckPrevPos = { x: pos.x, z: pos.z };
+    } catch {}
   } catch {}
 }
 function movementWatchdog(bot, r, pos) {
@@ -2219,7 +2229,7 @@ function pickupItemEntity(bot, owner, itemEnt, ctx) {
 }
 function startMission(bot, owner, r, mo, announce = true, opts = {}) {
   // Phase5 読み手R1 (cycle2006): セッション禁止を入口でマージする。主対象自体が禁止なら leg でない注文は立てない (legsOnly は decomposer 側の完全一致除外に任せる)
-  try { const mg = mergeSessionForbids(r.sessionForbids, mo); if (mg.mo) mo = mg.mo; if (mg.blocked && !mo.legsOnly) { if (announce) say(owner, bot, `その対象は、しないと約束しています。${nameOfItem(mo.target)}は対象にしません`, true); return null; } } catch {}
+  try { const mg = mergeSessionForbids(r.sessionForbids, mo); if (mg.mo) mo = mg.mo; if (mg.blocked) { if (announce || mo.legsOnly) say(owner, bot, `その対象は、しないと約束しています。${nameOfItem(mo.target)}は対象にしません`, true); return null; } } catch {} // cycle0117 G2: legsOnly も入口で止める (出口は呼び出し側A/Bに配線済み)
   if (!mo.legsOnly) r.toolPrepTotal = 0; // キュー0副次 R1 (cycle1421): 道具準備の通算上限は新規注文ごとに数え直す (leg 子ミッションでは消さない)
   // 工程（クラフト/精錬/ツール自作）が要る注文は、長期自律タスクとして自分で手段を組み立てる
   if (!opts.noLongTask && !mo.legsOnly) {
@@ -2641,6 +2651,7 @@ function tickToolPrepPromote(bot, owner, r) {
 }
 function tickLongTask(bot, owner, r, ctx) {
   const lt = r.longtask; if (!lt) return false;
+  const fbIds = unionForbiddenIds(lt.forbiddenTargets, r.sessionForbids, "gather"); // cycle0117 G6-b: lt スナップショットと現行セッション禁止の和集合 (開始後の禁止も拾う)
   if (lt.phase === "deliver") {
     // LT-DELIVER-NOEXIT (cycle1322, a01): deliver 相の終了保証。従来は上限が無く、入庫常時失敗/未到達で
     // 毎tick占有し続け cb_longtask 永続化で再起動でも解消しなかった。計数は lt 自体に保持し再起動を跨ぐ。
@@ -2688,7 +2699,7 @@ function tickLongTask(bot, owner, r, ctx) {
     // (従来は終端が無く、元の leg 再開→再発→再消費の緩いループが残っていた)。
     const toolCapReached = (lt.toolRepairs || 0) >= 3 || lt.legs.length > 60;
     let ins = null;
-    if (!toolCapReached) { try { const sub = planLongTask({ target: pickId, amount: 1 }, countInv(bot), invDurabilityOf(bot)); if (sub && sub.feasible && sub.legs && sub.legs.length) ins = sub.legs; } catch {} }
+    if (!toolCapReached) { try { const sub = planLongTask({ target: pickId, amount: 1, constraints: { forbiddenTargets: fbIds } }, countInv(bot), invDurabilityOf(bot)); if (sub && sub.feasible && sub.legs && sub.legs.length) ins = sub.legs; } catch {} }
     r.toolNeed = null; // 成否どちらでも消費する (同じ不足で毎tick差し込み続けない)
     if (!ins && toolCapReached) {
       say(owner, bot, `長期タスクを中断しました。ツルハシを用意できませんでした`, true); r.longtask = null; saveLongTask(bot, r); return true;
@@ -2744,7 +2755,8 @@ function tickLongTask(bot, owner, r, ctx) {
       if (remain <= 0) { lt.legIdx++; continue; }
       // 丸石は地表に露出していないことが多いので、少し潜って掘る。鉱石は素材ごとの目標深度へ。
       r.mineLeg = mineLegForLeg(leg, bot); r.mineDir = null; // queue2: 性質判定+次元ガードは mineLegForLeg へ集約 (旧3分岐の group:cobble / cobblestone+via=stone は同関数内で同等に成立)
-      startMission(bot, owner, r, { kind: leg.type === "hunt" ? "hunt" : "gather", target: legMissionTarget(leg), amount: remain, constraints: { hostiles: lt.hostiles, forbiddenTargets: lt.forbiddenTargets || [] }, sideTasks: [], returnTo: lt.returnTo, legsOnly: true }, false, { noLongTask: true });
+      const legStarted = startMission(bot, owner, r, { kind: leg.type === "hunt" ? "hunt" : "gather", target: legMissionTarget(leg), amount: remain, constraints: { hostiles: lt.hostiles, forbiddenTargets: fbIds }, sideTasks: [], returnTo: lt.returnTo, legsOnly: true }, false, { noLongTask: true });
+      if (!legStarted && !r.mission) { noteFail(bot, "longtask:forbidden_leg", new Error(leg.item)); say(owner, bot, `長期タスクを中断しました。${lname(leg.item)}は、しないと約束している対象です`, true); r.longtask = null; r.mineLeg = null; r.spiral = null; saveLongTask(bot, r); return true; } // cycle0117 G2 出口A: 立たなかった leg を消費しない
       r.ltLegActive = true;
       say(owner, bot, `工程${lt.legIdx + 1}/${lt.legs.length}：${legLabel(leg, lname)}`, true);
       saveLongTask(bot, r);
@@ -2757,7 +2769,7 @@ function tickLongTask(bot, owner, r, ctx) {
         const stationId = leg.type === "smelt" ? "minecraft:furnace" : "minecraft:crafting_table";
         leg.stationRepairs = (leg.stationRepairs || 0) + 1;
         let ins = null;
-        if (!hasItem(bot, stationId) && leg.stationRepairs <= 3 && lt.legs.length <= 60) { try { const sub = planLongTask({ target: stationId, amount: 1 }, countInv(bot), invDurabilityOf(bot)); if (sub && sub.feasible && sub.legs && sub.legs.length) ins = sub.legs; } catch {} }
+        if (!hasItem(bot, stationId) && leg.stationRepairs <= 3 && lt.legs.length <= 60) { try { const sub = planLongTask({ target: stationId, amount: 1, constraints: { forbiddenTargets: fbIds } }, countInv(bot), invDurabilityOf(bot)); if (sub && sub.feasible && sub.legs && sub.legs.length) ins = sub.legs; } catch {} }
         if (ins) { lt.legs.splice(lt.legIdx, 0, ...ins); saveLongTask(bot, r); continue; }
         say(owner, bot, `長期タスクを中断しました。${leg.type === "smelt" ? "かまど" : "作業台"}を用意できませんでした`, true); r.longtask = null; saveLongTask(bot, r); return true;
       }
@@ -2785,7 +2797,8 @@ function tickLongTask(bot, owner, r, ctx) {
         const inv = countInv(bot);
         const needTotal = countOfGroup(inv, res.missing) + (res.missingCount || 1); // 必要数は「手持ち + 不足分」の合計
         let ins = null;
-        try { const sub = planLongTask({ target: concreteItemOf(res.missing, inv), amount: needTotal }, inv, invDurabilityOf(bot)); if (sub && sub.feasible && sub.legs && sub.legs.length) ins = sub.legs; } catch {}
+        try { const sub = planLongTask({ target: concreteItemOf(res.missing, inv), amount: needTotal, constraints: { forbiddenTargets: fbIds } }, inv, invDurabilityOf(bot)); if (sub && sub.feasible && sub.legs && sub.legs.length) ins = sub.legs; } catch {}
+        if (!ins && fbIds.length && (fbIds.includes(res.missing) || fbIds.includes(concreteItemOf(res.missing, inv)) || fbIds.includes("minecraft:" + res.missing))) { noteFail(bot, "longtask:repair_exhausted", new Error(`${leg.item} missing forbidden ${res.missing}`)); say(owner, bot, `長期タスクを中断しました。${lname(res.missing)}は、しないと約束している対象です`, true); r.longtask = null; saveLongTask(bot, r); return true; } // cycle0117 G6-b: 生legフォールバックの禁止照合 (decomposer を通らない唯一の経路)
         if (!ins) ins = [{ type: "gather", item: res.missing, need: needTotal, via: null, yRange: null, depth: mineDepthFor(res.missing), crafts: 0, needs: null, station: null }];
         lt.legs.splice(lt.legIdx, 0, ...ins);
         saveLongTask(bot, r); continue;
@@ -3266,7 +3279,8 @@ function startNextGather(bot, owner, r) {
   const miss = bp.missing[bp.missingIdx];
   if (!miss) { bp.stage = "build"; say(owner, bot, `材料が揃いました。${bp.name}を建て始めます`, true); return; }
   say(owner, bot, `材料集めです。${nameOfItem(miss.item)}を${miss.amount}個、集めてきます`, true);
-  startMission(bot, owner, r, { kind: "gather", target: miss.item, amount: miss.amount, constraints: { hostiles: "avoid" }, sideTasks: [], returnTo: "owner", legsOnly: true }, false, { noLongTask: true }); // BLD-01 (cycle1133): legsOnly で完了時の全量納品を止め、集めた材料をリゼが保持したまま build へ進む
+  const gatherStarted = startMission(bot, owner, r, { kind: "gather", target: miss.item, amount: miss.amount, constraints: { hostiles: "avoid", forbiddenTargets: unionForbiddenIds([], r.sessionForbids, "gather") }, sideTasks: [], returnTo: "owner", legsOnly: true }, false, { noLongTask: true }); // BLD-01 (cycle1133)
+  if (!gatherStarted && !r.mission) foldGatherBuildPlan(bot, owner, r, "forbidden_gather", null); // cycle0117 G2 出口B: 禁止材料では建築材料集めを畳む: legsOnly で完了時の全量納品を止め、集めた材料をリゼが保持したまま build へ進む
 }
 function advanceBuildGather(bot, owner, r) { const bp = r.buildPlan; if (!bp || bp.stage !== "gather") return; bp.missingIdx++; startNextGather(bot, owner, r); }
 // GATHER-NOEXIT (cycle1850-a07 -> cycle1909): gather 相にも無進捗の最終出口を持たせる。
@@ -3613,6 +3627,7 @@ function applyGaze(bot, owner, ctx, scan) {
     if (rot && r.wakestretchState) { try { const wk = wakestretchCurrent(r.wakestretchState, Date.now()); if (wk.active) rot = { ...rot, y: rot.y + wk.yawDeg, x: applyWakestretchPitch(rot.x, Date.now() - (r.wakestretchState.startedAtMs || Date.now())) }; } catch {} }
     if (rot && r.ownerfalltrackState) { try { const oft = ownerfalltrackCurrent(r.ownerfalltrackState, r.ownerfalltrackSample || {}, Date.now()); if (oft.active || oft.pitchDeg || oft.yawOffsetDeg) rot = { ...rot, y: rot.y + (oft.yawOffsetDeg || 0), x: rot.x + (oft.pitchDeg || 0) }; } catch {} } // POLISH-ANIM-OWNERFALLTRACK-01 (cycle0033): lowest overlay (display only) // POLISH-ANIM-WAKESTRETCH-01 (cycle0005): 重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot && r.falllandState) { try { const fl = falllandCurrent(r.falllandState, Date.now()); if (fl.active) { rot = { ...rot, x: rot.x + fl.pitchDeg }; if (fl.mode === "land") r.lastFallLand = { ...(r.lastFallLand || {}), at: Date.now(), mode: "land", landTier: fl.landTier, sink: fl.sink }; } } catch {} } // POLISH-ANIM-FALLLAND-01 (cycle0057): 重畳の最下位 (表示層のみ・実機確認待ち。sink は RP 受け口が無い間は記録のみ)
+    if (rot && r.routecheckState) { try { const rc2 = sampleRoutecheck(r.routecheckState, Date.now()); if (rc2.active) rot = { ...rot, x: rot.x + rc2.gazePitchDeg }; } catch {} } // POLISH-ANIM-ROUTECHECK-01 (cycle0117): 重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot) { try { bot.setRotation(rot); } catch {} }
   }
   if (gz.say && Math.random() < 0.4) sayAmbient(owner, bot, gz.say);

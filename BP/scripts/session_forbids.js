@@ -46,3 +46,18 @@ export function mergeSessionForbids(forbids, mo) {
     return { blocked, mo: { ...mo, constraints: { ...(mo.constraints || {}), forbiddenTargets: merged } } };
   } catch { return { blocked: false, mo }; }
 }
+
+// Phase5 読み手 G6-b/G2 (cycle0117): 禁止対象 id の純粋核。verb 規則は forbidVerbMatches を再利用する (二重実装しない)。
+const normForbiddenId = (id) => (typeof id === "string" && id && !id.includes(":") ? "minecraft:" + id : id);
+export function forbiddenTargetIds(forbids, kind = "gather") {
+  try {
+    const list = sanitizeForbids(forbids);
+    return [...new Set(list.filter((f) => forbidVerbMatches(f.verb, kind)).map((f) => normForbiddenId(f.target)).filter((x) => typeof x === "string" && x))];
+  } catch { return []; }
+}
+export function unionForbiddenIds(ltIds, forbids, kind = "gather") {
+  try {
+    const base = Array.isArray(ltIds) ? ltIds.map(normForbiddenId).filter((x) => typeof x === "string" && x) : [];
+    return [...new Set([...base, ...forbiddenTargetIds(forbids, kind)])];
+  } catch { return []; }
+}
