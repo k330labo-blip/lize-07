@@ -46,7 +46,9 @@ import { createEdgepeekState, noteEdgepeek as noteEdgepeekState, sampleEdgepeek 
 import { createIcebalanceState, noteIcebalance as noteIcebalanceState, sampleIcebalance } from "./icebalance_math.js";
 import { createStepupState, noteStepup as noteStepupState, sampleStepup } from "./stepup_math.js";
 import { banKeyFor, matchesBan, isBanned } from "./trunk_ban.js"; // queue0-A bug2 (cycle1728, v0.5.19): trunk-unit ban
+import { createTakeBanState, recordTakeBan, isTakeBanned } from "./take_ban_math.js"; // TR2136-01 (cycle2200): 回収全量失敗の実行側見切り
 import { createWorkglanceState, noteWorkglance, sampleWorkglance } from "./workglance_math.js"; // POLISH-ANIM-WORKGLANCE-01 (cycle1728, v0.5.19)
+import { createCatchsightState, noteCatchsight, sampleCatchsight } from "./catchsight_math.js"; // POLISH-ANIM-CATCHSIGHT-01 (cycle2200): 主人が投げた物の追視 (表示層のみ・実機確認待ち)
 import { notePortalsteady, portalsteadyOffsetsAt, isPortalsteadyActive } from "./portalsteady_math.js";
 import { createSurfacebreathState, stepSurfacebreath, sampleSurfacebreath, applySurfacebreathPitch } from "./surfacebreath_math.js"; // POLISH-ANIM-SURFACEBREATH-01 (cycle1703)
 import { createBubblebreathState, stepBubblebreath } from "./bubblebreath_math.js"; // POLISH-FX-BUBBLEBREATH-01 (cycle1909): 水中滞在中の冷却排気泡 (粒子ID未照合の間は記録のみ・実機確認待ち)
@@ -130,6 +132,7 @@ function flushExp(bot, r) { try { if (!bot || !r || !r.expStore) return; const s
 function commitLastAction(r, rec) { try { if (!r || !rec) return; r.actionSeq = (r.actionSeq || 0) + 1; r.lastAction = { act: rec.act || null, ok: !!rec.ok, reason: rec.reason || null, item: rec.item || null, at: rec.at || Date.now(), seq: r.actionSeq }; try { r.trace?.record({ k: "result", a: rec.act || null, r: rec.ok ? "ok" : "ng" }); } catch {} try { if (r.failAgg) recordAction(r.failAgg, rec, r.actionSeq); } catch {} try { if (r.expStore) { const er = buildExpFromCommit(rec, expCtxOf(r, rec, { pack: VERSION })); if (er) addExpRecord(r.expStore, er); } } catch {} } catch {} } // 6-ML: result軸の記録 (戻り値は使わない)
 function recordTake(r, via, o) { try { r.lastTake = { act: "TAKE", via, ok: !!o.ok, reason: o.reason || null, taken: o.taken || 0, partial: !!o.partial, item: o.item || null, at: Date.now() }; commitLastAction(r, r.lastTake); } catch {} }
 function noteTakeFull(bot, r, key, typeId) { const now = Date.now(); if (r.takeFullKey === key && now - (r.takeFullAt || 0) < 60000) return; r.takeFullKey = key; r.takeFullAt = now; noteFail(bot, "bts_take:inventory_full", new Error("inventory full: " + typeId)); }
+function noteTakeBan(r, entityId, typeId) { try { if (!r.takeBan) r.takeBan = createTakeBanState(); recordTakeBan(r.takeBan, entityId, typeId, Date.now()); } catch {} } // TR2136-01 (cycle2200): 記録専用 (noteFail は呼ばない＝失敗ログの二重計上をしない)
 function recordStore(r, kind, res) { try { const moved = res?.moved || 0; const failed = !!res?.failed; const partial = failed && moved > 0; // Phase2 STORE語彙是正 (v0.4.11, cycle-1001 a06 裁定): ok/reason は契約 REASONS のみ。空振りは失敗でなく ok+detail.empty、部分移送は ok+detail.partial、全滅は INVENTORY_FULL+detail.side:"target"。量と完全性は detail へ分離する
   r.lastStore = { act: "STORE", kind, ok: moved > 0 || !failed, reason: moved === 0 && failed ? "INVENTORY_FULL" : null, moved, partial, detail: { empty: moved === 0 && !failed, partial, side: moved === 0 && failed ? "target" : null }, at: Date.now() }; commitLastAction(r, r.lastStore); } catch {} }
 function recordWithdraw(bot, r, res) { try { const d = res?.detail || {}; r.lastWithdraw = { act: "WITHDRAW", ok: !!res?.ok, reason: res?.reason || null, taken: d.taken || 0, partial: !!d.partial, item: d.item || null, at: Date.now() }; commitLastAction(r, r.lastWithdraw); if (res && !res.ok && res.reason) noteFail(bot, "bts_withdraw:" + String(res.reason).toLowerCase(), new Error("withdraw failed: " + res.reason)); } catch {} }
@@ -206,7 +209,7 @@ function rt(bot) {
     nav: null, navDim: null, navMode: "direct", mission: undefined, missionKills: 0, deliveredFlag: false, conv: null, fallbackStreak: 0, lastCtx: null, lastChatAt: 0, lastPraiseAt: 0, lastDangerAt: 0, sideState: { cooldowns: {}, now: 0 }, sideTask: null, mTargetLoc: null, mTargetType: null, mTargetEntity: null, mTargetKind: null, mFound: false, mAtReturn: false, mScan: null, percOpps: [], buildPlan: null, hyst: null, suspendNotified: false, usedHonesty: [],
     lastAmbientAt: 0, equipCore: null, equipRestored: false, equipChanged: null, equipChangedAt: 0, equipFromOwner: false, justHealedAt: 0, lastAmmoCount: 0, lastHealCount: 0,
     // v0.3.9: 飛行・目標固定・ウォッチドッグ
-    fly: null, flyDim: null, flyMode: "ground", ownerPosCache: null, moveTracker: null, moveDim: null, moveState: null, moveEvents: [], surfacebreathState: null, workglanceState: null, workglanceSeenAt: 0, toolcheckState: null, loadpostureState: null, partnercheckState: null, ownerreturnState: null, idleState: null, lastIdle: null, idleSinceMs: null, idleAnchor: null, toolcheckSample: null, mTargetKey: "", mTargetSince: 0, mLastHave: -1, mBanKey: "", mBanUntil: 0, watchHist: [], watchAt: 0, lastHopAt: 0,
+    fly: null, flyDim: null, flyMode: "ground", ownerPosCache: null, moveTracker: null, moveDim: null, moveState: null, moveEvents: [], surfacebreathState: null, workglanceState: null, workglanceSeenAt: 0, catchsightState: null, catchsightPrevItemIds: null, catchsightPending: [], lastCatchSight: null, toolcheckState: null, loadpostureState: null, partnercheckState: null, ownerreturnState: null, idleState: null, lastIdle: null, idleSinceMs: null, idleAnchor: null, toolcheckSample: null, mTargetKey: "", mTargetSince: 0, mLastHave: -1, mBanKey: "", mBanUntil: 0, takeBan: null, watchHist: [], watchAt: 0, lastHopAt: 0,
     // v0.4.0: 長期自律タスク
     longtask: undefined, ltLegActive: false, mineLeg: null, mineDir: null, spiral: null,
     // v0.4.1: 失敗記録・装備破損の監視
@@ -396,6 +399,7 @@ function buildContext(bot, owner) {
   const ENTITY_SCAN_R = 32, itemR = busy ? 32 : radius, dangerR = Math.max(radius, 16);
   const scan = { hostiles: [], items: [], animals: [], opportunities: [], nearestItem: null, valuableItem: null, foodItem: null, ownerItem: null, nearestHostile: null };
   const flinchCand = []; // POLISH-ANIM-FLINCH-01 (cycle1051): 予兆エンティティ候補 (落雷/点火TNT)
+  const curItemIds = new Set(); // POLISH-ANIM-CATCHSIGHT-01 (cycle2200): アイテム出現の辺検出用 (既存走査の id 集合)
   let deathLoc = null; try { deathLoc = JSON.parse(wdp(`cb_death:${owner.id}`, "null")); } catch {}
   let scanOk = true; // 走査が最後まで回ったか（false＝「何もいない」ではなく「分からない」）
   try {
@@ -406,6 +410,8 @@ function buildContext(bot, owner) {
         if (d > itemR) continue;
         let stack = null; try { stack = e.getComponent("minecraft:item")?.itemStack; } catch {}
         if (!stack) continue;
+        curItemIds.add(e.id);
+        if (r.takeBan && isTakeBanned(r.takeBan, e.id, stack.typeId, Date.now())) continue; // TR2136-01 (cycle2200): 見切り中の対象は走査・ポインタ・距離の全てから外す (選択側の単一の正)
         scan.items.push(e); c.drops.count++;
         scan.opportunities.push({ kind: "item", typeId: stack.typeId, pos: { x: e.location.x, y: e.location.y, z: e.location.z }, amount: stack.amount, id: e.id });
         if (c.drops.nearestDist < 0 || d < c.drops.nearestDist) { c.drops.nearestDist = d; scan.nearestItem = e; }
@@ -431,6 +437,22 @@ function buildContext(bot, owner) {
       }
     }
   } catch (err) { scanOk = false; noteFail(bot, "entityScan", err); }
+  // POLISH-ANIM-CATCHSIGHT-01 (cycle2200): 既存走査の id 差分でアイテム出現の辺を作る (表示層のみ・実機確認待ち)。
+  // 初回走査は初期化のみ、scanOk=false の回は前回集合を前進させない (既存アイテム全件の出現誤認を防ぐ)。
+  try {
+    if (scanOk && owner) {
+      const prev = r.catchsightPrevItemIds;
+      if (prev) {
+        for (const e of scan.items) {
+          if (prev.has(e.id)) continue;
+          const loc = { x: e.location.x, y: e.location.y, z: e.location.z };
+          if (isOwnerTossCandidate(bot, owner, r, loc)) (r.catchsightPending ||= []).push({ id: e.id, loc, at: Date.now() });
+        }
+        if (Array.isArray(r.catchsightPending) && r.catchsightPending.length > 16) r.catchsightPending.splice(0, r.catchsightPending.length - 16);
+      }
+      r.catchsightPrevItemIds = curItemIds;
+    }
+  } catch {}
   noteFlinch(bot, r, flinchCand); // POLISH-ANIM-FLINCH-01 (cycle1051): 出現の辺でのみ発火 (表示層のみ)
   noteSkyglance(r, c.env.isRaining, c.danger && c.danger.count > 0); // POLISH-ANIM-SKYGLANCE-01 (cycle1133)
   noteDryoff(r, c); // POLISH-ANIM-DRYOFF-01 (cycle1322)
@@ -738,7 +760,7 @@ function execArrive(bot, owner, rule, ctx, scan) {
         if (!rest) { try { item.remove(); } catch {} const st = stats(bot); st.pickup = (st.pickup || 0) + stack.amount; saveStats(bot, st); recordTake(r, "execArrive", { ok: true, taken: stack.amount, item: stack.typeId }); noteInspectPickup(bot, r, ctx, stack.typeId); /* POLISH-SND-PICKUP-01 (cycle0710) */ try { if (!r.sfxState) r.sfxState = createSfxState(); sfxPickup(r.sfxState, bot.dimension, bot.location, Date.now()); } catch {} if (Math.random() < 0.5) say(owner, bot, genSpeech({ say: { item: nameOfItem(stack.typeId), count: stack.amount }, drops: { count: ctx.drops.count }, flags: { bond: dp(bot, "cb_bond", 30) }, x: {} }, "pickup_report"));
         else sayFromCategory(owner, bot, isValuable(stack.typeId) ? "pickup_valuable" : "pickup_done"); }
         else if (rest.amount < stack.amount) { try { item.remove(); bot.dimension.spawnItem(rest, item.location); } catch {} recordTake(r, "execArrive", { ok: true, taken: stack.amount - rest.amount, partial: true, item: stack.typeId }); }
-        else { recordTake(r, "execArrive", { ok: false, reason: "INVENTORY_FULL", item: stack.typeId }); noteTakeFull(bot, r, String(item.id) + ":" + stack.typeId, stack.typeId); }
+        else { recordTake(r, "execArrive", { ok: false, reason: "INVENTORY_FULL", item: stack.typeId }); noteTakeFull(bot, r, String(item.id) + ":" + stack.typeId, stack.typeId); noteTakeBan(r, item.id, stack.typeId); }
       } else { recordTake(r, "execArrive", { ok: false, reason: cont ? "ITEM_NOT_FOUND" : "TARGET_UNKNOWN", item: stack?.typeId || null }); }
     }
   }
@@ -2097,10 +2119,11 @@ function pickupItemEntity(bot, owner, itemEnt, ctx) {
   const r = rt(bot);
   const cont = invOf(bot); let stack = null; try { stack = itemEnt.getComponent("minecraft:item")?.itemStack; } catch {}
   if (!cont || !stack) { recordTake(r, "pickupItemEntity", { ok: false, reason: cont ? "ITEM_NOT_FOUND" : "TARGET_UNKNOWN", item: stack?.typeId || null }); return; }
+  if (r.takeBan && isTakeBanned(r.takeBan, itemEnt.id, stack?.typeId, Date.now())) return; // TR2136-01 (cycle2200): 固定対象 (ミッション等) の入口ガード。recordTake も呼ばない
   const rest = cont.addItem(stack);
   if (!rest) { try { itemEnt.remove(); } catch {} const st = stats(bot); st.pickup = (st.pickup || 0) + stack.amount; saveStats(bot, st); recordTake(r, "pickupItemEntity", { ok: true, taken: stack.amount, item: stack.typeId }); noteInspectPickup(bot, r, ctx, stack.typeId); try { if (!r.sfxState) r.sfxState = createSfxState(); sfxPickup(r.sfxState, bot.dimension, bot.location, Date.now()); } catch {} } // POLISH-SND-PICKUP-01 (cycle0710): 回収音 (表示層のみ・実機確認待ち)
   else if (rest.amount < stack.amount) { try { itemEnt.remove(); bot.dimension.spawnItem(rest, itemEnt.location); } catch {} recordTake(r, "pickupItemEntity", { ok: true, taken: stack.amount - rest.amount, partial: true, item: stack.typeId }); }
-  else { recordTake(r, "pickupItemEntity", { ok: false, reason: "INVENTORY_FULL", item: stack.typeId }); noteTakeFull(bot, r, String(itemEnt.id) + ":" + stack.typeId, stack.typeId); }
+  else { recordTake(r, "pickupItemEntity", { ok: false, reason: "INVENTORY_FULL", item: stack.typeId }); noteTakeFull(bot, r, String(itemEnt.id) + ":" + stack.typeId, stack.typeId); noteTakeBan(r, itemEnt.id, stack.typeId); }
 }
 function startMission(bot, owner, r, mo, announce = true, opts = {}) {
   // Phase5 読み手R1 (cycle2006): セッション禁止を入口でマージする。主対象自体が禁止なら leg でない注文は立てない (legsOnly は decomposer 側の完全一致除外に任せる)
@@ -3026,7 +3049,7 @@ function startBuild(bot, owner, r, name, cells, origin, gatherFirst) {
   for (const cell of cells) { if (cell.skipCount) continue; const item = cell.item || resolveMaterialItem(cell.material); if (item) summary[item] = (summary[item] || 0) + 1; }
   const missing = computeMissing(bot, owner, summary);
   r.buildPlan = { name, cells, origin: { x: Math.floor(origin.x), y: Math.floor(origin.y), z: Math.floor(origin.z) }, dim: (() => { try { return owner?.dimension?.id || null; } catch { return null; } })(), idx: 0, placed: 0, skipped: [], stage: gatherFirst && missing.length ? "gather" : "build", missing, missingIdx: 0 }; // buildPlan次元ガード (cycle0821): 原点の次元は主人 (原点=主人位置) の完全IDで記録する
-  r.buildStallKey = null; r.buildStallSince = 0; r.buildStallBest = null; r.buildDangerSince = null; r.buildDangerNoted = false; r.buildDimSince = null; r.buildDimNoted = false; r.buildProgressAt = Date.now(); r.buildProgressIdx = 0; r.buildProgressPlaced = 0; r.buildGatherProgIdx = 0; r.buildGatherProgInv = 0; // 基礎 R-3 (v0.4.81, cycle0417-a04): 前の建築の stall/危険時計を持ち越さない + BUILD-HOLD-NOEXIT (cycle1343): 無進捗時計の起点 + GATHER-NOEXIT snapshot
+  r.buildStallKey = null; r.buildStallSince = 0; r.buildStallBest = null; r.buildDangerSince = null; r.buildDangerNoted = false; r.buildDimSince = null; r.buildDimNoted = false; r.buildProgressAt = Date.now(); r.buildProgressIdx = 0; r.buildProgressPlaced = 0; r.buildGatherProgIdx = 0; r.buildGatherProgInv = 0; r.buildUnknownSince = null; r.buildUnknownNoted = false; // 基礎 R-3 (v0.4.81, cycle0417-a04): 前の建築の stall/危険時計を持ち越さない + BUILD-HOLD-NOEXIT (cycle1343): 無進捗時計の起点 + GATHER-NOEXIT snapshot + F1 (cycle2200): buildUnknown も開始時に掃除する
   if (r.buildPlan.stage === "gather") { say(owner, bot, `承知しました。${name}ですね。材料が${missing.length}種、足りません。先に集めてきます`, true); startNextGather(bot, owner, r); }
   else say(owner, bot, `承知しました。${name}を建てます。場所は、あなたの今の位置です`, true);
 }
@@ -3152,7 +3175,7 @@ function tickBuild(bot, owner, r, ctx) {
   const otherSkip = bp.skipped.length - noMat;
   say(owner, bot, `${bp.name}、建て終わりました。${bp.placed}箇所、置きました。${noMat ? `材料不足で${noMat}箇所、空いています` : ""}${otherSkip ? `置けなかった場所が${otherSkip}箇所あります` : ""}`, true);
   r.buildPlan = null;
-  r.buildStallKey = null; r.buildStallSince = 0; r.buildStallBest = null; r.buildDangerSince = null; r.buildDangerNoted = false; r.buildDimSince = null; r.buildDimNoted = false; r.buildProgressAt = null; r.buildProgressIdx = null; r.buildProgressPlaced = null; // 基礎 R-3 (v0.4.81): 完了した建築の時計を残さない + BUILD-HOLD-NOEXIT (cycle1343)
+  r.buildStallKey = null; r.buildStallSince = 0; r.buildStallBest = null; r.buildDangerSince = null; r.buildDangerNoted = false; r.buildDimSince = null; r.buildDimNoted = false; r.buildProgressAt = null; r.buildProgressIdx = null; r.buildProgressPlaced = null; r.buildUnknownSince = null; r.buildUnknownNoted = false; // 基礎 R-3 (v0.4.81): 完了した建築の時計を残さない + BUILD-HOLD-NOEXIT (cycle1343) + F1 (cycle2200): hold 中のまま完了した場合も buildUnknown を残さない
   return true;
 }
 // ---------- 工場設計の提示 ----------
@@ -3265,6 +3288,45 @@ function notePortalsteadyTick(bot, dim, r, c) {
     if (fired) r.lastPortalSteady = { at: Date.now(), from: prevDim, to: dimId };
   } catch {}
 }
+// POLISH-ANIM-CATCHSIGHT-01 (cycle2200): 「主人が投げた物」の帰属束ね (位置だけの推定、全て AND、欠けたら不発)。
+// 帰属は推定であり、他プレイヤーの投擲や近傍のモブドロップを誤認しうる (表示層のみ・無言・550ms のため許容し実機で頻度を見る)。
+function isOwnerTossCandidate(bot, owner, r, loc) {
+  try {
+    if (!owner || !loc) return false;
+    let sameDim = false; try { sameDim = bot.dimension.id === owner.dimension.id; } catch { return false; }
+    if (!sameDim) return false;
+    if (dist(owner.location, loc) > 4.0) return false; // 主人の手元付近に出現したものだけ
+    if (dist(bot.location, loc) < 2.0) return false; // リゼ自身の spawnItem は全て自位置に出る
+    try { const ort = ownerRt.get(owner.id); if (ort?.breakLoc && Date.now() - (ort.breakAt || 0) < 1500 && dist(ort.breakLoc, loc) <= 1.6) return false; } catch {} // 破壊ドロップは WORKGLANCE の管轄
+    try { const dl = JSON.parse(wdp(`cb_death:${owner.id}`, "null")); if (dl && Date.now() - dl.t < 300000 && dist(dl, loc) <= 12) return false; } catch {} // 死亡ドロップは投擲ではない
+    return true;
+  } catch { return false; }
+}
+// POLISH-ANIM-CATCHSIGHT-01 (cycle2200): 抑制群の束ね (applyGaze の範囲で取れる実式のみ。取れない項目は false 固定)
+function catchsightSuppressInput(bot, owner, ctx, gz, r, now) {
+  try {
+    const heedActive = !!(r.heedState && sampleHeed(r.heedState, now).active);
+    const wgActive = !!(r.workglanceState && sampleWorkglance(r.workglanceState, now).active);
+    const pcActive = !!(r.partnercheckState && partnerCheckOffset(r.partnercheckState, now).active);
+    const llActive = !!(r.lookleadSample?.active && now - (r.lookleadSampleAt || 0) < 200);
+    return {
+      danger: (ctx?.danger?.count ?? 0) > 0,
+      inCombat: gz?.gaze === "danger" || gz?.gaze === "danger_then_owner",
+      hurtRecent: now - (r.lastDangerAt || 0) < 2000,
+      working: !!r.work, digging: false, attacking: false, placing: false,
+      falling: r.selfFalling === true, inWater: !!bot.isInWater, climbing: false,
+      justTeleported: !!(r.portalsteadyState && isPortalsteadyActive(r.portalsteadyState, now)),
+      justRespawned: false,
+      flinchActive: isFlinchActive(r.flinchAnimAt, now),
+      inspectActive: isInspectActive(r.inspectAnimAt, now),
+      nodActive: isNodActive(r.nodAnimAt, now),
+      heedActive, workglanceActive: wgActive,
+      settleActive: isSettleActive(r.settleAnimAt, now),
+      partnercheckActive: pcActive, lookleadActive: llActive,
+      overlayActive: heedActive || wgActive || pcActive || llActive,
+    };
+  } catch { return { suppressed: true }; }
+}
 function applyGaze(bot, owner, ctx, scan) {
   try { const bv = typeof bot.isValid === "function" ? bot.isValid() : bot.isValid; if (bot.isValid !== undefined && !bv) return; if (owner) { const ov = typeof owner.isValid === "function" ? owner.isValid() : owner.isValid; if (owner.isValid !== undefined && !ov) return; } } catch { return; }
   // POLISH-ANIM-OWNERRETURN-01 (cycle1923): 主人の距離遷移だけを発火源にする feeder (表示層のみ・実機確認待ち)
@@ -3287,6 +3349,8 @@ function applyGaze(bot, owner, ctx, scan) {
     let rot = gazeRotation(bot.location, tp);
     // POLISH-ANIM-WORKGLANCE-01 (cycle1728, v0.5.19): owner break/place event edge -> brief glance (display only, real-machine check pending)
     try { if (!r.workglanceState) r.workglanceState = createWorkglanceState(); const ort = owner ? ownerRt.get(owner.id) : null; const evs = []; if (ort?.breakLoc && (ort.breakAt||0) > (r.workglanceSeenAt||0)) evs.push({ kind: "break", loc: ort.breakLoc, at: ort.breakAt }); if (ort?.placeLoc && (ort.placeAt||0) > (r.workglanceSeenAt||0)) evs.push({ kind: "place", loc: ort.placeLoc, at: ort.placeAt }); evs.sort((a,b)=>a.at-b.at); for (const ev of evs) { r.workglanceSeenAt = ev.at; const fired = noteWorkglance(r.workglanceState, { nowMs: Date.now(), selfPos: bot.location, eventPos: ev.loc, eventKind: ev.kind, selfYawDeg: rot ? rot.y : null, working: !!r.work, danger: !!((ctx?.danger?.count ?? 0) > 0), falling: r.selfFalling === true, inWater: !!bot.isInWater, sameDimension: (()=>{ try { return bot.dimension.id === owner.dimension.id; } catch { return false; } })() }); if (fired) r.lastWorkglance = { at: Date.now(), kind: ev.kind }; } } catch {}
+    // POLISH-ANIM-CATCHSIGHT-01 (cycle2200): feeder — キューを全件 drain し辺を1回だけ消費する (遅れ発火防止)
+    try { if (!r.catchsightState) r.catchsightState = createCatchsightState(); const pend = Array.isArray(r.catchsightPending) ? r.catchsightPending : []; r.catchsightPending = []; const now = Date.now(); const sup = catchsightSuppressInput(bot, owner, ctx, gz, r, now); for (const ev of pend) { if (!ev?.loc || now - (ev.at || 0) > 1500) continue; let sameDim = false; try { sameDim = !!owner && bot.dimension.id === owner.dimension.id; } catch {} if (!sameDim) continue; const gr = gazeRotation(bot.location, { x: ev.loc.x, y: ev.loc.y, z: ev.loc.z }); const relYaw = gr && rot ? ((gr.y - rot.y + 540) % 360) - 180 : null; const relPitch = gr && rot ? gr.x - rot.x : null; const d3 = dist(bot.location, ev.loc); const fired = noteCatchsight(r.catchsightState, { ownerTossedItem: true, itemDistance: d3, itemRelYawDeg: relYaw, itemRelPitchDeg: relPitch, ...sup, nowMs: now }, now); if (fired) r.lastCatchSight = { at: now, dist: d3, relYawDeg: relYaw }; } } catch {}
     // POLISH-ANIM-INSPECT-01 (cycle1003): 検分中はピッチへ見下ろしオフセットを重畳する (消費点はここ1箇所)
     if (rot && isInspectActive(r.inspectAnimAt, Date.now())) rot = { ...rot, x: applyInspectPitch(rot.x, Date.now() - r.inspectAnimAt) };
     if (rot && isNodActive(r.nodAnimAt, Date.now())) rot = { ...rot, x: applyNodPitch(rot.x, Date.now() - r.nodAnimAt) };
@@ -3312,6 +3376,7 @@ function applyGaze(bot, owner, ctx, scan) {
     if (rot && r.musicnodState) { const mn = sampleMusicnod(r.musicnodState, Date.now()); if (mn.active) rot = { ...rot, x: rot.x + mn.gazePitchDeg }; } // POLISH-ANIM-MUSICNOD-01 (cycle2006): 重畳の最下位 (表示層のみ・実機確認待ち、近傍滞在が代理条件)
     if (rot && r.idleState) { const idl = sampleIdle(r.idleState, Date.now()); if (idl.active) rot = { ...rot, y: rot.y + idl.gazeYawRelDeg, x: rot.x + idl.gazePitchDeg }; } // POLISH-ANIM-IDLE-01 (cycle2020): 重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot && r.lookleadSample && (r.lookleadSample.active || r.lookleadSample.completed) && Date.now() - (r.lookleadSampleAt || 0) < 200) rot = { ...rot, y: rot.y + r.lookleadSample.yawDeltaDeg, x: rot.x + r.lookleadSample.pitchDeltaDeg }; // POLISH-ANIM-LOOKLEAD-01 (cycle2036): 重畳の最下位 (表示層のみ・実機確認待ち)
+    if (rot && r.catchsightState) { const cs = sampleCatchsight(r.catchsightState, Date.now(), catchsightSuppressInput(bot, owner, ctx, gz, r, Date.now())); if (cs.active) rot = { ...rot, y: rot.y + cs.yawDeg, x: rot.x + cs.pitchDeg }; } // POLISH-ANIM-CATCHSIGHT-01 (cycle2200): 重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot) { try { bot.setRotation(rot); } catch {} }
   }
   if (gz.say && Math.random() < 0.4) sayAmbient(owner, bot, gz.say);

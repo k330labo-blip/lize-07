@@ -46,8 +46,17 @@ export function flySetGoal(fly, goal, opts = {}) {
     const near = !!(fly.goal && goal
       && Math.hypot(goal.x - fly.goal.x, goal.y - fly.goal.y, goal.z - fly.goal.z) <= 3);
     if (near) {
-      const blk = fly.blocked.get(fly.goalKey);
-      if (blk !== undefined) { fly.blocked.set(key, blk); fly.blocked.delete(fly.goalKey); }
+      // A18-F4 (cycle2200): blocked の引継ぎは新旧目標が同一セル列 (floor x,z 一致) の場合のみ。
+      // 歩行・ダッシュ中の主人のように目標が列を変えながら動き続けると、blocked が
+      // 毎tick伝播して ground/blocked_goal が途切れず飛行が復帰しない (a04 実測: 100tick連続)。
+      // カウンタ群 (escSec 等) の near 引継ぎは従来どおり (cycle0202 の樹冠対策の土台)。
+      const sameColumn = !!(fly.goal && goal
+        && Math.floor(goal.x) === Math.floor(fly.goal.x)
+        && Math.floor(goal.z) === Math.floor(fly.goal.z));
+      if (sameColumn) {
+        const blk = fly.blocked.get(fly.goalKey);
+        if (blk !== undefined) { fly.blocked.set(key, blk); fly.blocked.delete(fly.goalKey); }
+      }
     }
     fly.goal = goal ? { x: goal.x, y: goal.y, z: goal.z } : null;
     fly.goalKey = key;
