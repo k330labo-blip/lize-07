@@ -46,6 +46,8 @@ import { createOwnerfalltrackState, noteOwnerfalltrack, ownerfalltrackCurrent } 
 import { createFallLandState, onVerticalStep, falllandCurrent } from "./fallland_math.js";
 import { createRoutecheckState, noteRoutecheck, sampleRoutecheck } from "./routecheck_math.js";
 import { createInspectAgg, recordInspectEval } from "./goap_inspect_agg.js"; // Phase6 INSPECT S0-1 (cycle0153): 記録専用カウンタ (挙動不変)
+import { stashWorkProgress, takeStashedLeft, clearStashFor } from "./work_stash_math.js"; // A06-03 (cycle0224): r.work 差替で失われる掘削進捗の退避/復元 (純粋核)
+import { createCombatEndState, noteCombatEnd, sampleCombatEnd } from "./combatend_math.js"; // POLISH-ANIM-COMBATEND-01 (cycle0224): 戦闘終了確定時の息継ぎ (表示層のみ・実機確認待ち)
 import { createYieldState, noteYield, sampleYield } from "./yield_math.js"; // POLISH-ANIM-YIELD-01 (cycle0153): 狭い通路での半歩の譲り (表示層のみ・実機確認待ち) // POLISH-ANIM-ROUTECHECK-01 (cycle0117): 長距離移動中の進路確認 (表示層のみ・実機確認待ち) // POLISH-ANIM-FALLLAND-01 (cycle0057): 落下ポーズ+着地クッション (表示層のみ・実機確認待ち)
 import { createHeedState, noteHeed as noteHeedState, sampleHeed } from "./heed_math.js";
 import { createThresholdState, noteThreshold as noteThresholdState, sampleThreshold } from "./threshold_math.js"; // POLISH-ANIM-THRESHOLD-01 (cycle1503): くぐり視線 (表示層のみ・実機確認待ち)
@@ -914,6 +916,7 @@ function startWork(bot, r, target, opts = {}) {
   // v0.4.76 遮蔽除去: 先掘り中は主対象 (main) が一致すれば先掘り対象の進捗を保持する
   if (r.work && r.work.main && r.work.main.typeId === target.typeId && r.work.main.loc.x === target.x && r.work.main.loc.y === target.y && r.work.main.loc.z === target.z) return true;
   if (structureGuard(bot.dimension, target)) return false; // 人工物の近くでは壊さない
+  stashWorkProgress(r, workHardOf, Date.now()); // A06-03 (cycle0224): 差替確定点で現行 work の掘削進捗を退避する
   const hardOf = workHardOf; // v0.4.88: 単一の正は workHardOf (tickWork の dig_first 差し替えと共用)
   const hard = hardOf(target.typeId);
   // v0.4.76 遮蔽除去 (一般規則、basics-leaves-work DESIGN §3): 作業現場の近くでのみ、立ち位置の目→対象の区間と
@@ -933,13 +936,13 @@ function startWork(bot, r, target, opts = {}) {
       if (res && res.stand) accessStand = { x: res.stand.x, y: res.stand.y, z: res.stand.z };
       if (res && res.kind === "dig_first" && res.cell && res.block) {
         r.workChain = { key, n: chain + 1 };
-        r.work = { loc: { x: res.cell.x, y: res.cell.y, z: res.cell.z }, typeId: res.block.typeId, left: hardOf(res.block.typeId), main: { loc: { x: target.x, y: target.y, z: target.z }, typeId: target.typeId }, via: res.via || null, stand: accessStand, gateVia: opts.skipAccess ? "tunnel" : "work" };
+        r.work = { loc: { x: res.cell.x, y: res.cell.y, z: res.cell.z }, typeId: res.block.typeId, left: takeStashedLeft(r, res.cell, res.block.typeId, hardOf(res.block.typeId), Date.now()) ?? hardOf(res.block.typeId), main: { loc: { x: target.x, y: target.y, z: target.z }, typeId: target.typeId }, via: res.via || null, stand: accessStand, gateVia: opts.skipAccess ? "tunnel" : "work" }; // A06-03: 退避済み進捗があれば復元
         return true;
       }
       if (res && res.kind === "work") r.workChain = { key, n: 0 };
     }
   } catch {}
-  r.work = { loc: { x: target.x, y: target.y, z: target.z }, typeId: target.typeId, left: hard, stand: accessStand, gateVia: opts.skipAccess ? "tunnel" : "work" };
+  r.work = { loc: { x: target.x, y: target.y, z: target.z }, typeId: target.typeId, left: takeStashedLeft(r, target, target.typeId, hard, Date.now()) ?? hard, stand: accessStand, gateVia: opts.skipAccess ? "tunnel" : "work" }; // A06-03: 退避済み進捗があれば復元
   return true;
 }
 // v0.4.56 (外部レビュー指摘3): 掘削の道具等級。バニラの必要等級に合わせ、足りない道具では掘らず理由つきで止まる
@@ -982,7 +985,8 @@ function swapWorkToOccluder(bot, r, w, gate) {
   const chain = (r.workChain && r.workChain.key === key) ? (r.workChain.n || 0) : 0;
   if (chain >= ACCESS.MAX_CHAIN) return false;
   r.workChain = { key, n: chain + 1 };
-  r.work = { loc: { x: cell.x, y: cell.y, z: cell.z }, typeId: block.typeId, left: workHardOf(block.typeId), main, via: gate.why || "occluded", stand: w.stand || null, gateVia: w.gateVia || "work" };
+  stashWorkProgress(r, workHardOf, Date.now()); // A06-03 (cycle0224): 差替前の本対象の進捗を退避
+  r.work = { loc: { x: cell.x, y: cell.y, z: cell.z }, typeId: block.typeId, left: takeStashedLeft(r, cell, block.typeId, workHardOf(block.typeId), Date.now()) ?? workHardOf(block.typeId), main, via: gate.why || "occluded", stand: w.stand || null, gateVia: w.gateVia || "work" };
   return true;
 }
 function workStandPoint(bot, loc) {
@@ -1091,6 +1095,7 @@ function tickWork(bot, owner, r, ctx) {
   try { if (!r.sfxState) r.sfxState = createSfxState(); sfxDigHit(r.sfxState, bot.dimension, { x: w.loc.x + 0.5, y: w.loc.y + 0.5, z: w.loc.z + 0.5 }, w.typeId, Date.now()); } catch {} // 要望バッチF: 素材別の掘削音 (hit.*)
   if (w.left > 0) return true;
   try { b.setType("minecraft:air"); } catch (err) { r.lastBreak = { act: "BREAK", ok: false, reason: "SET_FAILED", item: w.typeId, at: Date.now() }; commitLastAction(r, r.lastBreak); noteFail(bot, "bts_break:set_failed", err); r.work = null; return false; } // RSN-04: 例外を成功形にしない (v0.4.7)
+  clearStashFor(r, w.loc, w.typeId); // A06-03 (cycle0224): 完了セルの退避は使い切る
   try { sfxDigBreak(bot.dimension, { x: w.loc.x + 0.5, y: w.loc.y + 0.5, z: w.loc.z + 0.5 }, w.typeId); } catch {} // 要望バッチF: 素材別の破壊音
   let gain = CROP_DROPS[w.typeId] || null;
   if (!gain) for (const [re, item, n] of ORE_DROPS) if (re.test(w.typeId)) { gain = [item, n]; break; }
@@ -2475,18 +2480,23 @@ function tickBranchMine(bot, owner, r, ctx) {
       if (bu.totalMs > 30000) { noteFail(bot, "branchmine:unknown_exhausted", new Error(key)); r.branchUnknownLeg = null; r.mineLeg = null; r.spiral = null; }
     } catch {}
   };
-  // M-1051-1 (cycle1153): hold 側の終了保証 (holdUnknown と同型)。累計キーは leg+セル+理由 (変われば進捗として別累計)。
+  // M-1051-1 (cycle1153): hold 側の終了保証 (holdUnknown と同型)。
+  // BRANCHHOLD-KEYFLAP 是正 (cycle0224, cycle0153-a15 確定): 累計キーは leg+セル (holdGateHeld と同型)。
+  // why は同一セルでも隣接読取の成否や到達境界で揺らぎ、キーに含めると累計が毎回リセットされ30秒見切りが
+  // 到達不能になるため、診断用に bh.lastWhy へ保持するだけにする。加算も間隔2000ms以上を丸ごと捨てる形から
+  // 1回最大2000msのキャップ加算へ是正 (疎な呼び出しでも前進し、長期不在後の即時枯渇は防ぐ)。
   // 所持数が増えたらリセット。30秒超で leg を畳んで既存の中断経路へ委ねる (方向転換はしない: hold は壁の証拠ではない)。
   const holdHeld = () => {
     r.target = { x: pos.x, y: pos.y, z: pos.z };
     try {
       const now = Date.now(), lh = r.lastDigHold || {};
-      const key = `${leg.item || ""}@${leg.depth ?? ""}|${lh.loc ? `${lh.loc.x},${lh.loc.y},${lh.loc.z}` : ""}|${lh.why || ""}`;
+      const key = `${leg.item || ""}@${leg.depth ?? ""}|${lh.loc ? `${lh.loc.x},${lh.loc.y},${lh.loc.z}` : ""}`;
       const cnt = countOfGroup(countInv(bot), leg.item);
       if (!r.branchHoldLeg || r.branchHoldLeg.key !== key) r.branchHoldLeg = { key, totalMs: 0, lastAt: now, count: cnt, noted: false };
       const bh = r.branchHoldLeg;
+      bh.lastWhy = lh.why || null;
       if (cnt > (bh.count || 0)) { bh.totalMs = 0; bh.count = cnt; }
-      if (bh.lastAt && now - bh.lastAt < 2000) bh.totalMs += now - bh.lastAt;
+      if (bh.lastAt && now > bh.lastAt) bh.totalMs += Math.min(now - bh.lastAt, 2000);
       bh.lastAt = now;
       if (!bh.noted) { bh.noted = true; noteFail(bot, "branchmine:hold", new Error(key)); }
       if (bh.totalMs > 30000) { noteFail(bot, "branchmine:hold_exhausted", new Error(key)); r.branchHoldLeg = null; r.mineLeg = null; r.spiral = null; }
@@ -3610,6 +3620,7 @@ function applyGaze(bot, owner, ctx, scan) {
     try { const la = r.lastAction; if (la && la.act === "PLACE" && la.ok && la.seq !== r.placesettleSeenSeq) { r.placesettleSeenSeq = la.seq; if (shouldPlacesettle({ placed: true, suppressed: ((ctx?.danger?.count ?? 0) > 0) || r.selfFalling === true || !!bot.isInWater, lastFiredMs: r.placesettleLastAt ?? null, nowMs: Date.now() })) { r.placesettleAnimAt = la.at || Date.now(); r.placesettleLastAt = r.placesettleAnimAt; r.lastPlacesettle = { at: r.placesettleAnimAt, item: la.item || null }; } } } catch {}
     if (rot && isPlacesettleActive(r.placesettleAnimAt, Date.now())) rot = { ...rot, x: applyPlacesettlePitch(rot.x, Date.now() - r.placesettleAnimAt) }; // POLISH-ANIM-PLACESETTLE-01 (cycle2248): 重畳 (表示層のみ・実機確認待ち)
     // POLISH-ANIM-YIELD-01 feeder (cycle0153): 主人との対向接近を既存観測だけで組み立てる (新規走査は側方2セル×2段のみ)。lateralOffset は実座標へ流さず記録のみ、ヨー/ピッチだけ重畳 (表示層のみ・実機確認待ち)
+    try { if (!r.combatendState) r.combatendState = createCombatEndState(); const nowC = Date.now(); const hurtNowC = !!(r.lastSelfHurtAt && r.lastSelfHurtAt !== r.combatendHurtSeen); if (hurtNowC) r.combatendHurtSeen = r.lastSelfHurtAt; let surfC = false; try { surfC = !!(r.surfacebreathState && sampleSurfacebreath(r.surfacebreathState, nowC).active); } catch {} const evC = noteCombatEnd(r.combatendState, { hostileCount: scan ? (scan.hostiles || []).length : undefined, hurtNow: hurtNowC, working: !!r.work, falling: r.selfFalling === true, inWaterSurfaced: surfC }, nowC); if (evC && evC.reason !== "not_confirmed" && evC.reason !== "still_in_combat") r.lastCombatEnd = { at: nowC, fired: !!evC.fired, reason: evC.reason }; } catch {} // POLISH-ANIM-COMBATEND-01 (cycle0224): feeder は既存走査 scan.hostiles のみ (新規走査なし、発火を戦闘判定へ逆流させない)
     try { if (!r.yieldState) r.yieldState = createYieldState(); const nowY = Date.now(); const dxY = owner.location.x - bot.location.x, dzY = owner.location.z - bot.location.z; const dHY = Math.hypot(dxY, dzY); const approachingY = Number.isFinite(r.yieldLastDist) ? dHY < r.yieldLastDist - 0.005 : false; r.yieldLastDist = dHY; let facingY = 0; try { const oy = owner.getRotation?.().y; const by = rot?.y; if (Number.isFinite(oy) && Number.isFinite(by)) facingY = Math.abs(((oy - by + 540) % 360) - 180); } catch {} let roomYL = false, roomYR = false; try { if (dHY > 0.01) { const ux = dxY / dHY, uz = dzY / dHY; const roomAt = (sx, sz) => { const fx = Math.floor(bot.location.x + sx), fy = Math.floor(bot.location.y), fz = Math.floor(bot.location.z + sz); const free = (b) => !b || (!solidOfTypeId(b.typeId) && !b.isLiquid); return free(bot.dimension.getBlock({ x: fx, y: fy, z: fz })) && free(bot.dimension.getBlock({ x: fx, y: fy + 1, z: fz })); }; roomYL = roomAt(-uz, ux); roomYR = roomAt(uz, -ux); } } catch {} const yEv = noteYield(r.yieldState, { ownerDist: dHY, facingDiffDeg: facingY, approaching: approachingY, roomLeft: roomYL, roomRight: roomYR, working: !!r.work, danger: ((ctx?.danger?.count ?? 0) > 0), falling: r.selfFalling === true, inWater: !!bot.isInWater }, nowY); if (yEv?.fired) r.lastYield = { at: nowY, side: yEv.side, reason: yEv.reason }; } catch {}
     // POLISH-ANIM-CRAFTSETTLE-01 feeder (cycle0141): lastAction の CRAFT/SMELT 成功 (seq変化) の辺でのみ発火記録 (表示層のみ・実機確認待ち)
     try { const la = r.lastAction; if (la && (la.act === "CRAFT" || la.act === "SMELT") && la.ok && la.seq !== r.craftsettleSeenSeq) { r.craftsettleSeenSeq = la.seq; if (shouldCraftsettle({ crafted: true, suppressed: ((ctx?.danger?.count ?? 0) > 0) || r.selfFalling === true || !!bot.isInWater, lastFiredMs: r.craftsettleLastAt ?? null, nowMs: Date.now() })) { r.craftsettleAnimAt = la.at || Date.now(); r.craftsettleLastAt = r.craftsettleAnimAt; r.lastCraftsettle = { at: r.craftsettleAnimAt, item: la.item || null, act: la.act }; } } } catch {}
@@ -3641,6 +3652,7 @@ function applyGaze(bot, owner, ctx, scan) {
     if (rot && r.falllandState) { try { const fl = falllandCurrent(r.falllandState, Date.now()); if (fl.active) { rot = { ...rot, x: rot.x + fl.pitchDeg }; if (fl.mode === "land") r.lastFallLand = { ...(r.lastFallLand || {}), at: Date.now(), mode: "land", landTier: fl.landTier, sink: fl.sink }; } } catch {} } // POLISH-ANIM-FALLLAND-01 (cycle0057): 重畳の最下位 (表示層のみ・実機確認待ち。sink は RP 受け口が無い間は記録のみ)
     if (rot && r.routecheckState) { try { const rc2 = sampleRoutecheck(r.routecheckState, Date.now()); if (rc2.active) rot = { ...rot, x: rot.x + rc2.gazePitchDeg }; } catch {} } // POLISH-ANIM-ROUTECHECK-01 (cycle0117): 重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot && r.yieldState) { try { const ys = sampleYield(r.yieldState, Date.now()); if (ys.active) rot = { ...rot, y: rot.y + ys.yawDeg, x: rot.x + ys.gazePitchDeg }; } catch {} } // POLISH-ANIM-YIELD-01 (cycle0153): 重畳の最下位 (表示層のみ・実機確認待ち。lateralOffset は実座標へ流さない)
+    if (rot && r.combatendState) { try { const ce = sampleCombatEnd(r.combatendState, Date.now()); if (ce.active) { rot = { ...rot, x: rot.x + ce.pitchDeg }; r.lastCombatEnd = { ...(r.lastCombatEnd || {}), armPitchDeg: ce.armPitchDeg }; } } catch {} } // POLISH-ANIM-COMBATEND-01 (cycle0224): 重畳の最下位 (表示層のみ・実機確認待ち。腕ピッチは記録のみ)
     if (rot) { try { bot.setRotation(rot); } catch {} }
   }
   if (gz.say && Math.random() < 0.4) sayAmbient(owner, bot, gz.say);
@@ -3786,7 +3798,8 @@ world.afterEvents.entityHurt.subscribe((ev) => {
     if (e.typeId === BOT_ID) {
       const wm = wmemOf(e); if (wm) wm.recordDanger(e.location, e.dimension.id, "damage", 1);
       // 防具軽減（script 方式）: 軽減分だけ体力を戻して実効ダメージを下げる
-      const rr = rt(e); const core = equipCoreOf(e, rr);
+      const rr = rt(e); try { rr.lastSelfHurtAt = Date.now(); } catch {} // POLISH-ANIM-COMBATEND-01 (cycle0224): 自分の被弾時刻 (表示層の feeder 用)
+      const core = equipCoreOf(e, rr);
       if (core && ev.damage > 0) {
         try {
           const m = core.mitigateDamage(ev.damage);

@@ -131,7 +131,7 @@ const WOODWORK_IDS = new Set([
 // cycle0922 (a05): 樹種×部品の直積 (素朴なサフィックス追加は stone_stairs を巻き込むため直積必須)
 const WOOD_SPECIES = ["oak", "spruce", "birch", "jungle", "acacia", "dark_oak", "mangrove", "cherry", "pale_oak", "bamboo"];
 const NETHER_SPECIES = ["crimson", "warped"];
-const WOOD_PARTS = ["_stairs", "_slab", "_sign", "_hanging_sign", "_wall_sign", "_wall_hanging_sign", "_button", "_pressure_plate", "_fence_gate", "_door", "_trapdoor", "_fence"];
+const WOOD_PARTS = ["_stairs", "_slab", "_sign", "_hanging_sign", "_wall_sign", "_wall_hanging_sign", "_button", "_pressure_plate", "_fence_gate", "_door", "_trapdoor", "_fence", "_shelf"]; // POLISH-SND-CLASS-SHELF-01 (cycle0224): 木製棚 *_shelf を wood へ (crimson/warped は stem 判定が先行)
 const speciesPart = (species, id) => species.some((s) => WOOD_PARTS.some((p) => id === s + p));
 
 export function materialOfTypeId(typeId) {
