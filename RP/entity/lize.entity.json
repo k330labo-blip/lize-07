@@ -1,0 +1,32 @@
+{
+  "format_version": "1.10.0",
+  "minecraft:client_entity": {
+    "description": {
+      "identifier": "companion_bot:lize",
+      "materials": {
+        "default": "entity"
+      },
+      "textures": {
+        "default": "textures/entity/lize"
+      },
+      "geometry": {
+        "default": "geometry.lize"
+      },
+      "render_controllers": [
+        "controller.render.default"
+      ],
+      "spawn_egg": {
+        "base_color": "#20242c",
+        "overlay_color": "#bfe8f5"
+      },
+      "animations": {
+        "hover": "animation.lize.hover"
+      },
+      "scripts": {
+        "animate": [
+          "hover"
+        ]
+      }
+    }
+  }
+}

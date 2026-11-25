@@ -1,0 +1,3787 @@
+// リゼ (LIZE-07) — お供・作業Bot（版数は config.js の VERSION が正）
+// 脳: brain/all.js の意思決定表を10tickごとに評価し、移動と発話を別レイヤーで実行する
+// v0.4.x: 指示ミッション・長期自律タスク（分解＋技術ツリー＋ブランチマイニング）・飛行・建築・工場設計・装備・会話調停を統合
+// 永続化: エンティティDP（持ち主/モード/拠点/好感度/累計/注文/ミッション）とワールドDP（死亡地点/回収時の所持品）
+import { world, system, ItemStack, EquipmentSlot } from "@minecraft/server";
+import * as mcServer from "@minecraft/server";
+const mcGametest = null; // v0.4.71 統合: ベータAPI (server-gametest) は使わない構成。体 (body_sim) は null で無効化され従来移動になる。有効化するには import と manifest 依存の追加が必要 (引き継ぎ資料参照)
+import { createBodyManager } from "./body_sim.js"; // v0.4.58: カスタムコマンド系の列挙型は存在しない環境で import 自体が落ちないよう名前空間経由で参照する
+import { ActionFormData, ModalFormData } from "@minecraft/server-ui";
+import { BOT_ID, REMOTE_ID, GVC_HOSTILE_SET, isContainerBlock, isValuable, isFood, isJunk, isWeaponish, RANGED_IDS, BOSS_IDS, ACT_LINE_CATEGORY, ACT_LABEL, FLY_ENABLE, DELIVER_RANGE, LT_DELIVER_FAIL_LIMIT, LT_DELIVER_TIMEOUT_MS, BUILD_NO_PROGRESS_TIMEOUT_MS, VERSION, LIZE_DEBUG, GOAP_ADOPT_S1B, BODY_SIM_ENABLE } from "./config.js";
+import { decide, decideGaze } from "./brain.js";
+import { ALL_LINES, CHAT_ALL, CHAT_LORE, LORE_DEEP_MIN_BOND, FOLLOWUPS, RULE_COUNT } from "./brain/all.js";
+import { OF_FOODS, OF_CONTAINERS } from "./brain/compat_orbital.js";
+import { createWithdrawExecutor, WITHDRAW_RANGE } from "./withdraw.js";
+import { plan as goapPlan, sourcingActions } from "./goap.js"; // Phase3 GOAP-lite (v0.4.12): 影評価のみ (記録専用、実行系は不変)
+import { buildEvaluationFromCtx } from "./goap_state.js"; // Phase3 (v0.4.14): 影評価 state builder (CRAFT/PLACE 含む計画空間、三状態)
+import { evaluateFirstStepP3, buildP3Material } from "./goap_exec.js";
+import { makeInvGoal, evalGoal, goalKey } from "./goal_pred.js"; // Phase3 NQ-02 (v0.4.17): Goal述語の正式表現 (記録専用) // Phase3 S1a (v0.4.15): Plan第一手ゲート (記録専用、実行・分岐は変えない)
+import { revalidateP4 } from "./goap_revalidate.js";
+import { buildUnifiedRecord, buildAdoptUnifiedRecord } from "./goap_unified.js";
+import { computePlanSig, needRemainOf } from "./goap_sig.js"; // Phase3 S1b P4拡張 (v0.4.22): 計画署名・残必要量 (記録専用)
+import { revalidateFull } from "./goap_revalidate_full.js"; // Phase3 S1b P4拡張 (v0.4.22): 全項目同一性再検証 (記録専用) // Phase3 S1b P5 (v0.4.21): P3∧P4 合成レコード (記録専用、複写のみ) // Phase3 S1b P4 (v0.4.20): 採用時同一性再検証 (記録専用、denyは出さない)
+import { buildRecipes, WOOD_SPECIES } from "./recipes.js"; // Phase3 (v0.4.14): レシピ単一の正を影評価へ注入
+import { chooseGoal } from "./planner.js";
+import createWorldMemory from "./world_memory.js";
+import { genSpeech } from "./gen_speech.js";
+import { parseOrder, resumeClarifyOrder, classifyClarifyUnmatched } from "./order_parser.js";
+import { isCropMature, CROP_MATURITY_MAX, isCropBlock, cropBreakGate } from "./crop_maturity.js";
+import { resolveWorkAccess, ACCESS } from "./work_access.js"; // 基礎 遮蔽除去 (v0.4.76): 作業アクセス解決の純粋核
+import { evaluateDig } from "./dig_gate.js"; // 要望バッチA (v0.4.88): 掘削の統一ゲート
+import { gazeRotation } from "./gaze_math.js"; // POLISH-ANIM-LOOK-01 (cycle0821): 視線ピッチ連動の純粋計算
+import { applyInspectPitch, isInspectActive, shouldInspect } from "./inspect_math.js"; // POLISH-ANIM-INSPECT-01 (cycle1003): 依頼品入手時の検分 (表示層のみ)
+import { applyNodPitch, isNodActive, shouldNod } from "./nod_math.js";
+import { applyFlinchPitch, isFlinchActive, decideFlinch } from "./flinch_math.js"; // POLISH-ANIM-FLINCH-01 (cycle1051): 落雷・点火TNTへの身構え (表示層のみ) // POLISH-ANIM-NOD-01 (cycle1036): 納品完了時の小さな頷き (表示層のみ)
+import { applySummonScanYaw, isSummonScanActive, shouldSummonScan } from "./summon_scan_math.js";
+import { applyLookbackYaw, isLookbackActive, shouldLookback } from "./lookback_math.js"; // POLISH-ANIM-LOOKBACK-01 (cycle1153): 先行移動中に主人を一度だけ振り返る (表示層のみ)
+import { applySkyglancePitch, isSkyglanceActive, shouldSkyglance } from "./sky_glance_math.js";
+import { applyDryoffYaw, isDryoffActive, noteDryoff as noteDryoffState } from "./dryoff_math.js"; // POLISH-ANIM-DRYOFF-01 (cycle1322): 雨上がりに水を払う (表示層のみ・実機確認待ち)
+import { noteBreathCold } from "./breath_cold_math.js"; // POLISH-FX-BREATHCOLD-01 (cycle1343): 寒冷地での白い排気 (表示層のみ・粒子ID未照合のため記録のみ・実機確認待ち)
+import { fromCraftResult } from "./actions_contract.js"; // 6-ML (cycle1322): CRAFT/SMELT 実行結果の正規化 (記録専用) // POLISH-ANIM-SKYGLANCE-01 (cycle1133): 雨の降り始めに空を見上げる (表示層のみ) // POLISH-ANIM-SUMMONSCAN-01 (cycle1110): 召喚・復元直後の見回し (表示層のみ)
+import { createSpiral, spiralStepCell, spiralDigCells, spiralStepsTotal, spiralHeading, spiralLocateK, chooseSpiralVariant } from "./spiral.js";
+import { steerDecision, collectHints, chooseHint, hintDirection } from "./survey_hint.js"; // キュー7 (cycle1443): surveyヒントで坑道を誘導する純粋核 (ヒント無し時は従来ランダムへ完全フォールバック)
+import { createHeedState, noteHeed as noteHeedState, sampleHeed } from "./heed_math.js";
+import { createThresholdState, noteThreshold as noteThresholdState, sampleThreshold } from "./threshold_math.js"; // POLISH-ANIM-THRESHOLD-01 (cycle1503): くぐり視線 (表示層のみ・実機確認待ち)
+import { createEdgepeekState, noteEdgepeek as noteEdgepeekState, sampleEdgepeek } from "./edgepeek_math.js";
+import { createIcebalanceState, noteIcebalance as noteIcebalanceState, sampleIcebalance } from "./icebalance_math.js";
+import { createStepupState, noteStepup as noteStepupState, sampleStepup } from "./stepup_math.js";
+import { notePortalsteady, portalsteadyOffsetsAt, isPortalsteadyActive } from "./portalsteady_math.js";
+import { createSurfacebreathState, stepSurfacebreath, sampleSurfacebreath, applySurfacebreathPitch } from "./surfacebreath_math.js"; // POLISH-ANIM-SURFACEBREATH-01 (cycle1703)
+import { createMoveTracker, moveTrackStep, drainMoveEvents } from "./move_state.js"; // ground-walk Stage 0-B (cycle1703): record-only wiring // POLISH-ANIM-PORTALSTEADY-01 (cycle1640): 次元移動直後の立て直し (表示層のみ・実機確認待ち) // POLISH-ANIM-STEPUP-01 (cycle1603): 1マス段差を上る瞬間の小さな前傾 (表示層のみ・実機確認待ち) // POLISH-ANIM-ICEBALANCE-01 (cycle1543): 氷上のバランス取り (表示層のみ・実機確認待ち)
+import { materialOfTypeId } from "./sfx.js"; // cycle1543: ICEBALANCE の足元カテゴリ供給 (分類の単一の正は sfx.js) // POLISH-ANIM-EDGEPEEK-01 (cycle1518): 段差手前の覗き込み視線 (表示層のみ・実機確認待ち) // POLISH-ANIM-HEED-01 (cycle1443): 主人の発言の辺で頭だけを向ける (表示層のみ・実機確認待ち) // 要望バッチB (v0.4.90): 螺旋階段の純粋幾何
+import { pickaxeItemForLevel } from "./bootstrap.js"; // cycle0942: toolNeed 消費点の等級→ツルハシ決定
+import { createResidueState, residueTick, emitResidueParticle } from "./env_residue.js"; // POLISH-FX-ENVRESIDUE-01 (cycle0942): 環境残留表現の状態機械 (パーティクルID未照合の間は記録のみ)
+import { createSfxState, sfxDigHit, sfxDigBreak, sfxStep, sfxPlace, sfxPickup, sfxSplash, sfxEat, sfxAttack, sfxLand, sfxHurt } from "./sfx.js"; // POLISH-SND-LAND-01/HURT-01 (cycle0942): 着地音・被弾音も配線 // POLISH-SND-SWIM-01 (cycle0731): 入水/出水音も配線 // POLISH-SND-PICKUP-01 (cycle0710): 回収音も配線 // 要望バッチF (v0.4.88): 素材別サウンド
+import { findSources, planFor } from "./sourcing.js";
+import { createMission, advance, missionSummary, withdrawKeyOf } from "./mission.js";
+import { selectWithdrawCandidate, candKeyForFirstStep } from "./withdraw_candidate.js"; // Phase3 candKey B1 (v0.4.26): 候補選定・射影の純粋関数
+import { scanOpportunities, noteAttempt, pruneCooldowns } from "./side_tasks.js";
+import { BLUEPRINTS, buildOrderOf, materialsSummaryOf, resolveMaterialItem } from "./blueprints.js";
+import { designFactory, GOAL_ALIASES } from "./factory_design.js";
+import { simulate } from "./factory_sim.js";
+import { layoutToBuild } from "./layout_build.js";
+import { understand } from "./understanding.js";
+import { arbitrate, adaptOrder, adaptQA, adaptTool, adaptKnowledge, adaptChat, adaptFollowup } from "./chat_arbiter.js";
+import { createConversation } from "./conversation.js";
+import { composeFallback } from "./composer.js";
+import { answerQuestion } from "./grounded_qa.js";
+import { tryTool } from "./chat_tools.js";
+import { tryMath } from "./math_tools.js";
+import { lookupAll, detectLatestTopic, pickHonestyLine } from "./knowledge/index.js";
+import { createNav, navSetGoal, navClearGoal, navTick, classifyTypeId, solidOfTypeId, cellUnknown, yawToward, isSafeTeleportDest } from "./nav.js";
+import { guardedTeleport } from "./teleport_gate.js";
+import { createFly, flySetGoal, flyClearGoal, flyTick } from "./fly.js";
+import { planLongTask, countOfGroup, legMissionTarget, legLabel, mineDepthFor } from "./longtask.js";
+import { executeCraftLeg, executeSmeltLeg, consumeFrom, addTo } from "./crafting.js";
+import { openEquipUI } from "./equip_ui.js";
+import { createEquipCore, createEquipmentApi, durabilityPcts } from "./equip_api.js";
+import { createTrace, mapGoalEvent, mapPlanEvent, mapReplanEvent, mapInterruptAct, shouldRecordAct, formatTraceSummaryLines } from "./trace.js"; // Phase4 cb_trace (v0.4.56): 判断トレースの器 (記録専用)。v0.4.57: goal/plan 配線を追加。v0.4.60: replan 配線を追加。v0.4.62: 表示 U1 (selection 6 のみ)。v0.4.65: act 配線を追加
+import { createFailAgg, recordAction, recordNote, formatFailSummaryLines, serializeFailAggShards, restoreFailAggShardsWithReport, planShardWrites, failRate } from "./fail_vocab.js"; // Phase4 failAgg (v0.4.64): 失敗集計の純粋核。記録は noteFail/commitLastAction の内側2点だけ (S2)。読み手は状態表示のみ (S3a)。v0.4.77: S3b 永続化 (cb_failagg キー分割)
+import { dropTupleForBlock } from "./block_drops.js";
+import { isUndergroundColumn } from "./underground_math.js"; // キュー0副次 (cycle1400): 地下判定の数え上げを純粋核へ (雪層は地形に数えない規則を回帰テストで固定)
+import { applyTossPitch, isTossActive, shouldToss } from "./toss_math.js"; // POLISH-ANIM-TOSS-01 (cycle1400): アイテム出現時の投げ出し表現 (表示層のみ・実機確認待ち)
+import { createMirrorState, recordEdge as recordMirrorEdge } from "./mirror_math.js"; // POLISH-ANIM-MIRROR-01 (cycle1421): 主人の身振りへのお返し動作の純粋核。当面は記録のみ (辺の検証が構造的に不可能なため、cycle1421-a20)
+import { createExpStore, addExpRecord, buildExpFromCommit, buildExpFromNoteFail, expCtxOf, serializeExpStore, restoreExpStore, expBytes } from "./exp_recorder.js"; // Phase7準備 6-ML (cycle0710): 経験記録のみ・挙動不変。6-ML5 export は配線しない // 基礎 N1 (v0.4.65): 決定的 block 源の獲得は sourcing の dropItem が正 (block_drops が逆引き)
+
+const DIMS = ["minecraft:overworld", "minecraft:nether", "minecraft:the_end"];
+const bots = new Map(); // botId -> runtime
+const ownerRt = new Map(); // playerId -> {breakAt, placeAt, spawnAt, lastDay}
+let tick = 0;
+
+const dp = (e, k, fb) => { try { const v = e.getDynamicProperty(k); return v === undefined ? fb : v; } catch (err) { noteFail(e, "dp:" + k, err); return fb; } };
+const dps = (e, k, v) => { try { e.setDynamicProperty(k, v); } catch (err) { noteFail(e, "dps:" + k, err); } };
+// 失敗の可視化（v0.4.1）: 握り潰す代わりに記録する。本人の文脈（c.x.lastFail）と状態表示に戻し、
+// 開発中は [LIZE DEBUG] ログも残す（同じ失敗は初回3回＋20回ごとだけ出してログを埋めない）。
+const failStats = { total: 0, byWhere: {} };
+function noteFail(bot, where, err) {
+  failStats.total++; failStats.byWhere[where] = (failStats.byWhere[where] || 0) + 1;
+  const msg = err && err.message ? String(err.message).slice(0, 120) : String(err || "");
+  const r = bot ? bots.get(bot.id) : null;
+  if (r) { r.failCount = (r.failCount || 0) + 1; r.lastFail = { where, msg, at: Date.now() }; (r.failLog = r.failLog || []).push(r.lastFail); if (r.failLog.length > 20) r.failLog.shift(); try { r.trace?.recordFail({ where, msg }); } catch {} try { if (r.failAgg) recordNote(r.failAgg, where, msg, Date.now()); } catch {} try { if (r.expStore) { const er = buildExpFromNoteFail(where, msg, { at: Date.now(), pack: VERSION }); if (er) addExpRecord(r.expStore, er); } } catch {} } // 6-ML: fail軸の記録 (内部キーはモジュール側で落ちる)
+  if (LIZE_DEBUG) { const n = failStats.byWhere[where]; if (n <= 3 || n % 20 === 0) console.warn(`[LIZE DEBUG] v${VERSION} ${where} failed (${n}): ${msg}`); }
+}
+// Phase2 BTS記録 (v0.4.7): BREAK/TAKE/STORE の結果を契約形で r.last* へ記録する (記録のみ、挙動不変)。
+// 失敗の集計は noteFail へ一本化し、last* は直近結果の射影に留める (a17/a20 裁定)。
+// Phase2 lastAction (v0.4.9): 既存 r.last* を正として維持し、その正規化ミラーを r.lastAction へ追加記録するだけ (挙動不変、読み手は Phase 4)。
+// Phase4 failAgg S3b (v0.4.77): 永続化の dirty 判定はスナップショット比較 (総数3件+両テーブル件数)。
+// serialize は flush 時のみ (tick 経路では行わない)。gen は成否判定が構造的に不可能なため前進させる
+// (書けていなければ復元側が世代/ハッシュ不一致で空開始に倒れる。cycle0238-a04 §4-2)。
+function failAggSnapshot(r) { try { const a = r && r.failAgg; if (!a) return ""; return [a.actionTotal | 0, a.actionFail | 0, a.noteTotal | 0, Object.keys(a.byReason || {}).length, Object.keys(a.byWhere || {}).length].join("|"); } catch { return ""; } }
+function flushFailAgg(bot, r) { try { if (!bot || !r || !r.failAgg) return; const snap = failAggSnapshot(r); if (!snap || snap === r.failAggSnap) return; const gen = (Number.isInteger(r.failAggGen) ? r.failAggGen : 0) + 1; const out = serializeFailAggShards(r.failAgg, { gen }); if (!out) return; const plan = planShardWrites(r.failAggWrites, out.writes); for (const k of plan.del) dps(bot, k, ""); for (const [k, v] of Object.entries(plan.set)) if (k !== "cb_failagg") dps(bot, k, v); if (plan.set["cb_failagg"]) dps(bot, "cb_failagg", plan.set["cb_failagg"]); r.failAggGen = gen; r.failAggWrites = out.writes; r.failAggSnap = snap; } catch {} }
+// 6-ML (cycle0710): exp 永続化。failAgg と同型 (dirty は件数+バイト数の簡易スナップショット比較、保存失敗で noteFail を呼ばない=再帰防止)
+function expSnapshot(r) { try { const st = r && r.expStore; if (!st) return ""; return [st.items.length, expBytes(st)].join("|"); } catch { return ""; } }
+function flushExp(bot, r) { try { if (!bot || !r || !r.expStore) return; const snap = expSnapshot(r); if (!snap || snap === r.expSnap) return; const gen = (Number.isInteger(r.expGen) ? r.expGen : 0) + 1; const out = serializeExpStore(r.expStore, { gen }); if (!out) return; const prev = r.expWrites || {}; for (const k of Object.keys(prev)) if (!(k in out.writes)) { try { bot.setDynamicProperty(k, ""); } catch {} } for (const [k, v] of Object.entries(out.writes)) if (k !== "cb_exp") { try { bot.setDynamicProperty(k, v); } catch {} } if (out.writes["cb_exp"]) { try { bot.setDynamicProperty("cb_exp", out.writes["cb_exp"]); } catch {} } r.expGen = gen; r.expWrites = out.writes; r.expSnap = snap; } catch {} }
+function commitLastAction(r, rec) { try { if (!r || !rec) return; r.actionSeq = (r.actionSeq || 0) + 1; r.lastAction = { act: rec.act || null, ok: !!rec.ok, reason: rec.reason || null, item: rec.item || null, at: rec.at || Date.now(), seq: r.actionSeq }; try { r.trace?.record({ k: "result", a: rec.act || null, r: rec.ok ? "ok" : "ng" }); } catch {} try { if (r.failAgg) recordAction(r.failAgg, rec, r.actionSeq); } catch {} try { if (r.expStore) { const er = buildExpFromCommit(rec, expCtxOf(r, rec, { pack: VERSION })); if (er) addExpRecord(r.expStore, er); } } catch {} } catch {} } // 6-ML: result軸の記録 (戻り値は使わない)
+function recordTake(r, via, o) { try { r.lastTake = { act: "TAKE", via, ok: !!o.ok, reason: o.reason || null, taken: o.taken || 0, partial: !!o.partial, item: o.item || null, at: Date.now() }; commitLastAction(r, r.lastTake); } catch {} }
+function noteTakeFull(bot, r, key, typeId) { const now = Date.now(); if (r.takeFullKey === key && now - (r.takeFullAt || 0) < 60000) return; r.takeFullKey = key; r.takeFullAt = now; noteFail(bot, "bts_take:inventory_full", new Error("inventory full: " + typeId)); }
+function recordStore(r, kind, res) { try { const moved = res?.moved || 0; const failed = !!res?.failed; const partial = failed && moved > 0; // Phase2 STORE語彙是正 (v0.4.11, cycle-1001 a06 裁定): ok/reason は契約 REASONS のみ。空振りは失敗でなく ok+detail.empty、部分移送は ok+detail.partial、全滅は INVENTORY_FULL+detail.side:"target"。量と完全性は detail へ分離する
+  r.lastStore = { act: "STORE", kind, ok: moved > 0 || !failed, reason: moved === 0 && failed ? "INVENTORY_FULL" : null, moved, partial, detail: { empty: moved === 0 && !failed, partial, side: moved === 0 && failed ? "target" : null }, at: Date.now() }; commitLastAction(r, r.lastStore); } catch {} }
+function recordWithdraw(bot, r, res) { try { const d = res?.detail || {}; r.lastWithdraw = { act: "WITHDRAW", ok: !!res?.ok, reason: res?.reason || null, taken: d.taken || 0, partial: !!d.partial, item: d.item || null, at: Date.now() }; commitLastAction(r, r.lastWithdraw); if (res && !res.ok && res.reason) noteFail(bot, "bts_withdraw:" + String(res.reason).toLowerCase(), new Error("withdraw failed: " + res.reason)); } catch {} }
+const wdp = (k, fb) => { try { const v = world.getDynamicProperty(k); return v === undefined ? fb : v; } catch { return fb; } };
+const wdps = (k, v) => { try { world.setDynamicProperty(k, v); } catch {} };
+const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
+const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+
+function getPlayer(id) { for (const p of world.getAllPlayers()) if (p.id === id) return p; return null; }
+const botByOwner = new Map(); // ownerId -> { bot, at }（Phase 0 負荷対策: findBotEntity のキャッシュ）
+const BOT_MISS_TTL_MS = 5000;  // 「Botなし」結果の保持時間
+function findBotEntity(ownerId, force = false) {
+  const ent = botByOwner.get(ownerId);
+  if (!force && ent) {
+    if (ent.bot) {
+      let alive = false;
+      try { alive = typeof ent.bot.isValid === "function" ? ent.bot.isValid() : !!ent.bot.isValid; } catch { alive = false; }
+      if (alive) return ent.bot;
+      botByOwner.delete(ownerId); // 死んでいる参照は捨てて実走査へ
+    } else if (Date.now() - ent.at < BOT_MISS_TTL_MS) {
+      return null;
+    }
+  }
+  for (const d of DIMS) { try { for (const e of world.getDimension(d).getEntities({ type: BOT_ID })) if (dp(e, "cb_owner", "") === ownerId) { botByOwner.set(ownerId, { bot: e, at: Date.now() }); return e; } } catch {} }
+  botByOwner.set(ownerId, { bot: null, at: Date.now() });
+  return null;
+}
+function invOf(e) { try { return e.getComponent("minecraft:inventory")?.container; } catch { return null; } }
+function hpOf(e) { try { const h = e.getComponent("minecraft:health"); return { cur: h.currentValue, max: h.effectiveMax || h.maxValue || 20 }; } catch { return { cur: 20, max: 20 }; } }
+// RR-05 (cycle1303): 実測できた HP だけを返す。再開判定は未実測 (UNKNOWN) を満タンと読まない
+function hpOfMeasured(e) { try { const h = e.getComponent("minecraft:health"); if (!h) return null; const cur = h.currentValue, max = h.effectiveMax || h.maxValue || 20; if (!Number.isFinite(cur) || !Number.isFinite(max) || max <= 0) return null; return { cur, max }; } catch { return null; } }
+const SUSPEND_RESUME_WAIT_MS = 180000; // RR-05: cannot_recover の回復待ち上限 (出口のない恒久 suspended を作らない)
+// RR-05 (cycle1303): cannot_recover で suspended な mission の再開/待ち/期限切れを集約する唯一の担い手。
+// 戻り値: null=対象外 / "resumed"=HP実測で比>=0.5 を確認し再開 / "waiting"=期限内は破棄しない / "expired"=期限超過 (終了掃除は呼び出し側の文脈別)
+function tickSuspendedResume(bot, r) {
+  const m = r && r.mission; if (!m || m.status !== "suspended" || m.suspendReason !== "cannot_recover") return null;
+  if (!m.suspendWaitSince) m.suspendWaitSince = Date.now();
+  const h = hpOfMeasured(bot);
+  if (h && (h.cur / h.max) >= 0.5) { m.blocked = null; m.recoverObs = 0; m.status = "active"; m.suspendReason = null; m.suspendWaitSince = null; persistMission(bot, r, true); return "resumed"; }
+  if (Date.now() - m.suspendWaitSince > SUSPEND_RESUME_WAIT_MS) return "expired";
+  return "waiting";
+}
+function groundY(dim, x, z, fallback, refY) {
+  // BASICS-01: 現在Y近傍の床探索 (窓は fly.js groundNear と同じ +3/-8)。最上部ブロック
+  // (天井・地表・樹冠) へは吸着しない。床候補は「立ち位置 fy が refY+1 以下で、頭上2セルに
+  // 固体が無い」ものだけを適格とし、その中で参照Yに最も近いものを選ぶ。窓内に適格な床が
+  // 無ければ fallback (現在Y維持 = UNKNOWN として高度を変えない)。溶岩面より下は床にしない。
+  const ry = (typeof refY === "number" && isFinite(refY)) ? refY : fallback;
+  if (typeof ry !== "number" || !isFinite(ry)) return fallback;
+  const bx = Math.floor(x), bz = Math.floor(z);
+  const cellAt = (y) => { try { return dim.getBlock({ x: bx, y, z: bz }) || null; } catch { return null; } };
+  const solidAt = (y) => { const b = cellAt(y); if (!b) return null; try { return solidOfTypeId(b.typeId); } catch { return null; } };
+  let best = null;
+  const top = Math.floor(ry) + 3, bot = Math.floor(ry) - 8;
+  for (let y = top; y >= bot; y--) {
+    const b = cellAt(y); if (!b) continue;
+    const id = b.typeId || "";
+    if (id === "minecraft:air") continue;
+    if (id.includes("lava")) break;
+    if (id.includes("water")) { const fy = y + 1; if (fy <= ry + 1 && (best === null || Math.abs(fy - ry) < Math.abs(best - ry))) best = fy; break; }
+    let solid = false; try { solid = solidOfTypeId(b.typeId); } catch { solid = false; }
+    if (!solid) continue;
+    const fy = y + 1;
+    if (fy > ry + 1) continue;
+    if (solidAt(y + 1) !== false || solidAt(y + 2) !== false) continue;
+    if (best === null || Math.abs(fy - ry) < Math.abs(best - ry) || (Math.abs(fy - ry) === Math.abs(best - ry) && fy < best)) best = fy;
+  }
+  return best === null ? fallback : best;
+}
+
+function rt(bot) {
+  if (!bots.has(bot.id)) bots.set(bot.id, { target: null, anchor: null, sayCd: 0, zapCd: 0, lastSay: "", lastPos: null, stuckSec: 0, scan: null, sessionStart: Date.now(), lastTopic: null, lastTopicAt: 0, moveAct: "follow", deliverFail: false, greetedDay: -1, wmem: null, perc: null, percAt: 0, percTargets: {}, work: null, goal: null, goalAt: 0, wander: null, wanderAt: 0, lastChunkKey: "",
+    // v0.3.0 統合分
+    nav: null, navDim: null, navMode: "direct", mission: undefined, missionKills: 0, deliveredFlag: false, conv: null, fallbackStreak: 0, lastCtx: null, lastChatAt: 0, lastPraiseAt: 0, lastDangerAt: 0, sideState: { cooldowns: {}, now: 0 }, sideTask: null, mTargetLoc: null, mTargetType: null, mTargetEntity: null, mTargetKind: null, mFound: false, mAtReturn: false, mScan: null, percOpps: [], buildPlan: null, hyst: null, suspendNotified: false, usedHonesty: [],
+    lastAmbientAt: 0, equipCore: null, equipRestored: false, equipChanged: null, equipChangedAt: 0, equipFromOwner: false, justHealedAt: 0, lastAmmoCount: 0, lastHealCount: 0,
+    // v0.3.9: 飛行・目標固定・ウォッチドッグ
+    fly: null, flyDim: null, flyMode: "ground", ownerPosCache: null, moveTracker: null, moveDim: null, moveState: null, moveEvents: [], surfacebreathState: null, mTargetKey: "", mTargetSince: 0, mLastHave: -1, mBanKey: "", mBanUntil: 0, watchHist: [], watchAt: 0, lastHopAt: 0,
+    // v0.4.0: 長期自律タスク
+    longtask: undefined, ltLegActive: false, mineLeg: null, mineDir: null, spiral: null,
+    // v0.4.1: 失敗記録・装備破損の監視
+    failLog: [], lastFail: null, failCount: 0, equipPrev: null, equipPollAt: 0, weaponBrokeUntil: 0, armorBrokeUntil: 0, depFailSaidAt: 0,
+    // Phase 0 負荷対策: persistMission の dirty 判定と scanBlockNear の型別キャッシュ
+    missionSig: null, mScanMap: null, logScanCursor: 0 });
+  const r = bots.get(bot.id);
+  if (!r.trace) { try { r.trace = createTrace({ load: () => dp(bot, "cb_trace", ""), save: (v) => dps(bot, "cb_trace", v) }); } catch { r.trace = null; } } // Phase4 cb_trace (v0.4.56): fail/result の記録専用。保存失敗由来の fail は器側で落とす (再帰防止)
+  if (!r.failAgg) { try { r.failAgg = createFailAgg(); const rep = restoreFailAggShardsWithReport((k) => dp(bot, k, "")); if (rep && rep.status === "ok") r.failAgg = rep.agg; try { const m = JSON.parse(dp(bot, "cb_failagg", "") || "null"); if (m && Number.isInteger(m.gen)) r.failAggGen = m.gen; } catch {} r.failAggSnap = failAggSnapshot(r); } catch { if (!r.failAgg) r.failAgg = null; } } // Phase4 failAgg: S3b 永続化 (cb_failagg キー分割)。clearPlanRecords へ登録しない
+  if (!r.expStore) { try { const rep = restoreExpStore((k) => dp(bot, k, "")); r.expStore = rep.store; try { const m = JSON.parse(dp(bot, "cb_exp", "") || "null"); if (m && Number.isInteger(m.gen)) r.expGen = m.gen; } catch {} r.expSnap = expSnapshot(r); } catch { if (!r.expStore) r.expStore = null; } } // 6-ML (cycle0710): 経験ストア復元。失敗時は null で本体に影響させない
+  if (r.mission === undefined) { // DP cb_mission から復元（再召喚・再起動をまたぐ）
+    try { const mj = dp(bot, "cb_mission", ""); r.mission = mj ? JSON.parse(mj) : null; } catch { r.mission = null; }
+    r.missionSig = missionSig(r.mission); // 復元しただけの状態では DP へ書き戻さない
+  }
+  if (r.longtask === undefined) { // DP cb_longtask から復元
+    try { const lj = dp(bot, "cb_longtask", ""); r.longtask = lj ? JSON.parse(lj) : null; } catch { r.longtask = null; }
+  }
+  return r;
+}
+function stats(bot) { try { return JSON.parse(dp(bot, "cb_stats", "{}")); } catch { return {}; } }
+function saveStats(bot, s) { dps(bot, "cb_stats", JSON.stringify(s)); }
+function say(owner, bot, text, force = false) {
+  const r = rt(bot); const now = Date.now();
+  if (!force && now - r.sayCd < 7000) return;
+  if (text === r.lastSay && now - r.sayCd < 30000) return;
+  r.sayCd = now; r.lastSay = text;
+  try { owner.sendMessage(`§b<リゼ>§r ${text}`); } catch {}
+}
+// 独り言（環境発話）の間引き: 大きなイベント以外は30分に1回まで（TANAKA指示 2026-11-24）
+function sayAmbient(owner, bot, text) {
+  const r = rt(bot); const now = Date.now();
+  if (now - (r.lastAmbientAt || 0) < 30 * 60 * 1000) return;
+  r.lastAmbientAt = now; say(owner, bot, text);
+}
+function sayFromCategoryAmbient(owner, bot, cat) {
+  const lines = ALL_LINES[cat]; if (!lines || !lines.length) return;
+  sayAmbient(owner, bot, pick(lines));
+}
+function sayFromCategory(owner, bot, cat, force = false) {
+  const lines = ALL_LINES[cat]; if (!lines || !lines.length) return;
+  say(owner, bot, pick(lines), force);
+}
+
+// ---------- 装備中核（equipment.js + equip_api.js） ----------
+// 装備の消失監視（5秒ごと）: 前回あった装備が、付け替え操作なしに消えていたら破損/喪失として本人に認識させる
+const EQUIP_SLOTS = ["Mainhand", "Head", "Chest", "Legs", "Feet"];
+function pollEquipBreakage(bot, r) {
+  const now = Date.now();
+  if (now - (r.equipPollAt || 0) < 5000) return;
+  r.equipPollAt = now;
+  let cur = null;
+  try {
+    const c = bot.getComponent("minecraft:equippable"); if (!c) return;
+    cur = {};
+    for (const s of EQUIP_SLOTS) { const it = c.getEquipment(EquipmentSlot[s]); cur[s] = it ? it.typeId : null; }
+  } catch (err) { noteFail(bot, "equipPoll", err); return; }
+  const prev = r.equipPrev;
+  r.equipPrev = cur;
+  if (!prev) return;
+  if (r.equipChangedAt && now - r.equipChangedAt < 8000) return; // 付け替え直後は判定しない
+  if (prev.Mainhand && !cur.Mainhand) { r.weaponBrokeUntil = now + 120000; noteFail(bot, "equip:weapon_lost", new Error(prev.Mainhand)); }
+  for (const s of ["Head", "Chest", "Legs", "Feet"]) if (prev[s] && !cur[s]) { r.armorBrokeUntil = now + 120000; noteFail(bot, "equip:armor_lost", new Error(prev[s])); }
+}
+function equipCoreOf(bot, r) {
+  if (r.equipCore) return r.equipCore;
+  try {
+    r.equipCore = createEquipCore(bot, {
+      invOf, hpOf, dp, dps,
+      onEquipEvent: (kind, fromOwner) => { r.equipChanged = kind; r.equipChangedAt = Date.now(); r.equipFromOwner = !!fromOwner; },
+      onHeal: () => { r.justHealedAt = Date.now(); },
+    });
+    if (!r.equipRestored) { r.equipRestored = true; try { r.equipCore.restore(); } catch {} }
+  } catch { r.equipCore = null; }
+  return r.equipCore;
+}
+const WEAPON_TIER_OF = (item) => !item ? "none" : item.includes("netherite") ? "netherite" : item.includes("diamond") ? "diamond" : item.includes("golden") ? "gold" : item.includes("iron") ? "iron" : item.includes("stone") ? "stone" : item.includes("wooden") ? "wood" : "none";
+
+// ---------- 文脈構築 ----------
+function supplySelfFalling(c, r, bot) {
+  try {
+    const vy = bot.getVelocity().y;
+    const by = bot.location.y, bdim = bot.dimension.id;
+    let inWater = false; try { inWater = !!bot.isInWater; } catch {}
+    const hardReset = r.selfFallDim !== bdim || inWater;
+    let selfFallDist;
+    if (hardReset) { r.selfFallPeakY = by; r.selfFallDim = bdim; r.selfFallActive = false; selfFallDist = 0; }
+    else if (vy < 0) {
+      if (typeof r.selfFallPeakY !== "number" || r.selfFallActive !== true) r.selfFallPeakY = (typeof r.selfFallLastY === "number" ? r.selfFallLastY : by);
+      r.selfFallActive = true; r.selfFallDim = bdim;
+      selfFallDist = Math.max(0, r.selfFallPeakY - by);
+    } else { r.selfFallPeakY = by; r.selfFallActive = false; r.selfFallDim = bdim; selfFallDist = 0; }
+    r.selfFallLastY = by;
+    c.x.selfFalling = vy < 0 && selfFallDist >= 2;
+  } catch {}
+}
+
+function buildContext(bot, owner) {
+  const r = rt(bot);
+  const dim = bot.dimension;
+  const mode = dp(bot, "cb_mode", "follow");
+  const homeRaw = dp(bot, "cb_home", "");
+  let home = null; try { home = homeRaw ? JSON.parse(homeRaw) : null; } catch {}
+  const bHp = hpOf(bot), oHp = owner ? hpOf(owner) : { cur: 0, max: 20 };
+  // 基礎 R-3 (v0.4.81, cycle0417-a03): 拠点が別次元なら距離は測れない=番兵999。
+  // distHome/home.dist の両方がこの homeDist を使う (片方だけ直すと読み手が分裂する)。
+  // home.registered は不変 (登録の有無は次元と独立)。dim 欠落の旧保存も不一致として 999。
+  const homeSameDim = !!home && home.dim === dim.id;
+  const homeDist = homeSameDim ? dist(bot.location, home) : 999;
+  const c = {
+    mode,
+    self: { hpPct: bHp.max ? bHp.cur / bHp.max : 1, distOwner: owner ? dist(bot.location, owner.location) : 999, distHome: homeDist, stuck: r.stuckSec >= 3, stuckSec: r.stuckSec },
+    owner: { present: !!owner, hpPct: owner ? (oHp.max ? oHp.cur / oHp.max : 1) : 0, hunger: 20, sneaking: false, sprinting: false, inWater: false, onFire: false, idleSec: 0, underground: false, dimensionSame: !!owner && owner.dimension.id === dim.id, dead: !owner },
+    inv: { used: 0, size: 27, full: false, nearFull: false, hasFood: false, foodCount: 0, hasValuable: false, valuableCount: 0, hasTorch: false, hasWeapon: false },
+    env: { isNight: false, isDawn: false, isDusk: false, isRaining: false, isThundering: false },
+    danger: { nearestDist: 999, count: 0, creeperDist: 999, rangedDist: 999, lavaNear: false, ownerTargeted: false },
+    drops: { count: 0, nearestDist: -1, valuableDist: -1, foodDist: -1, ownerDroppedDist: -1 },
+    home: { registered: !!home, chestFull: false, chestMissing: false, dist: homeDist },
+    flags: { warnOk: true, justDelivered: !!r.justDelivered, justDeposited: !!r.justDeposited, bond: dp(bot, "cb_bond", 30), trust: dp(bot, "cb_trust", 30) },
+    x: {},
+  };
+  // インベントリ集計
+  const cont = invOf(bot);
+  if (cont) {
+    c.inv.size = cont.size;
+    for (let i = 0; i < cont.size; i++) {
+      const it = cont.getItem(i); if (!it) continue;
+      c.inv.used++;
+      c.x.items = c.x.items || Object.create(null); c.x.items[it.typeId] = (c.x.items[it.typeId] || 0) + it.amount; // QA・ミッション観測用の所持カウント
+      if (isFood(it.typeId)) { c.inv.hasFood = true; c.inv.foodCount += it.amount; }
+      if (isValuable(it.typeId)) { c.inv.hasValuable = true; c.inv.valuableCount += it.amount; }
+      if (it.typeId === "minecraft:torch") c.inv.hasTorch = true;
+      if (it.typeId.includes("_log") || it.typeId.includes("_wood") || it.typeId.includes("_stem")) c.x.woodCount = (c.x.woodCount || 0) + it.amount;
+      if (it.typeId === "minecraft:cobblestone" || it.typeId === "minecraft:stone" || it.typeId === "minecraft:cobbled_deepslate") c.x.stoneCount = (c.x.stoneCount || 0) + it.amount;
+      if (it.typeId === "minecraft:torch") c.x.torchCount = (c.x.torchCount || 0) + it.amount;
+      if (isWeaponish(it.typeId)) c.inv.hasWeapon = true;
+    }
+    c.inv.full = c.inv.used >= c.inv.size;
+    c.inv.nearFull = c.inv.used >= c.inv.size - 3;
+  }
+  // --- 窒息/埋没・クモの巣知覚 (BASICS-02): 頭部セル(目線1.62近似 +1.6)が窒息する固体=窒息、足元/中段/頭部セルが巣=拘束 ---
+  // 意味論は出荷済み rules_emergency2 の現行解釈を正とする: suffocating/webStuck=主人、self*=リゼ自身。別名は将来統合の受け皿。
+  // 窒息しないブロックは知識として除外する: 葉(バニラ仕様)・ガラス等の透明ブロック・氷/凍った氷・トラップドア等の非フルブロック。
+  const isWebIdB02 = (id) => id === "minecraft:cobweb" || id === "minecraft:web";
+  const isSuffocationExemptB02 = (id) => !id || id === "minecraft:air" || isWebIdB02(id)
+    || id.endsWith("_leaves") || id === "minecraft:leaves" || id === "minecraft:leaves2"
+    || id.includes("glass") || id.includes("trapdoor") || id === "minecraft:ice" || id === "minecraft:frosted_ice";
+  const probeHazardB02 = (dim2, loc) => {
+    const bx = Math.floor(loc.x), bz = Math.floor(loc.z);
+    const ys = [...new Set([Math.floor(loc.y), Math.floor(loc.y + 1), Math.floor(loc.y + 1.6)])];
+    const cells = new Map();
+    for (const y of ys) cells.set(y, dim2.getBlock({ x: bx, y, z: bz }));
+    let webStuck = false;
+    for (const b of cells.values()) if (b && isWebIdB02(b.typeId)) { webStuck = true; break; }
+    let inPowderSnow = false;
+    for (const b of cells.values()) if (b && b.typeId === "minecraft:powder_snow") { inPowderSnow = true; break; }
+    const head = cells.get(Math.floor(loc.y + 1.6));
+    let suffocating = false;
+    if (head && !isSuffocationExemptB02(head.typeId)) {
+      let api = null; try { api = { isLiquid: head.isLiquid }; } catch {}
+      if (!(api && api.isLiquid)) { const cell = classifyTypeId(head.typeId, api); suffocating = !!(cell.solid && !cell.water && !cell.lava); }
+    }
+    return { suffocating, webStuck, inPowderSnow };
+  };
+  try { const hz = probeHazardB02(dim, bot.location); c.x.selfSuffocating = hz.suffocating; c.x.selfWebStuck = hz.webStuck; } catch {}
+  supplySelfFalling(c, r, bot);
+  if (!owner) return { ctx: c, scan: null };
+  try { const h = owner.getComponent("minecraft:hunger"); if (h) c.owner.hunger = h.currentValue; } catch {}
+  try { c.owner.sneaking = !!owner.isSneaking; c.owner.sprinting = !!owner.isSprinting; c.owner.inWater = !!owner.isInWater; } catch {}
+  // POLISH-ANIM-MIRROR-01 (cycle1421): 主人のスニーク開始の辺だけを記録する (記録のみ・表示はしない)。
+  // 脳ループは実効1秒周期で判定窓900msを検証できないため、辺は suppressed として消費し windowVerified:false を明記する (cycle1421-a20 の線引き。成立したとは記録しない)
+  try { const snk = !!c.owner.sneaking; if (r._mirrorPrevSneak === false && snk) { if (!r.mirrorState) r.mirrorState = createMirrorState(); const mres = recordMirrorEdge(r.mirrorState, "sneak", Date.now(), { isOwner: true, suppressed: true }); r.lastMirror = { edge: "sneak", at: Date.now(), fired: !!mres?.fired, windowVerified: false, recordOnly: true }; } r._mirrorPrevSneak = snk; } catch {}
+  const ort = ownerRt.get(owner.id) || {};
+  c.owner.idleSec = ort.lastMoveAt ? (Date.now() - ort.lastMoveAt) / 1000 : 0;
+  const tod = world.getTimeOfDay();
+  c.env.isNight = tod >= 13000 && tod <= 23000; c.env.isDawn = tod >= 23000 || tod < 1000; c.env.isDusk = tod >= 11000 && tod < 13000;
+  try { const w = dim.getWeather?.(); c.env.isRaining = w === "Rain" || w === "Thunder"; c.env.isThundering = w === "Thunder"; } catch {}
+  // 走査: 敵・ドロップ・他プレイヤー
+  const radius = mode === "work" ? 20 : mode === "stay" ? 10 : 14;
+  // v0.4.66: 見える範囲を拡大。指示・長期タスク中はドロップ品も遠くまで拾いに行く。
+  // 敵の危険判定 (danger) は従来の距離のまま (遠くの敵に反応して逃げる・止まるのを防ぐ)。
+  const busy = !!((r.mission && r.mission.status === "active") || r.longtask);
+  const ENTITY_SCAN_R = 32, itemR = busy ? 32 : radius, dangerR = Math.max(radius, 16);
+  const scan = { hostiles: [], items: [], animals: [], opportunities: [], nearestItem: null, valuableItem: null, foodItem: null, ownerItem: null, nearestHostile: null };
+  const flinchCand = []; // POLISH-ANIM-FLINCH-01 (cycle1051): 予兆エンティティ候補 (落雷/点火TNT)
+  let deathLoc = null; try { deathLoc = JSON.parse(wdp(`cb_death:${owner.id}`, "null")); } catch {}
+  let scanOk = true; // 走査が最後まで回ったか（false＝「何もいない」ではなく「分からない」）
+  try {
+    for (const e of dim.getEntities({ location: bot.location, maxDistance: ENTITY_SCAN_R })) {
+      if (e.id === bot.id) continue;
+      const d = dist(bot.location, e.location);
+      if (e.typeId === "minecraft:item") {
+        if (d > itemR) continue;
+        let stack = null; try { stack = e.getComponent("minecraft:item")?.itemStack; } catch {}
+        if (!stack) continue;
+        scan.items.push(e); c.drops.count++;
+        scan.opportunities.push({ kind: "item", typeId: stack.typeId, pos: { x: e.location.x, y: e.location.y, z: e.location.z }, amount: stack.amount, id: e.id });
+        if (c.drops.nearestDist < 0 || d < c.drops.nearestDist) { c.drops.nearestDist = d; scan.nearestItem = e; }
+        if (isValuable(stack.typeId) && (c.drops.valuableDist < 0 || d < c.drops.valuableDist)) { c.drops.valuableDist = d; scan.valuableItem = e; }
+        if (isFood(stack.typeId) && (c.drops.foodDist < 0 || d < c.drops.foodDist)) { c.drops.foodDist = d; scan.foodItem = e; }
+        if (deathLoc && deathLoc.dim === dim.id && Date.now() - deathLoc.t < 300000 && dist(e.location, deathLoc) <= 12) {
+          if (c.drops.ownerDroppedDist < 0 || d < c.drops.ownerDroppedDist) { c.drops.ownerDroppedDist = d; scan.ownerItem = e; }
+        }
+        continue;
+      }
+      if (e.typeId === "minecraft:player") { if (d > dangerR || bodies.isBody(e)) continue; if (e.id !== owner.id) { c.x.othersNear = (c.x.othersNear || 0) + 1; c.x.otherDist = Math.min(c.x.otherDist ?? 999, d); } continue; }
+      if (e.typeId === "minecraft:lightning_bolt" || e.typeId === "minecraft:tnt") { flinchCand.push({ id: e.id, typeId: e.typeId, horizDist: Math.hypot(e.location.x - bot.location.x, e.location.z - bot.location.z) }); }
+      if (e.typeId.includes("villager")) { if (d > dangerR) continue; c.x.nearVillage = true; c.x.villagerDist = Math.min(c.x.villagerDist ?? 999, d); continue; }
+      if (["minecraft:sheep", "minecraft:cow", "minecraft:pig", "minecraft:chicken"].includes(e.typeId)) { scan.animals.push(e); scan.opportunities.push({ kind: "entity", typeId: e.typeId, pos: { x: e.location.x, y: e.location.y, z: e.location.z }, id: e.id }); continue; }
+      const isHostile = GVC_HOSTILE_SET.has(e.typeId) || (() => { try { return e.getComponent("minecraft:type_family")?.hasTypeFamily("monster"); } catch { return false; } })();
+      if (isHostile) {
+        if (d > dangerR) continue; // v0.4.66: 危険判定は従来距離
+        scan.hostiles.push(e); c.danger.count++;
+        if (d < c.danger.nearestDist) { c.danger.nearestDist = d; scan.nearestHostile = e; }
+        if (e.typeId === "minecraft:creeper") c.danger.creeperDist = Math.min(c.danger.creeperDist, d);
+        if (RANGED_IDS.has(e.typeId)) c.danger.rangedDist = Math.min(c.danger.rangedDist, d);
+        const hh = hpOf(e); if (BOSS_IDS.has(e.typeId) || hh.max >= 300) { c.x.bossNear = true; c.x.bossHpPct = hh.max ? hh.cur / hh.max : 1; c.x.bossKind = e.typeId === "minecraft:warden" ? "warden" : e.typeId === "minecraft:wither" ? "wither" : e.typeId === "minecraft:ender_dragon" ? "dragon" : e.typeId === "minecraft:elder_guardian" ? "elder_guardian" : "large"; if (e.typeId.includes("gv") || e.typeId.startsWith("gun:")) c.x.gvcBoss = true; }
+      }
+    }
+  } catch (err) { scanOk = false; noteFail(bot, "entityScan", err); }
+  noteFlinch(bot, r, flinchCand); // POLISH-ANIM-FLINCH-01 (cycle1051): 出現の辺でのみ発火 (表示層のみ)
+  noteSkyglance(r, c.env.isRaining, c.danger && c.danger.count > 0); // POLISH-ANIM-SKYGLANCE-01 (cycle1133)
+  noteDryoff(r, c); // POLISH-ANIM-DRYOFF-01 (cycle1322)
+  noteLookback(r, c); // POLISH-ANIM-LOOKBACK-01 (cycle1153)
+  noteThreshold(bot, dim, r, c); // POLISH-ANIM-THRESHOLD-01 (cycle1503)
+  noteEdgepeek(bot, dim, r, c); // POLISH-ANIM-EDGEPEEK-01 (cycle1518)
+  noteIcebalanceTick(bot, dim, r, c); // POLISH-ANIM-ICEBALANCE-01 (cycle1543)
+  noteStepupTick(bot, dim, r, c); // POLISH-ANIM-STEPUP-01 (cycle1603)
+  notePortalsteadyTick(bot, dim, r, c); // POLISH-ANIM-PORTALSTEADY-01 (cycle1640)
+  noteSurfacebreathTick(bot, r, c); // POLISH-ANIM-SURFACEBREATH-01 (cycle1703)
+  // 溶岩・暗さ・地下
+  try {
+    const bl = dim.getBlock({ x: Math.floor(bot.location.x), y: Math.floor(bot.location.y) - 1, z: Math.floor(bot.location.z) });
+    c.danger.lavaNear = !!bl && bl.typeId.includes("lava");
+    const above = dim.getTopmostBlock({ x: Math.floor(owner.location.x), z: Math.floor(owner.location.z) });
+    c.owner.underground = !!above && above.location.y > owner.location.y + 3;
+  } catch {}
+  // c.x 拡張
+  c.x.dimension = dim.id === "minecraft:nether" ? "nether" : dim.id === "minecraft:the_end" ? "end" : "overworld";
+  c.x.dragonFight = c.x.dimension === "end" && !!c.x.bossNear;
+  c.x.sessionMin = (Date.now() - r.sessionStart) / 60000;
+  const st = stats(bot);
+  c.x.pickupTotal = st.pickup || 0; c.x.deliverTotal = st.deliver || 0; c.x.depositTotal = st.deposit || 0;
+  c.x.milestone = [10, 50, 100, 250, 500, 1000].includes(c.x.pickupTotal) && r.lastMilestone !== c.x.pickupTotal;
+  c.x.ownerLevel = owner.level || 0;
+  try { c.x.daysTogether = Math.max(0, world.getDay() - (dp(bot, "cb_firstday", world.getDay()))); } catch {}
+  c.x.firstToday = r.greetedDay !== world.getDay();
+  c.x.ownerBreaking = !!ort.breakAt && Date.now() - ort.breakAt < 3000;
+  c.x.ownerPlacing = !!ort.placeAt && Date.now() - ort.placeAt < 3000;
+  c.x.ownerY = owner.location.y; c.x.deepLevel = owner.location.y < 0;
+  // --- 自己ハザード知覚 (hazard ルール帯の設計前提。取れない項目は未設定のまま＝ルールは沈黙する) ---
+  try { c.x.selfInLava = !!bot.isInLava; } catch {}
+  try { c.x.selfInWater = !!bot.isInWater; } catch {}
+  try { c.x.selfOnFire = !!bot.isOnFire; } catch {}
+  try { c.x.fireResActive = !!bot.getEffect?.("fire_resistance"); } catch {}
+  try { c.x.selfPoisoned = !!bot.getEffect?.("poison"); } catch {}
+  try { c.x.selfWithered = !!bot.getEffect?.("wither"); } catch {}
+  // --- 主人ハザード知覚 (ENV-05): 浮遊は落下の予告。残り秒も渡し、終了間際の先回りを可能にする ---
+  try { const lev = owner.getEffect?.("levitation"); c.x.ownerLevitating = !!lev; if (lev) c.x.ownerLevitationSec = Math.max(0, Math.round((lev.duration ?? 0) / 20)); } catch {}
+  // --- 虚空知覚 (ENV-01): エンドで主人の足元・周囲2ブロックの柱が16ブロック下まで空なら奈落縁とみなす ---
+  try {
+    if (c.x.dimension === "end" && owner && c.owner.dimensionSame) {
+      const ox = Math.floor(owner.location.x), oy = Math.floor(owner.location.y), oz = Math.floor(owner.location.z);
+      const cols = [[ox, oz], [ox + 2, oz], [ox - 2, oz], [ox, oz + 2], [ox, oz - 2]];
+      let risk = false;
+      for (const [cx, cz] of cols) {
+        let solid = false;
+        for (let dy = 1; dy <= 16; dy++) { const b = dim.getBlock({ x: cx, y: oy - dy, z: cz }); if (b && b.typeId !== "minecraft:air") { solid = true; break; } }
+        if (!solid) { risk = true; break; }
+      }
+      c.x.voidRisk = risk;
+    }
+  } catch {}
+  c.x.hasMilk = !!c.x.items?.["minecraft:milk_bucket"];
+  c.x.hasFireResPotion = false; // ポーション種別は所持品から判別できないため安全側 (飲用ルールは発火しない)
+  try {
+    const feet = dim.getBlock({ x: Math.floor(bot.location.x), y: Math.floor(bot.location.y), z: Math.floor(bot.location.z) });
+    if (feet && feet.typeId === "minecraft:powder_snow") c.x.selfFreezing = true;
+  } catch {}
+  // --- 主人の窒息/クモの巣知覚 (BASICS-02): 必ず owner.dimension で引く(次元取り違え防止)。例外時は未設定=UNKNOWN ---
+  try { const hz = probeHazardB02(owner.dimension, owner.location); c.x.suffocating = hz.suffocating; c.x.ownerSuffocating = c.x.suffocating; c.x.webStuck = hz.webStuck; c.x.ownerWebStuck = c.x.webStuck; c.x.freezing = hz.inPowderSnow; } catch {}
+  // --- 主人のソウルサンド鈍足知覚 (BASICS-02-Rest Step A): 足元/支持セルが minecraft:soul_sand のときだけ true。ソウルソイルは鈍足を起こさないので含めない。例外時は未設定=UNKNOWN ---
+  try { const ol = owner.location; const fy = Math.floor(ol.y); const bx2 = Math.floor(ol.x), bz2 = Math.floor(ol.z); const bFeet = owner.dimension.getBlock({ x: bx2, y: fy, z: bz2 }); const bSupport = owner.dimension.getBlock({ x: bx2, y: fy - 1, z: bz2 }); c.x.soulSandSlow = !!((bFeet && bFeet.typeId === "minecraft:soul_sand") || (bSupport && bSupport.typeId === "minecraft:soul_sand")); } catch {}
+  // --- v0.2: P0/P1 知覚（監査対応） ---
+  c.x.deliverFailed = !!r.deliverFail;
+  c.x.selfPos = { x: bot.location.x, y: bot.location.y, z: bot.location.z };
+  const dimShort = dim.id === "minecraft:nether" ? "n" : dim.id === "minecraft:the_end" ? "e" : "o";
+  c.x.currentChunk = `${dimShort}:${Math.floor(bot.location.x / 16)},${Math.floor(bot.location.z / 16)}`;
+  try { c.owner.onFire = !!owner.isOnFire; } catch {}
+  try { c.x.ownerInBed = !!owner.isSleeping; } catch {}
+  try { const oc0 = invOf(owner); if (oc0) c.x.ownerInvFull = oc0.emptySlotsCount === 0; } catch {}
+  if (scan && scan.nearestHostile) { try { c.danger.ownerTargeted = dist(scan.nearestHostile.location, owner.location) < dist(scan.nearestHostile.location, bot.location); } catch {} }
+  // バイオーム正規化（getBiome の長いID → ルール語彙）
+  try {
+    const bt = dim.getBiome(bot.location); const bid = (bt?.id || bt?.name || "").toLowerCase(); r.biomeInferred = false;
+    c.x.biome = bid.includes("desert") ? "desert" : /snow|ice|frozen/.test(bid) ? "snow" : bid.includes("jungle") ? "jungle" : /ocean|sea|beach|river/.test(bid) ? "ocean" : /cave|dripstone|lush|deep_dark/.test(bid) ? "cave" : /mountain|peak|meadow|grove|slopes/.test(bid) ? "mountain" : bid.includes("swamp") ? "swamp" : bid.includes("savanna") ? "savanna" : bid.includes("taiga") ? "taiga" : bid.includes("forest") ? "forest" : bid.includes("mushroom") ? "mushroom" : "plains";
+  } catch { c.x.biome = c.owner.underground ? "cave" : "plains"; r.biomeInferred = true; }
+  // 世界記憶
+  const wm = wmemOf(bot);
+  if (wm) {
+    if (r.lastChunkKey !== c.x.currentChunk) { r.lastChunkKey = c.x.currentChunk; try { wm.recordVisit(bot.location, dim.id); } catch {} }
+    try { c.x.knownDanger = wm.dangerNear(bot.location, dim.id, 8).length > 0; c.x.familiarHere = wm.familiarityAt(bot.location, dim.id) || 0; } catch {}
+    try { const nc = wm.nearestContainer(bot.location, dim.id, { excludeFull: true }); if (nc) c.x.knownChestDist = dist(bot.location, nc); } catch {}
+  }
+  // 知覚ライト: 半径3・5高さのブロック走査（4秒に1回、結果はキャッシュ）
+  if (Date.now() - r.percAt > 4000 || !r.perc) {
+    r.percAt = Date.now(); r.percTargets = {};
+    const pcOpps = [];
+    const pc = { tree: -1, ore: -1, crop: -1, stone: -1, oreValuable: false, nearCraft: false, nearFurnace: false, nearMachine: false, nearBed: false, darkness: false, shrieker: false, failedCells: 0, totalCells: 245 };
+    const bx = Math.floor(bot.location.x), by = Math.floor(bot.location.y), bz = Math.floor(bot.location.z);
+    for (let dx = -3; dx <= 3; dx++) for (let dy = -2; dy <= 2; dy++) for (let dz = -3; dz <= 3; dz++) {
+      let b = null; try { b = dim.getBlock({ x: bx + dx, y: by + dy, z: bz + dz }); } catch {}
+      if (!b) { pc.failedCells++; continue; } const tid = b.typeId; const dd = Math.hypot(dx, dy, dz);
+      if (tid.includes("_log") || tid.includes("_wood") || tid.includes("_stem")) { if (pc.tree < 0 || dd < pc.tree) { pc.tree = dd; r.percTargets.tree = { x: b.location.x, y: b.location.y, z: b.location.z, typeId: tid }; } }
+      else if (tid.includes("_ore") || tid === "minecraft:ancient_debris") { if (VALUABLE_ORES.has(tid)) pc.oreValuable = true; if (pc.ore < 0 || dd < pc.ore) { pc.ore = dd; r.percTargets.ore = { x: b.location.x, y: b.location.y, z: b.location.z, typeId: tid }; } }
+      else if (NATURAL_STONE.has(tid)) { if (pc.stone < 0 || dd < pc.stone) { pc.stone = dd; r.percTargets.stone = { x: b.location.x, y: b.location.y, z: b.location.z, typeId: tid }; } }
+      else if (Object.prototype.hasOwnProperty.call(CROP_MATURITY_MAX, tid)) {
+        let g = null; try { g = b.permutation?.getState("growth") ?? b.permutation?.getState("age"); } catch {}
+        if (isCropMature(tid, g)) { if (pc.crop < 0 || dd < pc.crop) { pc.crop = dd; r.percTargets.crop = { x: b.location.x, y: b.location.y, z: b.location.z, typeId: tid }; } }
+      }
+      if (/flower/.test(tid) || tid === "minecraft:snow_layer" || tid === "minecraft:short_grass" || tid === "minecraft:tall_grass" || tid === "minecraft:fern" || tid === "minecraft:sugar_cane") pcOpps.push({ kind: "block", typeId: tid, pos: { x: b.location.x, y: b.location.y, z: b.location.z } }); // 基礎 N2 (v0.4.65): サトウキビも side 採取の機会に載せる (side_tasks の現行IDと対)
+      if (tid === "minecraft:crafting_table") { pc.nearCraft = true; try { if (wm?.recordWorkstation) wm.recordWorkstation(b.location, dim.id, tid); } catch {} }
+      if (/furnace|smoker/.test(tid)) { pc.nearFurnace = true; try { if (wm?.recordWorkstation) wm.recordWorkstation(b.location, dim.id, tid); } catch {} }
+      if (tid.startsWith("orbital_foundry:")) pc.nearMachine = true;
+      if (tid.includes("bed")) { pc.nearBed = true; try { if (wm?.recordBed) wm.recordBed(b.location, dim.id); } catch {} }
+      if (isContainerBlock(tid)) { try { if (wm?.recordContainer) wm.recordContainer(b.location, dim.id, { kind: tid, source: "scan", confidence: 0.9 }); } catch {} }
+      if (tid === "minecraft:sculk_shrieker") pc.shrieker = true;
+    }
+    r.perc = pc;
+    r.percFresh = true;
+    r.percOpps = pcOpps;
+  }
+  if (r.perc) {
+    c.x.nearestTreeDist = r.perc.tree; c.x.nearestOreDist = r.perc.ore; c.x.cropReadyDist = r.perc.crop; c.x.nearestStoneDist = r.perc.stone; c.x.oreValuable = !!r.perc.oreValuable;
+    c.x.nearCraft = r.perc.nearCraft; c.x.nearFurnace = r.perc.nearFurnace; c.x.nearMachine = r.perc.nearMachine; c.x.nearCrop = r.perc.crop >= 0; c.x.cropMature = r.perc.crop >= 0; c.x.shriekerNear = !!r.perc.shrieker; c.x.nearBed = !!r.perc.nearBed;
+    const dark = (c.owner.underground || c.env.isNight) && !r.perc.nearFurnace;
+    c.x.lightLevel = c.owner.underground ? 5 : c.env.isNight ? 7 : 13;
+    c.x.darkness = dark && c.x.lightLevel <= 7;
+  }
+  try { c.x.ownerFlying = !!owner.isFlying; c.x.ownerRiding = !!owner.getComponent("minecraft:riding"); } catch {}
+  c.x.fastMove = c.owner.sprinting || c.x.ownerFlying;
+  // --- 主人の落下知覚 (BASICS-02-Rest Step B): ownerRt に空中区間の最高点 fallPeakY と次元 fallDim を保持し、落下距離を供給する。次元は owner.dimension.id (生id) で持つ (c.x.dimension はリゼ自身の変換済み値で別物)。例外時は両フィールドとも未設定=UNKNOWN で状態も進めない ---
+  try {
+    const vy = owner.getVelocity().y;
+    const oy = owner.location.y, odim = owner.dimension.id;
+    // 基礎 B-F-07 (v0.4.65): 落下区間は vy<0 の連続区間だけ。区間開始時の高さ (前tickの y) を
+    // fallPeakY とし、vy>=0 になったら区間終了としてピークを現在高さへ畳む。旧規則は着地後も
+    // fallPeakY > oy の間リセットされず、歩行下山でも落下距離が累積して落下系ルールが誤発火した。
+    const hardReset = ort.fallDim !== odim || !!c.x.ownerLevitating || !!c.x.ownerFlying || !!c.owner.inWater;
+    let fallDist;
+    if (hardReset) { ort.fallPeakY = oy; ort.fallDim = odim; fallDist = 0; }
+    else if (vy < 0) {
+      if (typeof ort.fallPeakY !== "number" || ort.fallActive !== true) ort.fallPeakY = (typeof ort.fallLastY === "number" ? ort.fallLastY : oy);
+      ort.fallActive = true; ort.fallDim = odim;
+      fallDist = Math.max(0, ort.fallPeakY - oy);
+    } else { ort.fallPeakY = oy; ort.fallActive = false; ort.fallDim = odim; fallDist = 0; }
+    ort.fallLastY = oy;
+    ownerRt.set(owner.id, ort);
+    c.x.ownerFallDist = fallDist;
+    c.x.falling = vy < 0 && fallDist >= 2;
+  } catch {}
+  // 拠点チェスト状態
+  if (home && home.dim === dim.id) {
+    try { const hb = dim.getBlock(home); if (!hb || !isContainerBlock(hb.typeId)) c.home.chestMissing = true; else { const hc = hb.getComponent("minecraft:inventory")?.container; if (hc) { c.home.chestFull = hc.emptySlotsCount === 0; try { const wm2 = wmemOf(bot); if (wm2?.recordContainer) wm2.recordContainer(home, dim.id, { full: c.home.chestFull, kind: hb.typeId, source: "home_measured", confidence: 1, contents: (() => { const cc = Object.create(null); try { for (let i = 0; i < hc.size; i++) { const it = hc.getItem(i); if (it) cc[it.typeId] = (cc[it.typeId] || 0) + it.amount; } } catch {} return cc; })() }); } catch {} } } } catch { c.home.chestMissing = true; }
+  }
+  // --- v0.3.0: QA・知識・ミッション・視線向けの文脈拡張 ---
+  c.x.timeOfDay = tod;
+  try { c.x.worldDay = world.getDay(); } catch {}
+  c.x.homePos = home;
+  c.x.percTargets = r.percTargets;
+  c.x.opportunities = [...(scan ? scan.opportunities : []), ...(r.percOpps || [])];
+  const mis = r.mission;
+  c.x.order = mis && mis.status === "active" ? { active: true, kind: mis.order.kind, targetItem: mis.order.target, hostiles: mis.order.constraints.hostiles } : null;
+  if (mis && mis.status === "active") {
+    const cs = mis.steps[mis.currentStep];
+    c.x.orderProgress = cs ? { have: cs.have || 0, need: cs.need || 0 } : null;
+    c.x.targetSeen = !!r.mFound;
+    c.x.orderElapsedMin = (Date.now() - mis.startedAt) / 60000;
+  }
+  try { const vd = owner.getViewDirection(); c.x.heading = { x: vd.x, z: vd.z }; } catch { c.x.heading = null; }
+  if (r.target) { const dx = r.target.x - bot.location.x, dz = r.target.z - bot.location.z; const m = Math.hypot(dx, dz); if (m > 0.1) c.x.heading = { x: dx / m, z: dz / m }; }
+  if (c.danger.count > 0) r.lastDangerAt = Date.now();
+  c.gaze = {
+    sinceChatSec: r.lastChatAt ? (Date.now() - r.lastChatAt) / 1000 : 99999,
+    sincePraiseSec: r.lastPraiseAt ? (Date.now() - r.lastPraiseAt) / 1000 : 99999,
+    sinceDangerSec: r.lastDangerAt ? (Date.now() - r.lastDangerAt) / 1000 : 99999,
+  };
+  c.x.working = !!r.work;
+  c.x.workTargetKind = r.work ? (CROP_DROPS[r.work.typeId] ? "crop" : (r.work.typeId.includes("_log") || r.work.typeId.includes("_wood") || r.work.typeId.includes("_stem")) ? "tree" : "ore") : null;
+  c.x.workTargetDist = r.work ? dist(bot.location, r.work.loc) : 999;
+  // 装備スナップショット（rules_equipment の要求フィールド）
+  const eqCore = equipCoreOf(bot, r);
+  if (eqCore) {
+    try {
+      const snap = eqCore.snapshot();
+      c.x.hasWeapon = snap.hasWeapon; c.x.weaponItem = snap.weaponItem; c.x.weaponDamage = snap.weaponDamage;
+      c.x.weaponTier = snap.hasWeapon ? WEAPON_TIER_OF(snap.weaponItem) : "none";
+      c.x.hasGun = snap.hasGun; c.x.gunItem = snap.gunItem; c.x.ammoCount = snap.totalAmmoLeft;
+      c.x.ammoLow = snap.hasGun && snap.totalAmmoLeft >= 1 && snap.totalAmmoLeft <= 5;
+      c.x.armorPoints = snap.armorPoints;
+      c.x.hasHealItem = snap.healItems > 0; c.x.healItemCount = snap.healItems;
+      let off = null; try { off = eqCore.getEquipped("Offhand"); } catch {}
+      c.x.hasShield = !!off && off.typeId === "minecraft:shield";
+      // 在庫の増加で「受け取った」変化を検知（UI 経由の変更は onEquipEvent が先に記録する）
+      if (snap.totalAmmoLeft > (r.lastAmmoCount || 0) && snap.hasGun && Date.now() - r.equipChangedAt > 6000) { r.equipChanged = "ammo"; r.equipChangedAt = Date.now(); r.equipFromOwner = false; }
+      if (snap.healItems > (r.lastHealCount || 0) && Date.now() - r.equipChangedAt > 6000) { r.equipChanged = "heal"; r.equipChangedAt = Date.now(); r.equipFromOwner = false; }
+      r.lastAmmoCount = snap.totalAmmoLeft; r.lastHealCount = snap.healItems;
+      const dur = durabilityPcts(bot);
+      if (dur.weapon !== undefined) c.x.weaponDurabilityPct = dur.weapon;
+      if (dur.armor !== undefined) c.x.armorDurabilityPct = dur.armor;
+    } catch {}
+  }
+  c.x.equipChanged = r.equipChangedAt && Date.now() - r.equipChangedAt < 6000 ? r.equipChanged : null;
+  c.x.equipFromOwner = c.x.equipChanged ? !!r.equipFromOwner : false;
+  c.x.justHealed = !!r.justHealedAt && Date.now() - r.justHealedAt < 6000;
+  // v0.4.1: 装備の消失監視（破損検知）と、知覚の三状態（ok / unknown）・失敗の自己認識
+  pollEquipBreakage(bot, r);
+  c.x.weaponBroke = Date.now() < (r.weaponBrokeUntil || 0);
+  c.x.armorBroke = Date.now() < (r.armorBrokeUntil || 0);
+  c.x.scanOk = scanOk;
+  c.x.invOk = !!invOf(bot);
+  // Phase1 Phase A: 観測メタの並行露出（追加のみ・既存フィールドと挙動は不変）。新規の読み手は 999/-1 を直接見ず obs と併せて解釈する
+  const _percObs = !r.perc ? { state: "unavailable", at: 0, failedCells: 245, totalCells: 245 } : { state: r.percFresh ? "fresh" : "cached", at: r.percAt || 0, failedCells: r.perc.failedCells ?? 0, totalCells: r.perc.totalCells ?? 245 };
+  r.percFresh = false;
+  const _bs = r.lastBlockScan; const _blockScanObs = !_bs ? { state: "unavailable", at: 0, failedCells: 0, totalCells: 2601 } : { state: Date.now() - _bs.at < SCAN_TTL_MS + 2000 ? "fresh" : "cached", at: _bs.at, failedCells: _bs.failedCells ?? 0, totalCells: _bs.totalCells ?? 2601, typeId: _bs.typeId || null };
+  c.x.obs = { scan: scanOk ? "ok" : "unknown", inv: c.x.invOk ? "ok" : "unknown", perc: _percObs, biome: r.biomeInferred ? "inferred" : "measured", light: "synthetic", danger: scanOk ? "measured" : "unknown", blockScan: _blockScanObs };
+  c.x.lastFail = r.lastFail && Date.now() - r.lastFail.at < 60000 ? r.lastFail.where : null;
+  c.x.failCount = r.failCount || 0;
+  r.scan = scan;
+  return { ctx: c, scan };
+}
+
+// ---------- 実行部 ----------
+function transferFiltered(bot, targetCont, filterFn) {
+  const src = invOf(bot); if (!src || !targetCont) return { moved: 0, failed: false };
+  let moved = 0, failed = false;
+  for (let i = 0; i < src.size; i++) {
+    const it = src.getItem(i); if (!it) continue;
+    if (filterFn && !filterFn(it.typeId)) continue;
+    const before = it.amount;
+    const rest = targetCont.addItem(it);
+    const left = rest ? rest.amount : 0;
+    moved += before - left;
+    if (left > 0) { src.setItem(i, rest); failed = true; } else src.setItem(i, undefined);
+  }
+  return { moved, failed };
+}
+function deliverFilterFor(rule) {
+  if (!rule) return null;
+  if (rule.act === "deliver_food") return isFood;
+  if (rule.act === "deliver_valuable") return isValuable;
+  const id = rule.id || "";
+  if (/food|meal|hungry/.test(id)) return isFood;
+  if (/weapon/.test(id)) return isWeaponish;
+  if (/torch/.test(id)) return (t) => t === "minecraft:torch";
+  if (/valuable/.test(id)) return isValuable;
+  return null;
+}
+function homeOf(bot) { try { return JSON.parse(dp(bot, "cb_home", "")); } catch { return null; } }
+// BH-04 (cycle1215): stay アンカーの単一の出入り口。位置も cb_mode と同じ entity DP (cb_anchor) へ保存し、
+// runtime 再生成 (再起動・再読込・bots.delete) 後も待機位置が移転しないようにする。消去も必ずここを通す
+// (DP 化と消去同期を分離すると、消したはずのアンカーが再起動で復活する)。
+function anchorOf(bot) { try { const a = JSON.parse(dp(bot, "cb_anchor", "")); if (!a || !Number.isFinite(a.x) || !Number.isFinite(a.y) || !Number.isFinite(a.z)) return null; return { x: a.x, y: a.y, z: a.z, dim: a.dim || null }; } catch { return null; } }
+function setAnchor(bot, r, loc, dimId) { try { if (r) r.anchor = loc ? { x: loc.x, y: loc.y, z: loc.z } : null; dps(bot, "cb_anchor", loc ? JSON.stringify({ x: loc.x, y: loc.y, z: loc.z, dim: dimId || null }) : ""); } catch {} }
+function execTarget(bot, owner, rule, ctx, scan) {
+  const r = rt(bot); const act = rule ? rule.act : "follow";
+  const o = owner.location; const vd = (() => { try { return owner.getViewDirection(); } catch { return { x: 0, z: 1 }; } })();
+  const behind = (d) => ({ x: o.x - vd.x * d, y: o.y, z: o.z - vd.z * d });
+  const home = homeOf(bot);
+  switch (act) {
+    case "follow_close": case "greet": case "celebrate": case "say_only": return behind(1.8);
+    case "follow_high": return behind(4);
+    case "go_owner": case "warn_owner_low": return { ...o };
+    case "catchup": {
+      if (ctx.self.distOwner > 20 || !ctx.owner.dimensionSame) { try { teleportNearOwnerGuarded(bot, r, owner.dimension, behind(2), owner.location); } catch {} } // queue3 step2: place ゲート共通ヘルパー経由 (無検査フォールバック廃止)
+      return behind(2.5);
+    }
+    case "stay_anchor": { const anch = anchorOf(bot); if (anch && dp(bot, "cb_mode", "") === "stay" && (!anch.dim || anch.dim === bot.dimension.id)) return { x: anch.x, y: anch.y, z: anch.z }; return r.anchor || bot.location; } // BH-04: stay 中は DP の定位置を正とし、次元が違う場合は現在位置へ倒す。一時的な stay_anchor (取引・見張り等) は従来どおりメモリ側を使う
+    case "idle_hover": return bot.location;
+    case "patrol_home": {
+      const c0 = home || o; const a = (Date.now() / 4000) % (Math.PI * 2);
+      return { x: c0.x + Math.cos(a) * 5, y: c0.y, z: c0.z + Math.sin(a) * 5 };
+    }
+    case "return_home": case "go_home": case "rest_at_home": return home ? { ...home } : behind(2);
+    case "deposit": case "chest_alert": return home ? { x: home.x + 0.5, y: home.y + 1, z: home.z + 0.5 } : behind(2);
+    case "deliver_all": case "deliver_food": case "deliver_valuable": return behind(1.5);
+    case "pickup_valuable": return scan?.valuableItem?.location || scan?.nearestItem?.location || behind(3);
+    case "pickup_food": return scan?.foodItem?.location || scan?.nearestItem?.location || behind(3);
+    case "pickup_owner_drops": return scan?.ownerItem?.location || behind(3);
+    case "pickup_nearest": return scan?.nearestItem?.location || behind(3);
+    case "guard": case "zap": return scan?.nearestHostile?.location || behind(2);
+    case "flee": {
+      const h = scan?.nearestHostile?.location || o; const dx = bot.location.x - h.x, dz = bot.location.z - h.z; const m = Math.hypot(dx, dz) || 1;
+      return { x: bot.location.x + (dx / m) * 10, y: bot.location.y, z: bot.location.z + (dz / m) * 10 };
+    }
+    case "rise_avoid": return behind(2);
+    case "escape_hazard": case "surface": return { x: bot.location.x, y: bot.location.y + 3, z: bot.location.z }; // ハザード脱出/浮上は真上へ
+    case "seek_water": return behind(2); // 水場の実座標は未走査のため主人側へ寄りつつ消火を待つ
+    case "drink_fire_res": case "drink_milk": return bot.location; // 飲用中はその場に留まる
+    case "use_heal_item": return bot.location; // 回復使用中はその場に留まる
+    default: return behind(3);
+  }
+}
+function execArrive(bot, owner, rule, ctx, scan) {
+  const r = rt(bot); const act = rule?.act; if (!act) return;
+  const d = dist(bot.location, owner.location);
+  if ((act.startsWith("pickup")) && scan) {
+    const item = act === "pickup_valuable" ? (scan.valuableItem || scan.nearestItem) : act === "pickup_food" ? (scan.foodItem || scan.nearestItem) : act === "pickup_owner_drops" ? scan.ownerItem : scan.nearestItem;
+    if (item && dist(bot.location, item.location) < 1.9) {
+      const cont = invOf(bot); let stack = null; try { stack = item.getComponent("minecraft:item")?.itemStack; } catch {}
+      if (cont && stack) {
+        const rest = cont.addItem(stack);
+        if (!rest) { try { item.remove(); } catch {} const st = stats(bot); st.pickup = (st.pickup || 0) + stack.amount; saveStats(bot, st); recordTake(r, "execArrive", { ok: true, taken: stack.amount, item: stack.typeId }); noteInspectPickup(bot, r, ctx, stack.typeId); /* POLISH-SND-PICKUP-01 (cycle0710) */ try { if (!r.sfxState) r.sfxState = createSfxState(); sfxPickup(r.sfxState, bot.dimension, bot.location, Date.now()); } catch {} if (Math.random() < 0.5) say(owner, bot, genSpeech({ say: { item: nameOfItem(stack.typeId), count: stack.amount }, drops: { count: ctx.drops.count }, flags: { bond: dp(bot, "cb_bond", 30) }, x: {} }, "pickup_report"));
+        else sayFromCategory(owner, bot, isValuable(stack.typeId) ? "pickup_valuable" : "pickup_done"); }
+        else if (rest.amount < stack.amount) { try { item.remove(); bot.dimension.spawnItem(rest, item.location); } catch {} recordTake(r, "execArrive", { ok: true, taken: stack.amount - rest.amount, partial: true, item: stack.typeId }); }
+        else { recordTake(r, "execArrive", { ok: false, reason: "INVENTORY_FULL", item: stack.typeId }); noteTakeFull(bot, r, String(item.id) + ":" + stack.typeId, stack.typeId); }
+      } else { recordTake(r, "execArrive", { ok: false, reason: cont ? "ITEM_NOT_FOUND" : "TARGET_UNKNOWN", item: stack?.typeId || null }); }
+    }
+  }
+  if ((act === "guard" || act === "zap") && scan?.nearestHostile) {
+    const hd = dist(bot.location, scan.nearestHostile.location);
+    const core = equipCoreOf(bot, r);
+    let gunRange = 0; if (core) { try { const s = core.snapshot(); if (s.hasGun) gunRange = s.gunRange; } catch {} }
+    if (hd < 3.2 || (gunRange > 0 && hd <= gunRange)) zapEntity(bot, r, scan.nearestHostile);
+  }
+  if (act === "use_heal_item") { const core = equipCoreOf(bot, r); if (!core) { r.lastUseItem = { act, ok: false, reason: "EQUIP_CORE_UNAVAILABLE", item: null, at: Date.now() }; commitLastAction(r, r.lastUseItem); } else { try { const res = core.useHealItem(); r.lastUseItem = { act, ok: !!res?.ok, reason: res?.reason || null, item: res?.item || null, at: Date.now() }; commitLastAction(r, r.lastUseItem); /* POLISH-SND-EAT-01 (cycle0753) */ if (res?.ok) { try { sfxEat(bot.dimension, bot.location, res?.item || null); } catch {} } } catch (e) { r.lastUseItem = { act, ok: false, reason: "API_ERROR", item: null, at: Date.now() }; commitLastAction(r, r.lastUseItem); noteFail(bot, "use_heal_item:exception", e); } } } // Phase2 USE_ITEM 無言経路 S1/S2 (v0.4.13): 記録のみ、挙動不変
+  // Phase2 USE_ITEM 実体化 (milk先行): 幻影 act drink_milk を実体化。消費→有害効果(毒/衰弱)の対象除去→空バケツ返却→再読検証。
+  // 対象除去に留め有益効果 (耐火等) は消さない (a03 DESIGN §2.8 裁定)。結果は r.lastUseItem へ契約形で記録し破棄しない。
+  if (act === "drink_milk") {
+    const now = Date.now();
+    if (now < (r.useItemLockUntil || 0)) { /* 直前の飲用ロック中は再消費しない。Phase2 USE_ITEM S3 (v0.4.14): 無言経路をロック期間ごとに1回だけ記録化 (理由は既存契約語彙 EATING、挙動不変) */
+      if (r.useItemLockNotedFor !== r.useItemLockUntil) { r.useItemLockNotedFor = r.useItemLockUntil; r.lastUseItem = { act, ok: false, reason: "EATING", item: "minecraft:milk_bucket", readyInMs: (r.useItemLockUntil || 0) - now, at: now }; commitLastAction(r, r.lastUseItem); }
+    }
+    else if (!takeFromInv(bot, "minecraft:milk_bucket", 1)) { r.lastUseItem = { act, ok: false, reason: "ITEM_NOT_FOUND", item: "minecraft:milk_bucket", at: now }; commitLastAction(r, r.lastUseItem); }
+    else {
+      r.useItemLockUntil = now + 3000;
+      let removed = [];
+      for (const eff of ["poison", "wither"]) { try { if (bot.getEffect?.(eff)) { bot.removeEffect?.(eff); removed.push(eff); } } catch {} }
+      // Phase2 milk E1是正 (v0.4.11): 空バケツ返却は station と同型に、満杯時は addItem の残量を捨てず足元へ落とす (消失させない)
+      let bucketReturned = false, bucketDropped = false;
+      try { const bc = invOf(bot); let rest = 1; if (bc) rest = addTo(bc, "minecraft:bucket", 1); bucketReturned = rest === 0; if (rest > 0) { try { bot.dimension.spawnItem(new ItemStack("minecraft:bucket", rest), bot.location); bucketDropped = true; } catch {} } } catch {}
+      if (!bucketReturned && !bucketDropped) noteFail(bot, "drink_milk:bucket_lost", new Error("empty bucket return failed"));
+      let still = false; try { still = !!(bot.getEffect?.("poison") || bot.getEffect?.("wither")); } catch {}
+      r.lastUseItem = { act, ok: !still, reason: still ? "VERIFY_FAILED" : null, item: "minecraft:milk_bucket", cleared: removed, bucketReturned, bucketDropped, at: now }; commitLastAction(r, r.lastUseItem);
+      if (still) noteFail(bot, "drink_milk:verify", new Error("effects remain after milk"));
+    }
+  }
+  // drink_fire_res: ポーション種別は typeId から識別不能のため消費しない (契約 POTION_KIND_UNKNOWN)。幻影の成功扱いはしない。
+  if (act === "drink_fire_res") { r.lastUseItem = { act, ok: false, reason: "POTION_KIND_UNKNOWN", item: "minecraft:potion", at: Date.now() }; commitLastAction(r, r.lastUseItem); }
+  if (act.startsWith("deliver") && d < DELIVER_RANGE) {
+    const oc = invOf(owner); if (!oc) return;
+    const res = transferFiltered(bot, oc, deliverFilterFor(rule));
+    if (res.moved > 0) { const st = stats(bot); st.deliver = (st.deliver || 0) + res.moved; saveStats(bot, st); r.justDelivered = true; r.deliveredFlag = true; system.runTimeout(() => { r.justDelivered = false; }, 100); dps(bot, "cb_bond", Math.min(100, dp(bot, "cb_bond", 30) + 1)); noteNod(r, res.moved); if (rule.act === "deliver_food") sayFromCategory(owner, bot, "deliver_food"); }
+    r.deliverFail = res.failed; recordStore(r, "deliver", res);
+  }
+  if (act === "deposit" || act === "chest_alert") {
+    const home = homeOf(bot); if (!home || home.dim !== bot.dimension.id) return;
+    if (dist(bot.location, { x: home.x + 0.5, y: home.y + 1, z: home.z + 0.5 }) > DELIVER_RANGE) return;
+    let block = null; try { block = bot.dimension.getBlock(home); } catch {}
+    const cc = block ? (() => { try { return block.getComponent("minecraft:inventory")?.container; } catch { return null; } })() : null;
+    if (cc) {
+      const res = transferFiltered(bot, cc, null);
+      if (res.moved > 0) { const st = stats(bot); st.deposit = (st.deposit || 0) + res.moved; saveStats(bot, st); r.justDeposited = true; r.deliveredFlag = true; system.runTimeout(() => { r.justDeposited = false; }, 100); if (Math.random() < 0.5) say(owner, bot, genSpeech({ say: { item: "荷物", count: res.moved }, drops: { count: 0 }, flags: { bond: dp(bot, "cb_bond", 30) }, x: {} }, "deposit_report"));
+      else sayFromCategory(owner, bot, "deposit_done"); }
+      recordStore(r, "deposit", res);
+      if (res.failed) sayFromCategory(owner, bot, "chest_full");
+    } else {
+      // 拠点にコンテナが無い/読めない: 無言で成功扱いにせず、失敗として本人に認識させる
+      noteFail(bot, "deposit:no_container", new Error("home container not found"));
+      r.deliverFail = true;
+      if (Date.now() - (r.depFailSaidAt || 0) > 60000) { r.depFailSaidAt = Date.now(); say(owner, bot, "拠点のチェストが見つかりません。入庫できませんでした", true); }
+    }
+  }
+  if (act === "rest_at_home") { const home = homeOf(bot); if (home && home.dim === bot.dimension.id && dist(bot.location, { x: home.x + 0.5, y: home.y + 1, z: home.z + 0.5 }) < 3) { try { const h = bot.getComponent("minecraft:health"); if (h && h.currentValue < h.effectiveMax) h.setCurrentValue(Math.min(h.effectiveMax, h.currentValue + 2)); } catch {} } }
+  if (ctx.x?.milestone) { r.lastMilestone = ctx.x.pickupTotal; say(owner, bot, `回収、累計${ctx.x.pickupTotal}個に到達しました。……記録、更新しておきました`, false); }
+}
+
+// ---------- 世界記憶 / 自律層 (v0.2) ----------
+function wmemOf(bot) {
+  const r = rt(bot);
+  if (r.wmem !== null) return r.wmem;
+  const oid = dp(bot, "cb_owner", ""); if (!oid) return null;
+  try { r.wmem = createWorldMemory({ load: () => wdp(`cb_wmem:${oid}`, null), save: (s) => wdps(`cb_wmem:${oid}`, s) }); } catch { r.wmem = null; }
+  return r.wmem;
+}
+const ITEM_JP = { diamond: "ダイヤモンド", emerald: "エメラルド", iron_ingot: "鉄インゴット", gold_ingot: "金インゴット", coal: "石炭", redstone: "レッドストーン", lapis_lazuli: "ラピスラズリ", quartz: "ネザークォーツ", raw_iron: "鉄の原石", raw_gold: "金の原石", raw_copper: "銅の原石", copper_ingot: "銅インゴット", netherite_ingot: "ネザライトインゴット", totem_of_undying: "不死のトーテム", elytra: "エリトラ", enchanted_book: "エンチャント本", wheat: "小麦", carrot: "ニンジン", potato: "ジャガイモ", beetroot: "ビートルート", apple: "リンゴ", bread: "パン", torch: "松明", oak_log: "オークの原木", spruce_log: "トウヒの原木", birch_log: "シラカバの原木", jungle_log: "ジャングルの原木", acacia_log: "アカシアの原木", dark_oak_log: "ダークオークの原木", cobblestone: "丸石", stone: "石", ancient_debris: "古代の残骸" };
+const nameOfItem = (typeId) => ITEM_JP[typeId.split(":").pop()] || typeId.split(":").pop().replace(/_/g, " ");
+function takeFromInv(bot, typeId, n) {
+  const cont = invOf(bot); if (!cont) return false;
+  for (let i = 0; i < cont.size; i++) { const it = cont.getItem(i); if (it && it.typeId === typeId && it.amount >= n) { cont.setItem(i, it.amount === n ? undefined : new ItemStack(typeId, it.amount - n)); return true; } }
+  return false;
+}
+const ORE_DROPS = [[/diamond_ore$/, "minecraft:diamond", 1], [/emerald_ore$/, "minecraft:emerald", 1], [/coal_ore$/, "minecraft:coal", 1], [/iron_ore$/, "minecraft:raw_iron", 1], [/nether_gold_ore$/, "minecraft:gold_nugget", 3], [/gold_ore$/, "minecraft:raw_gold", 1], [/copper_ore$/, "minecraft:raw_copper", 2], [/lapis_ore$/, "minecraft:lapis_lazuli", 4], [/redstone_ore$/, "minecraft:redstone", 4], [/quartz_ore$/, "minecraft:quartz", 1], [/ancient_debris/, "minecraft:ancient_debris", 1], [/^minecraft:stone$/, "minecraft:cobblestone", 1], [/^minecraft:deepslate$/, "minecraft:cobbled_deepslate", 1]];
+const CROP_DROPS = { "minecraft:wheat": ["minecraft:wheat", 1], "minecraft:carrots": ["minecraft:carrot", 2], "minecraft:potatoes": ["minecraft:potato", 2], "minecraft:beetroot": ["minecraft:beetroot", 1] };
+// Phase 6 (v0.4.78): 自律Goal gather_stone の知覚分類。部分一致でなく完全一致集合（stone_bricks 等の人工ブロック誤掘防止、cycle0312-a02）
+const NATURAL_STONE = new Set(["minecraft:stone", "minecraft:deepslate", "minecraft:andesite", "minecraft:diorite", "minecraft:granite", "minecraft:tuff", "minecraft:calcite", "minecraft:cobblestone", "minecraft:mossy_cobblestone", "minecraft:netherrack", "minecraft:basalt", "minecraft:smooth_basalt", "minecraft:blackstone", "minecraft:end_stone"]);
+const VALUABLE_ORES = new Set(["minecraft:diamond_ore", "minecraft:deepslate_diamond_ore", "minecraft:emerald_ore", "minecraft:deepslate_emerald_ore", "minecraft:ancient_debris"]);
+const GATHER_TARGETS = { gather_wood: "tree", mine_ore: "ore", farm_crops: "crop", gather_stone: "stone" }; // 自律Goal→知覚スロットの汎用表（tickAutonomy）
+const ARTIFICIAL_HINTS = ["planks", "door", "glass", "chest", "bed", "furnace", "crafting_table", "bookshelf", "lantern", "sign", "ladder", "fence", "stairs", "slab", "wool", "carpet", "concrete", "terracotta", "brick", "anvil", "enchanting", "brewing", "shulker", "barrel", "tnt", "beacon", "hopper", "orbital_foundry:"]; // v0.4.76 a22 V6: barrel/tnt/beacon/hopper の欠落を是正 (データ追加)
+function structureGuard(dim, loc) {
+  for (const [dx, dy, dz] of [[1,0,0],[-1,0,0],[0,0,1],[0,0,-1],[0,1,0],[0,-1,0]]) {
+    try { const b = dim.getBlock({ x: loc.x + dx, y: loc.y + dy, z: loc.z + dz }); if (b && ARTIFICIAL_HINTS.some((h) => b.typeId.includes(h))) return true; } catch {}
+  }
+  return false;
+}
+// 作業対象の硬さ (startWork の hardOf を単一の正として切り出し v0.4.88。tickWork の dig_first 差し替えと共用)
+function workHardOf(id) { return CROP_DROPS[id] ? 1 : /_leaves$/.test(id) ? 1 : id.includes("_log") || id.includes("_stem") ? 3 : /deepslate|diamond|emerald/.test(id) ? 6 : 4; }
+
+function startWork(bot, r, target, opts = {}) {
+  if (!target) return false;
+  // v0.4.59 (外部レビュー指摘1): 原木/幹は、同じ幹の一番下を対象にする。上の原木を狙うと
+  // 葉の上でホバーして掘る距離 (3D 2.9) に届かず詰む。進捗保持の同一判定より前に寄せる。
+  if (target.typeId && (target.typeId.includes("_log") || target.typeId.includes("_stem"))) {
+    try {
+      let y = target.y;
+      while (y > target.y - 32) { const b = bot.dimension.getBlock({ x: target.x, y: y - 1, z: target.z }); if (!b || b.typeId !== target.typeId) break; y--; }
+      if (y !== target.y) target = { ...target, y };
+    } catch {}
+  }
+  // 同じ対象なら進捗を保持する。脳tickごとに作り直すと left がリセットされ永遠に割り切れない（実害バグ）
+  if (r.work && r.work.typeId === target.typeId && r.work.loc.x === target.x && r.work.loc.y === target.y && r.work.loc.z === target.z) return true;
+  // v0.4.76 遮蔽除去: 先掘り中は主対象 (main) が一致すれば先掘り対象の進捗を保持する
+  if (r.work && r.work.main && r.work.main.typeId === target.typeId && r.work.main.loc.x === target.x && r.work.main.loc.y === target.y && r.work.main.loc.z === target.z) return true;
+  if (structureGuard(bot.dimension, target)) return false; // 人工物の近くでは壊さない
+  const hardOf = workHardOf; // v0.4.88: 単一の正は workHardOf (tickWork の dig_first 差し替えと共用)
+  const hard = hardOf(target.typeId);
+  // v0.4.76 遮蔽除去 (一般規則、basics-leaves-work DESIGN §3): 作業現場の近くでのみ、立ち位置の目→対象の区間と
+  // 立ち位置の有無を評価し、遮っている/立ち位置を塞いでいる「壊してよい自然ブロック」を先に掘る。
+  // 人工物・岩盤・溶岩近接・道具不足は canBreakForPath の既存安全判定に委ね、先掘りできない場合は従来動作へ戻る。
+  let accessStand = null; // crown統合 (v0.4.87): resolveWorkAccess が検証した立ち位置。tickWork が優先する
+  try {
+    const p = bot.location;
+    if (!opts.skipAccess && p && Math.hypot(target.x + 0.5 - p.x, target.y + 0.5 - (p.y + 1.6), target.z + 0.5 - p.z) <= 12) {
+      const dim = bot.dimension;
+      const blockAt = (x, y, z) => { try { const b = dim.getBlock({ x, y, z }); if (!b) return null; return { typeId: b.typeId, solid: solidOfTypeId(b.typeId), liquid: !!b.isLiquid }; } catch { return null; } };
+      const canBreak = (cell, block) => { try { if (isCropBlock(block.typeId)) { const bb = dim.getBlock(cell); let g = null; try { g = bb?.permutation?.getState("growth") ?? bb?.permutation?.getState("age"); } catch {} if (!isCropMature(block.typeId, g)) return false; } return canBreakForPath(bot, cell, { typeId: block.typeId, isLiquid: !!block.liquid }); } catch { return false; } }; // cycle1543 収穫A-F1 第2段: 未成熟作物を先掘り候補から除外
+      const key = `${target.typeId}@${target.x},${target.y},${target.z}`;
+      const chain = (r.workChain && r.workChain.key === key) ? (r.workChain.n || 0) : 0;
+      const feetCell = { x: Math.floor(p.x), y: Math.floor(p.y), z: Math.floor(p.z) };
+      const res = resolveWorkAccess(blockAt, canBreak, { x: p.x, y: p.y + 1.6, z: p.z }, target, { chain, feetCell });
+      if (res && res.stand) accessStand = { x: res.stand.x, y: res.stand.y, z: res.stand.z };
+      if (res && res.kind === "dig_first" && res.cell && res.block) {
+        r.workChain = { key, n: chain + 1 };
+        r.work = { loc: { x: res.cell.x, y: res.cell.y, z: res.cell.z }, typeId: res.block.typeId, left: hardOf(res.block.typeId), main: { loc: { x: target.x, y: target.y, z: target.z }, typeId: target.typeId }, via: res.via || null, stand: accessStand, gateVia: opts.skipAccess ? "tunnel" : "work" };
+        return true;
+      }
+      if (res && res.kind === "work") r.workChain = { key, n: 0 };
+    }
+  } catch {}
+  r.work = { loc: { x: target.x, y: target.y, z: target.z }, typeId: target.typeId, left: hard, stand: accessStand, gateVia: opts.skipAccess ? "tunnel" : "work" };
+  return true;
+}
+// v0.4.56 (外部レビュー指摘3): 掘削の道具等級。バニラの必要等級に合わせ、足りない道具では掘らず理由つきで止まる
+// (bootstrap の「道具を自作する」計画と実行部を一致させる)。等級: 木/金=1 石=2 鉄=3 ダイヤ/ネザライト=4。
+function requiredPickLevel(typeId) {
+  if (/ancient_debris|obsidian/.test(typeId)) return 4;
+  if (/diamond_ore|emerald_ore|redstone_ore|gold_ore/.test(typeId)) return 3;
+  if (/iron_ore|lapis_ore/.test(typeId)) return 2;
+  if (/stone|cobblestone|coal_ore|copper_ore|andesite|diorite|granite|tuff|deepslate|netherrack/.test(typeId)) return 1;
+  return 0;
+}
+function bestPickLevel(bot) {
+  const inv = countInv(bot); let best = 0;
+  for (const id of Object.keys(inv || {})) {
+    if (!id.endsWith("_pickaxe")) continue;
+    const lv = id.includes("netherite") || id.includes("diamond") ? 4 : id.includes("iron") ? 3 : id.includes("stone") ? 2 : 1;
+    if (lv > best) best = lv;
+  }
+  return best;
+}
+// v0.4.65: 掘る対象ブロックの横（同じ高さ→1段下→2段下）で、体と頭が入る空きマスを立ち位置にする。
+// 以前は対象ブロックの中心（固体の中）を移動目標にしていたため、飛行が対象自身を障害物と見て上昇・周回していた。
+const WORK_REACH = 4.0; // 目の高さからブロック中心まで（プレイヤーの手の届く範囲より少し短め）
+// 要望バッチA (v0.4.88): dig_gate へ渡す blockAt の単一実装。solid は正式版に無い固体プロパティを読まず solidOfTypeId で導出 (キュー1の教訓)
+function digBlockAt(bot) {
+  const dim = bot.dimension;
+  return (x, y, z) => { try { const b = dim.getBlock({ x, y, z }); if (!b) return null; return { typeId: b.typeId, solid: solidOfTypeId(b.typeId), liquid: !!b.isLiquid }; } catch { return null; } };
+}
+// 要望バッチA (v0.4.88): tickWork の掘削瞬間に見つけた遮蔽セルへ作業を差し替える (startWork の dig_first と同型)
+function swapWorkToOccluder(bot, r, w, gate) {
+  const cell = gate.cell, block = gate.block;
+  if (!cell || !block) return false;
+  // cycle1543 収穫A-F1 第2段: 未成熟作物は遮蔽として先掘りしない (掘ってよい遮蔽ではない)
+  if (isCropBlock(block.typeId)) {
+    try { const bb = bot.dimension.getBlock(cell); let g = null; try { g = bb?.permutation?.getState("growth") ?? bb?.permutation?.getState("age"); } catch {} if (!isCropMature(block.typeId, g)) return false; } catch { return false; }
+  }
+  try { if (!canBreakForPath(bot, cell, { typeId: block.typeId, isLiquid: !!block.liquid })) return false; } catch { return false; }
+  const main = w.main || { loc: { x: w.loc.x, y: w.loc.y, z: w.loc.z }, typeId: w.typeId };
+  const key = `${main.typeId}@${main.loc.x},${main.loc.y},${main.loc.z}`;
+  const chain = (r.workChain && r.workChain.key === key) ? (r.workChain.n || 0) : 0;
+  if (chain >= ACCESS.MAX_CHAIN) return false;
+  r.workChain = { key, n: chain + 1 };
+  r.work = { loc: { x: cell.x, y: cell.y, z: cell.z }, typeId: block.typeId, left: workHardOf(block.typeId), main, via: gate.why || "occluded", stand: w.stand || null, gateVia: w.gateVia || "work" };
+  return true;
+}
+function workStandPoint(bot, loc) {
+  const dim = bot.dimension, p = bot.location;
+  const free = (x, y, z) => { try { const b = dim.getBlock({ x, y, z }); if (!b) return false; return !solidOfTypeId(b.typeId) && !b.isLiquid; } catch { return false; } };
+  for (const dy of ACCESS.STAND_DY) { // 探索順は work_access の ACCESS が単一の正 (crown統合 v0.4.87)。幹の上のほうは、樹冠の下（地面側）から手を伸ばす
+    let best = null;
+    for (const [dx, dz] of ACCESS.DIRS) {
+      const x = loc.x + dx, y = loc.y + dy, z = loc.z + dz;
+      if (!free(x, y, z) || !free(x, y + 1, z)) continue;
+      const d = Math.hypot(x + 0.5 - p.x, z + 0.5 - p.z);
+      if (!best || d < best.d) best = { x: x + 0.5, y, z: z + 0.5, d };
+    }
+    if (best) return { x: best.x, y: best.y, z: best.z };
+  }
+  return null;
+}
+function tickWork(bot, owner, r, ctx) {
+  if (!r.work) return false;
+  const w = r.work;
+  w.touchedAt = Date.now(); // v0.4.68: 最後に実際に掘った時刻 (途中で止まった古い作業を見分ける)
+  if (ctx.danger.nearestDist < 4 || ctx.x?.bossNear) { r.work = null; return false; }
+  let b = null; try { b = bot.dimension.getBlock(w.loc); } catch {}
+  if (!b || b.typeId !== w.typeId) { r.work = null; return false; }
+  // cycle1543 収穫A-F1: 作物の成熟は BREAK の前提条件 (単一の正は crop_maturity.js)。
+  // 選定経路ごとに足すと漏れるため、全経路の合流点である掘進直前で fail-closed に塞ぐ。
+  // 未成熟なら掘らず、固定対象がその株なら固定も外して探索へ戻す (45秒固着の増幅を断つ)。
+  if (isCropBlock(w.typeId)) {
+    let g = null; try { g = b.permutation?.getState("growth") ?? b.permutation?.getState("age"); } catch {}
+    const cg = cropBreakGate(w.typeId, g);
+    if (cg && !cg.ok) {
+      r.lastBreak = { act: "BREAK", ok: false, reason: cg.reason, item: w.typeId, at: Date.now() }; commitLastAction(r, r.lastBreak);
+      if (r.mTargetLoc && r.mTargetLoc.x === w.loc.x && r.mTargetLoc.y === w.loc.y && r.mTargetLoc.z === w.loc.z) r.mTargetLoc = null;
+      r.work = null; return false;
+    }
+  }
+  const reqLv = requiredPickLevel(w.typeId);
+  if (reqLv > 0 && bestPickLevel(bot) < reqLv) {
+    r.lastBreak = { act: "BREAK", ok: false, reason: "TOOL_INSUFFICIENT", item: w.typeId, at: Date.now() }; commitLastAction(r, r.lastBreak);
+    r.toolNeed = { reqLv, item: w.typeId, at: Date.now() }; // cycle0922 (a02): 道具準備 leg への汎用シグナル (消費点は計画層)
+    if (!r.toolWarnAt || Date.now() - r.toolWarnAt > 60000) { r.toolWarnAt = Date.now(); try { say(owner, bot, `${nameOfItem(w.typeId)}を掘るには、もっと良いツルハシが必要です`, true); } catch {} }
+    r.work = null; return false;
+  }
+  const blockPt = { x: w.loc.x + 0.5, y: w.loc.y, z: w.loc.z + 0.5 };
+  // crown統合 (v0.4.87): startWork が検証した立ち位置 (crown 判定済み) があれば優先する。
+  // 記録が古くなって塞がれていた場合は従来の再計算へ落とす (体・頭セルの再検証のみ)。
+  let verifiedStand = null;
+  if (w.stand && Number.isFinite(w.stand.x) && Number.isFinite(w.stand.y) && Number.isFinite(w.stand.z)) {
+    try {
+      const dim2 = bot.dimension;
+      const cellFree = (x, y, z) => { const b = dim2.getBlock({ x, y, z }); return !!b && !solidOfTypeId(b.typeId) && !b.isLiquid; };
+      if (cellFree(w.stand.x, w.stand.y, w.stand.z) && cellFree(w.stand.x, w.stand.y + 1, w.stand.z)) verifiedStand = { x: w.stand.x + 0.5, y: w.stand.y, z: w.stand.z + 0.5 };
+    } catch {}
+  }
+  r.target = verifiedStand || workStandPoint(bot, w.loc) || blockPt; // v0.4.65: 移動目標は横の空きマス（無ければ従来どおりブロック位置）
+  // v0.4.65: 届く距離はプレイヤーと同じく「目の高さ→ブロック中心」で測る（足元基準だと幹の上や樹冠の下で届かない）
+  const eye = { x: bot.location.x, y: bot.location.y + 1.6, z: bot.location.z };
+  // 要望バッチA (v0.4.88): 掘削ゲート。距離だけでなく「目から最初にぶつかる固体か」「開いた空間に面しているか」を掘削の瞬間に検査する。w.left は dig のときだけ進める
+  let gate = null;
+  try { gate = evaluateDig(digBlockAt(bot), eye, w.loc, { reach: WORK_REACH, feetCell: { x: Math.floor(bot.location.x), y: Math.floor(bot.location.y), z: Math.floor(bot.location.z) }, via: w.gateVia || "work" }); } catch { gate = { action: "hold", why: "gate_error" }; } // 要望バッチA GAP-1 (cycle0821): ゲート例外時は fail-closed (距離のみで掘らない)
+  if (!gate) { r.lastDigHold = { why: "gate_error", loc: { ...w.loc }, at: Date.now() }; return true; }
+  else if (gate.action === "hold") {
+    // cycle0922 キュー0残件: 1マス縦穴では横の立ち位置が無く、via=work の self_support が永久 hold になり
+    // 出口のない停止になる (石層停止の残形、a01 実測で work/tunnel 不整合として確定)。
+    // 開けた場所では支持保護 (M1) を維持し、立ち位置が無い場合に限り潜行とみなして tunnel 判定で再評価する。
+    let retried = false;
+    if (gate.why === "self_support" && (w.gateVia || "work") === "work") {
+      let stand = null; try { stand = workStandPoint(bot, w.loc); } catch {}
+      if (!stand) {
+        try { const g2 = evaluateDig(digBlockAt(bot), eye, w.loc, { reach: WORK_REACH, feetCell: { x: Math.floor(bot.location.x), y: Math.floor(bot.location.y), z: Math.floor(bot.location.z) }, via: "tunnel" }); if (g2 && g2.action !== "hold") { gate = g2; retried = true; r.lastDigRetry = { why: "self_support_shaft", at: Date.now() }; } } catch {}
+      }
+    }
+    if (!retried) { r.lastDigHold = { why: gate.why, loc: { ...w.loc }, at: Date.now() }; return true; }
+    if (gate.action === "dig_first") { if (!swapWorkToOccluder(bot, r, w, gate)) r.lastDigHold = { why: "dig_first_unbreakable", loc: { ...w.loc }, at: Date.now() }; return true; }
+  }
+  else if (gate.action === "dig_first") { if (!swapWorkToOccluder(bot, r, w, gate)) r.lastDigHold = { why: "dig_first_unbreakable", loc: { ...w.loc }, at: Date.now() }; return true; }
+  w.left--;
+  try { if (!r.sfxState) r.sfxState = createSfxState(); sfxDigHit(r.sfxState, bot.dimension, { x: w.loc.x + 0.5, y: w.loc.y + 0.5, z: w.loc.z + 0.5 }, w.typeId, Date.now()); } catch {} // 要望バッチF: 素材別の掘削音 (hit.*)
+  if (w.left > 0) return true;
+  try { b.setType("minecraft:air"); } catch (err) { r.lastBreak = { act: "BREAK", ok: false, reason: "SET_FAILED", item: w.typeId, at: Date.now() }; commitLastAction(r, r.lastBreak); noteFail(bot, "bts_break:set_failed", err); r.work = null; return false; } // RSN-04: 例外を成功形にしない (v0.4.7)
+  try { sfxDigBreak(bot.dimension, { x: w.loc.x + 0.5, y: w.loc.y + 0.5, z: w.loc.z + 0.5 }, w.typeId); } catch {} // 要望バッチF: 素材別の破壊音
+  let gain = CROP_DROPS[w.typeId] || null;
+  if (!gain) for (const [re, item, n] of ORE_DROPS) if (re.test(w.typeId)) { gain = [item, n]; break; }
+  if (!gain) { try { gain = dropTupleForBlock(w.typeId); } catch { gain = null; } } // 基礎 N1 (v0.4.65): CROP/ORE で決まらない決定的源は sourcing の dropItem/yield 下限が正 (メロン→スライス等)。確率源は block_drops が null を返す
+  if (!gain && (w.typeId.includes("_log") || w.typeId.includes("_wood") || w.typeId.includes("_stem") || /granite$|diorite$|andesite$|tuff$|calcite$/.test(w.typeId))) gain = [w.typeId, 1];
+  // v0.4.56 (外部レビュー指摘3): ドロップ表に無いブロックを壊して消滅させない。原則はブロック自身を落とす
+  // (土・砂・砂利・ネザーラック等)。草ブロックはバニラどおり土、葉は素手では落とさない、岩盤は対象外。
+  if (!gain && w.typeId === "minecraft:grass_block") gain = ["minecraft:dirt", 1];
+  if (!gain && !/_leaves$/.test(w.typeId) && w.typeId !== "minecraft:bedrock") gain = [w.typeId, 1];
+  if (gain) {
+    const cont = invOf(bot); let rest = null;
+    try { rest = cont ? cont.addItem(new ItemStack(gain[0], gain[1])) : new ItemStack(gain[0], gain[1]); } catch {}
+    if (rest) { try { bot.dimension.spawnItem(rest, bot.location); } catch {} }
+    const st = stats(bot); st.pickup = (st.pickup || 0) + gain[1]; saveStats(bot, st);
+    say(owner, bot, genSpeech({ say: { item: nameOfItem(gain[0]), count: gain[1] }, drops: { count: ctx.drops.count }, flags: { bond: dp(bot, "cb_bond", 30) }, x: {} }, CROP_DROPS[w.typeId] ? "farm_comment" : w.typeId.includes("_log") ? "idle_thought" : "mine_comment"));
+  }
+  if (CROP_DROPS[w.typeId]) { // 植え直す
+    const seedId = w.typeId === "minecraft:wheat" ? "minecraft:wheat_seeds" : w.typeId === "minecraft:beetroot" ? "minecraft:beetroot_seeds" : gain[0];
+    if (takeFromInv(bot, seedId, 1)) { try { b.setType(w.typeId); } catch {} }
+  }
+  r.lastBreak = { act: "BREAK", ok: true, reason: null, item: w.typeId, gained: gain ? gain[1] : 0, at: Date.now() }; commitLastAction(r, r.lastBreak);
+  r.work = null;
+  return true;
+}
+function wanderTo(r, bot, owner) {
+  if (!r.wander || Date.now() - r.wanderAt > 9000 || dist(bot.location, r.wander) < 1.5) {
+    const a = Math.random() * Math.PI * 2, rad = 8 + Math.random() * 7;
+    r.wander = { x: owner.location.x + Math.cos(a) * rad, y: owner.location.y, z: owner.location.z + Math.sin(a) * rad };
+    r.wanderAt = Date.now();
+  }
+  r.target = r.wander;
+}
+function placeTorch(bot, r, ctx) {
+  if (!((ctx.x?.lightLevel ?? 15) <= 7) || !((ctx.x?.torchCount || 0) > 0)) return;
+  let feet = null, below = null;
+  try {
+    feet = bot.dimension.getBlock({ x: Math.floor(bot.location.x), y: Math.floor(bot.location.y), z: Math.floor(bot.location.z) });
+    below = bot.dimension.getBlock({ x: Math.floor(bot.location.x), y: Math.floor(bot.location.y) - 1, z: Math.floor(bot.location.z) });
+  } catch { return; }
+  if (!(feet && feet.typeId === "minecraft:air" && below && below.typeId !== "minecraft:air" && !below.isLiquid)) return;
+  if (!takeFromInv(bot, "minecraft:torch", 1)) return;
+  try {
+    feet.setType("minecraft:torch");
+    let placed = false; try { const rb = bot.dimension.getBlock({ x: Math.floor(bot.location.x), y: Math.floor(bot.location.y), z: Math.floor(bot.location.z) }); placed = !!rb && rb.typeId === "minecraft:torch"; } catch {}
+    if (placed) { try { r.lastPlace = { act: "PLACE", mode: "torch", ok: true, reason: null, item: "minecraft:torch", at: Date.now() }; commitLastAction(r, r.lastPlace); } catch {} try { sfxPlace(bot.dimension, { x: Math.floor(bot.location.x) + 0.5, y: Math.floor(bot.location.y) + 0.5, z: Math.floor(bot.location.z) + 0.5 }, "minecraft:torch"); } catch {} return; } // 作り込み POLISH-SND-PLACE-01 (v0.4.90): 設置音の実配線 (表示層のみ)
+    throw new Error("torch verify failed");
+  } catch (err) {
+    // Phase2 PLACE統一 (v0.4.9): station と同型に、消費後の設置失敗で松明を消失させない (ロールバック)
+    try { const bc = invOf(bot); let rest = 1; if (bc) rest = addTo(bc, "minecraft:torch", 1); if (rest > 0) bot.dimension.spawnItem(new ItemStack("minecraft:torch", rest), bot.location); } catch {}
+    try { r.lastPlace = { act: "PLACE", mode: "torch", ok: false, reason: "SET_FAILED", item: "minecraft:torch", at: Date.now() }; commitLastAction(r, r.lastPlace); } catch {}
+    noteFail(bot, "place:torch_set_failed", err);
+  }
+}
+function tickAutonomy(bot, owner, ctx, effMove) {
+  const r = rt(bot);
+  if (tickWork(bot, owner, r, ctx)) return;
+  const mode = dp(bot, "cb_mode", "follow");
+  if (mode !== "free" && mode !== "work") return;
+  if (ctx.danger.nearestDist < 7 || ctx.x?.bossNear) return;
+  if (effMove && effMove.id !== "compiled_matrix" && (effMove.p || 0) >= 150 && !/^(mood_|fb_)/.test(effMove.id || "")) return; // mood_/fb_ は暇の表明。プランナーを飢餓させない
+  const mem = { visitedChunks: [], dangerSpots: [], knownContainers: [], lastGoal: r.goal, goalSince: r.goalAt, now: Date.now() };
+  // Phase1 Phase D: buildPlannerMem アダプタ（M1〜M3＋knownContainers を一括解消）。getVisited(cx,cz) は単一レコード返しのため visited は recentChunks、危険は dangerNear、コンテナは knownContainers から組み立てる
+  try { const wm = wmemOf(bot); if (wm) {
+    if (wm.recentChunks) mem.visitedChunks = wm.recentChunks(16, bot.dimension.id).map((v) => `${v.dim === "minecraft:nether" ? "n" : v.dim === "minecraft:the_end" ? "e" : v.dim === "minecraft:overworld" ? "o" : (v.dim ?? "o")}:${v.cx},${v.cz}`); // v0.4.79: recentChunks の dim は完全ID、currentChunk は短縮形 (o/n/e)。形式を揃えないと既踏判定が常時 false になる
+    if (wm.dangerNear) mem.dangerSpots = wm.dangerNear(bot.location, bot.dimension.id, 32).map((s) => ({ x: s.x, z: s.z, r: 12, weight: s.weight, kind: s.kind }));
+    if (wm.knownContainers) mem.knownContainers = wm.knownContainers(bot.dimension.id);
+  } } catch {}
+  let g = null; try { g = chooseGoal(ctx, mem); } catch {}
+  if (!g) return;
+  if (g.goal !== r.goal) { r.goal = g.goal; r.goalAt = Date.now(); if (mode === "free" && g.reason) say(owner, bot, g.reason); try { const gev = mapGoalEvent({ goal: g.goal, utility: g.utility, scores: Array.isArray(g.scores) ? g.scores.map((s) => [s?.goal, s?.utility]) : undefined, x: { hp: ctx.self?.hpPct ?? null, dg: ctx.danger?.count ?? null, scan: ctx.x?.obs?.scan ?? null, inv: ctx.x?.obs?.inv ?? null } }); if (gev) r.trace?.record(gev); } catch {} }
+  switch (g.goal) {
+    case "gather_wood": case "mine_ore": case "farm_crops": case "gather_stone": if (!startWork(bot, r, r.percTargets?.[GATHER_TARGETS[g.goal]])) wanderTo(r, bot, owner); break;
+    case "place_torch_dark": placeTorch(bot, r, ctx); break;
+    case "deposit_at_home": { const h = homeOf(bot); if (h) { r.target = { x: h.x + 0.5, y: h.y + 1, z: h.z + 0.5 }; execArrive(bot, owner, { act: "deposit" }, ctx, null); } break; }
+    case "deliver_to_owner": { const oc = invOf(owner); if (oc) { const res = transferFiltered(bot, oc, null); recordStore(r, "deliver_to_owner", res); } break; }
+    case "explore_nearby": wanderTo(r, bot, owner); break;
+    case "return_home": { const h = homeOf(bot); if (h) r.target = { ...h }; break; }
+    case "rest_recover": {
+      const h = homeOf(bot);
+      if (!h) {
+        // RR-01/RR-02 (cycle1153): hint={kind:"here"} 契約どおり、その場で既存 useHealItem へ委譲する (拠点なしで無作用の吸着を解消)。
+        // 記録は execArrive use_heal_item と同一形式。act は互換のため "use_heal_item" を保ち、出自は via で区別する。
+        const core = equipCoreOf(bot, r);
+        if (!core) { r.lastUseItem = { act: "use_heal_item", ok: false, reason: "EQUIP_CORE_UNAVAILABLE", item: null, at: Date.now(), via: "rest_recover" }; commitLastAction(r, r.lastUseItem); }
+        else { try { const res = core.useHealItem(); if (res?.reason !== "eating") { r.lastUseItem = { act: "use_heal_item", ok: !!res?.ok, reason: res?.reason || null, item: res?.item || null, at: Date.now(), via: "rest_recover" }; commitLastAction(r, r.lastUseItem); if (res?.ok) { try { sfxEat(bot.dimension, bot.location, res?.item || null); } catch {} } } } catch (e) { r.lastUseItem = { act: "use_heal_item", ok: false, reason: "API_ERROR", item: null, at: Date.now(), via: "rest_recover" }; commitLastAction(r, r.lastUseItem); noteFail(bot, "use_heal_item:exception", e); } }
+        break;
+      }
+      r.target = { ...h };
+      /* S-01 完了作用: 拠点到着後だけ回復する (R-02 の到着 gate と対)。HP>=0.95 で uRestRecover が 0 になり目標は自然に外れる */
+      if (h.dim === bot.dimension.id && dist(bot.location, { x: h.x + 0.5, y: h.y + 1, z: h.z + 0.5 }) < 3) {
+        try { const hc = bot.getComponent("minecraft:health"); if (hc && hc.currentValue < hc.effectiveMax) hc.setCurrentValue(Math.min(hc.effectiveMax, hc.currentValue + 2)); } catch {}
+      }
+      break;
+    }
+    default: break;
+  }
+}
+
+// ---------- nav（経路探索。nav_integration.md の手順どおり） ----------
+const probeCache = new Map(); // dimensionId -> probe
+function probeFor(dim) {
+  if (probeCache.has(dim.id)) return probeCache.get(dim.id);
+  const probe = (x, y, z) => {
+    let b = null;
+    try { b = dim.getBlock({ x, y, z }); } catch { return cellUnknown(); }
+    if (!b) return cellUnknown(); // 未読み込み等は未知セル（解釈は fly/nav の消費者側）
+    let api = null;
+    try { api = { isLiquid: b.isLiquid }; } catch {}
+    return classifyTypeId(b.typeId, api);
+  };
+  probeCache.set(dim.id, probe);
+  return probe;
+}
+function navOf(bot, r) {
+  if (!r.nav || r.navDim !== bot.dimension.id) { r.nav = createNav(probeFor(bot.dimension)); r.navDim = bot.dimension.id; }
+  return r.nav;
+}
+function syncNavGoal(bot, r) {
+  try {
+    const nav = navOf(bot, r);
+    if (!r.target) { navClearGoal(nav); return; }
+    const arriveRadius = (r.moveAct === "follow" || r.moveAct === "stay_anchor") ? 1 : 0;
+    navSetGoal(nav, r.target, { arriveRadius });
+  } catch {}
+}
+// v0.3.9: 飛行（ホバー移動）。fly.js が ground を返した時だけ nav/direct を使う。
+const INTERACT_ACTS = new Set(["deposit", "chest_alert"]);
+function flyOf(bot, r) {
+  if (!r.fly || r.flyDim !== bot.dimension.id) { r.fly = createFly(probeFor(bot.dimension)); r.flyDim = bot.dimension.id; }
+  return r.fly;
+}
+function syncFlyGoal(bot, r) {
+  try {
+    const fly = flyOf(bot, r);
+    if (!FLY_ENABLE || !r.target) { flyClearGoal(fly); return; }
+    const act = r.moveAct || "";
+    const interact = INTERACT_ACTS.has(act) || act.startsWith("pickup_") || act.startsWith("deliver") || !!r.work || (r.mission && (r.mission.status === "active" || r.mission.status === "suspended")) || (r.buildPlan && r.buildPlan.stage === "build"); // BLD1621-03 (cycle1640): 建築中も干渉プロファイルにする // queue1 fix1 (basics-digdown-dec): 保留中は branchmine の降下目標が出るため interact に含める。含めないと fly 非interact経路が目標を地面+1.2へクランプし潜行が永遠に始まらない (実測: 3000tick掘削0→81tick完走)
+    flySetGoal(fly, r.target, { interact });
+  } catch {}
+}
+// 移動ウォッチドッグ：目標が遠いのに「動いているのに進まない（振動）」または「完全停止」が続いたら、
+// 目標方向へ小さくホップして物理的にループを断つ。8秒に1回まで。
+// ground-walk Stage 0-B (cycle1703): record-only move helper
+function noteMove(bot, r, engine) {
+  try {
+    if (!r.moveTracker || r.moveDim !== bot.dimension.id) { r.moveTracker = createMoveTracker(); r.moveDim = bot.dimension.id; }
+    const tr = r.moveTracker;
+    const pos = bot.location;
+    let eng = engine;
+    if (tr.prevPos && Math.hypot(pos.x - tr.prevPos.x, pos.y - tr.prevPos.y, pos.z - tr.prevPos.z) > 2.0) eng = "teleport";
+    const dim = bot.dimension;
+    const belowCell = { x: Math.floor(pos.x), y: Math.floor(pos.y - 0.5), z: Math.floor(pos.z) };
+    let below = null; try { below = dim.getBlock(belowCell); } catch {}
+    const grounded = !!below && solidOfTypeId(below.typeId) && !below.isLiquid;
+    const st = moveTrackStep(tr, pos, 0.1, { engine: eng, nowMs: Date.now(), grounded, wet: !!bot.isInWater, getSurface: () => { try { const b = dim.getBlock(belowCell); return b && solidOfTypeId(b.typeId) ? b.typeId : "minecraft:air"; } catch { return "minecraft:air"; } } });
+    if (st) r.moveState = st;
+    r.moveEvents = drainMoveEvents(tr);
+  } catch {}
+}
+function movementWatchdog(bot, r, pos) {
+  if (!r.target) return;
+  const now = Date.now();
+  if (now - (r.watchAt || 0) < 500) return;
+  r.watchAt = now;
+  r.watchHist.push({ x: pos.x, z: pos.z, t: now });
+  while (r.watchHist.length && now - r.watchHist[0].t > 6000) r.watchHist.shift();
+  if (r.watchHist.length < 8) return;
+  const t = r.target;
+  // v0.4.59 (外部レビュー指摘4): 水平だけ見ると「真上だが高さが離れている」を到着扱いして救済が働かない
+  if (Math.hypot(t.x - pos.x, t.z - pos.z) <= 3 && (typeof t.y !== "number" || Math.abs(t.y - pos.y) <= 2)) return;
+  const first = r.watchHist[0];
+  const net = Math.hypot(pos.x - first.x, pos.z - first.z);
+  let path = 0;
+  for (let i = 1; i < r.watchHist.length; i++) path += Math.hypot(r.watchHist[i].x - r.watchHist[i - 1].x, r.watchHist[i].z - r.watchHist[i - 1].z);
+  const oscillating = path > 3 && net < 1.0;   // 行ったり来たりしている
+  const frozen = path < 0.3 && r.stuckSec >= 3; // 全く動いていない
+  if (!oscillating && !frozen) return;
+  if (now - (r.lastHopAt || 0) < 8000) return; // BASICS-03残部: クールダウンは読むだけのゲート。消費は成功時のみ
+  const dx = t.x - pos.x, dz = t.z - pos.z, hd = Math.hypot(dx, dz) || 1;
+  const hx = pos.x + (dx / hd) * 2.5, hz = pos.z + (dz / hd) * 2.5;
+  const gy = groundY(bot.dimension, hx, hz, pos.y, pos.y);
+  let dest = { x: hx, y: Math.max(pos.y, gy + 1.2), z: hz };
+  // BASICS-03残部: 行き先検査 (体・頭は dest.y 基準、支持は gy 基準)。安全でなければ飛ばず、何も消費しない
+  if (!isSafeTeleportDest(probeFor(bot.dimension), dest, gy)) return;
+  // queue3 step1 (basics-clip-audit, cycle0504): 区間検査つき統一ゲート。着地だけでなく間の列も見る。
+  // go=そのまま / shift=壁の手前で止まる位置へ差し替え / hold=飛ばない (何も消費しない)。例外時は従来 dest のまま (ゲート障害で救済自体を止めない)。
+  try { const gate = guardedTeleport(probeFor(bot.dimension), pos, dest, { mode: "hop" }); if (gate.action === "hold") return; if (gate.action === "shift" && gate.dest) dest = gate.dest; r.lastHopGate = { action: gate.action, why: gate.why || null, at: now }; } catch {}
+  let hopped = false;
+  try { bot.teleport(dest); const nl = bot.location; hopped = !!nl && Math.hypot(nl.x - dest.x, nl.z - dest.z) < 1.0 && Math.abs(nl.y - dest.y) < 2.0; } catch {}
+  if (!hopped) return; // 失敗 (例外・無言失敗): クールダウン/履歴/stuckSec/nav目標を全て保持し次サンプルで再試行
+  r.lastHopAt = now; r.watchHist = []; r.stuckSec = 0;
+  try { navClearGoal(navOf(bot, r)); } catch {}
+}
+function setDoor(dim, cell, open) {
+  try {
+    const b = dim.getBlock(cell);
+    if (!b) return;
+    b.setPermutation(b.permutation.withState("open_bit", open));
+  } catch {}
+}
+function applyDoors(bot, res, r) {
+  for (const d of res.openDoors || []) setDoor(bot.dimension, d, true);
+  for (const d of res.closeDoors || []) setDoor(bot.dimension, d, false);
+}
+// 現行方式の直接移動（nav のフォールバックとして温存）
+function moveDirect(bot, r) {
+  if (!r.target) return;
+  const p = bot.location; const t = r.target;
+  const dx = t.x - p.x, dz = t.z - p.z; const hd = Math.hypot(dx, dz);
+  let nx = p.x, nz = p.z;
+  if (hd > 0.5) { const step = Math.min(0.85, hd); nx = p.x + (dx / hd) * step; nz = p.z + (dz / hd) * step; }
+  const ngy = groundY(bot.dimension, nx, nz, p.y, p.y);
+  const ny = Math.max(Math.min(ngy, p.y + 1.25), p.y - 2.5);
+  // v0.4.66/69: 足元が固ければ上面へ持ち上げ、それでも体・目が入らないなら動かない (岩の中へのテレポート＝窒息を防ぐ)
+  let liftedY = ny; try { const lf = liftFeet(bot.dimension, { x: nx, y: ny, z: nz }); if (!lf || lf.y > p.y + 1.25) { r.stuckSec += 0.1; r.lastPos = { ...p }; return; } liftedY = lf.y; } catch {}
+  try { if (hd > 0.5) bot.teleport({ x: nx, y: liftedY, z: nz }, { rotation: { x: 0, y: yawToward(dx, dz) } }); else bot.teleport({ x: nx, y: liftedY, z: nz }); } catch {} // heading H1: fly/nav 経路と同様に進行方向を向く
+  // ハマり検出
+  if (r.lastPos && Math.hypot(p.x - r.lastPos.x, p.z - r.lastPos.z) < 0.05 && hd > 2) r.stuckSec += 0.1; else r.stuckSec = 0;
+  r.lastPos = { ...p };
+}
+
+
+// ---------- v0.4.68: 埋まり防止・邪魔なブロックの除去・安全な瞬間移動 ----------
+// 体が入るマス: 足・胴・目 (足 +1.62)。目の高さは端数で 2 マス上になる
+function bodyCells(loc) {
+  const x = Math.floor(loc.x), z = Math.floor(loc.z), ys = [...new Set([Math.floor(loc.y), Math.floor(loc.y + 1), Math.floor(loc.y + 1.62)])];
+  return ys.map((y) => ({ x, y, z }));
+}
+function solidAt(dim, c) { try { const b = dim.getBlock(c); return !!b && solidOfTypeId(b.typeId) && !b.isLiquid; } catch { return false; } }
+// 体・目が入り、溶岩でない場所を loc の近くから探す (上方向を優先)。見つからなければ null
+function safeSpotNear(dim, loc, opts = {}) {
+  const bx = Math.floor(loc.x), by = Math.floor(loc.y), bz = Math.floor(loc.z);
+  const offs = [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1], [2, 0], [-2, 0], [0, 2], [0, -2]];
+  const dys = opts.upFirst ? [0, 1, 2, 3, 4, 5, 6, 7, 8, -1] : [0, 1, -1, 2, 3, -2, 4];
+  for (const dy of dys) for (const [dx, dz] of offs) {
+    const x = bx + dx, y = by + dy, z = bz + dz;
+    let ok = true;
+    for (const c of bodyCells({ x: x + 0.5, y, z: z + 0.5 })) { try { const b = dim.getBlock(c); if (!b || (solidOfTypeId(b.typeId) && !b.isLiquid) || b.typeId.includes("lava") || /fire|cactus|sweet_berry|powder_snow/.test(b.typeId)) { ok = false; break; } } catch { ok = false; break; } }
+    if (ok) return { x: x + 0.5, y, z: z + 0.5 };
+  }
+  return null;
+}
+// queue3 step2 (basics-clip-audit §4-2, cycle0517): フォールバック3件 (catchup/召喚/go_owner) + spawn の place 共通化。
+// 位置設定は単一ゲート (teleport_gate) を通す。候補を順に place モードで検査し go/shift のときだけ置く。
+// 最終候補は主人の位置そのもの (ブロック的には定義上空いている)。全候補 hold なら置かない
+// (現位置維持。次 tick / 次回呼び出しで再試行する)。従来の無検査フォールバック (|| behind / || want) は廃止。
+function placeGateDest(dim, from, want) {
+  try {
+    const gate = guardedTeleport(probeFor(dim), from || want, want, { mode: "place" });
+    if ((gate.action === "go" || gate.action === "shift") && gate.dest) return { dest: gate.dest, action: gate.action };
+    return { dest: null, action: "hold", why: gate.why || null };
+  } catch { return { dest: null, action: "hold", why: "gate_error" }; }
+}
+function teleportNearOwnerGuarded(entity, r, dim, want, ownerLoc) {
+  const cands = [];
+  const push = (v) => { if (v && !cands.some((c) => c.x === v.x && c.y === v.y && c.z === v.z)) cands.push(v); };
+  push(safeSpotNear(dim, want)); push(ownerLoc ? safeSpotNear(dim, ownerLoc) : null); push(want); push(ownerLoc ? { ...ownerLoc } : null);
+  for (const c of cands) {
+    const g = placeGateDest(dim, entity.location, c);
+    if (r) r.lastPlaceGate = { action: g.action, why: g.why || null, at: Date.now() };
+    if (g.dest) { try { entity.teleport(g.dest, { dimension: dim }); return true; } catch { continue; } } // cycle1400 a20 S-2: 1候補目の例外で諦めず次の候補を試す
+  }
+  return false;
+}
+// queue3 step3 (basics-clip-audit §4-3 + basics-suffocate guardedStepTeleport 統合, cycle0543):
+// 坑道の前進/帰路テレポートは tunnel ゲートを通す。掘れる自然ブロックは外から掘ってから入る。
+// hold のときは入らない (呼び出し側は前進なら steps を進めず、帰路なら step を消費しない)。
+function tunnelGateDest(bot, r, dest) {
+  try {
+    const dim = bot.dimension;
+    const canDig = (cell) => { try { const b = dim.getBlock(cell); return !!b && canBreakForPath(bot, cell, b); } catch { return false; } };
+    const gate = guardedTeleport(probeFor(dim), bot.location, dest, { mode: "tunnel", canDig });
+    if (gate.action === "dig" && gate.cells) {
+      let dug = true;
+      for (const c of gate.cells) if (!breakForPath(bot, r, c, { via: "tunnel" })) { dug = false; break; }
+      if (!dug) { r.lastTunnelGate = { action: "hold", why: "dig_failed", at: Date.now() }; return { dest: null, action: "hold" }; }
+      r.lastTunnelGate = { action: "go", why: "dug", at: Date.now() };
+      return { dest: gate.dest, action: "go" };
+    }
+    r.lastTunnelGate = { action: gate.action, why: gate.why || null, at: Date.now() };
+    if (gate.action === "go" && gate.dest) return { dest: gate.dest, action: "go" };
+    return { dest: null, action: "hold" };
+  } catch { return { dest: null, action: "hold" }; }
+}
+function placeSpawnDest(dim, ownerLoc, want) {
+  const cands = [];
+  const push = (v) => { if (v && !cands.some((c) => c.x === v.x && c.y === v.y && c.z === v.z)) cands.push(v); };
+  push(safeSpotNear(dim, want)); push(want); push(ownerLoc ? { ...ownerLoc } : null);
+  for (const c of cands) { const g = placeGateDest(dim, ownerLoc, c); if (g.dest) return g.dest; }
+  return null; // cycle0922 FC-13: 全候補 hold なら無検査の主人位置へ spawn せず見送る (呼び出し側が再試行する)
+}
+// 通り道の邪魔になっている自然のブロックを壊す。人工物・入れ物・岩盤・人工物の隣は壊さない (プレイヤーの建物を守る)
+function pathBlockDrop(id) {
+  if (/_leaves$/.test(id) || /^minecraft:(short_grass|tall_grass|fern|large_fern|vine|snow_layer|dead_bush)$/.test(id)) return null;
+  for (const [re, item, n] of ORE_DROPS) if (re.test(id)) return [item, n];
+  if (id === "minecraft:grass_block" || id === "minecraft:mycelium" || id === "minecraft:podzol" || id === "minecraft:dirt_path") return ["minecraft:dirt", 1];
+  if (id === "minecraft:stone") return ["minecraft:cobblestone", 1];
+  if (id === "minecraft:deepslate") return ["minecraft:cobbled_deepslate", 1];
+  return [id, 1];
+}
+function canBreakForPath(bot, c, b) {
+  const id = b.typeId;
+  if (id === "minecraft:air" || b.isLiquid || id === "minecraft:bedrock" || id.includes("lava")) return false;
+  if (ARTIFICIAL_HINTS.some((h) => id.includes(h)) || isContainerBlock(id)) return false;
+  if (structureGuard(bot.dimension, c)) return false;
+  if (requiredPickLevel(id) > bestPickLevel(bot)) return false;
+  if (lavaNear(bot.dimension, c)) return false;
+  return true;
+}
+function breakForPath(bot, r, c, opts = {}) {
+  let b = null; try { b = bot.dimension.getBlock(c); } catch {}
+  if (!b || !canBreakForPath(bot, c, b)) return false;
+  // 要望バッチA (v0.4.88): 経路掘り・救済・坑道 dig にも到達ゲートを通す。dig_first は遮蔽側を深さ1だけ先に掘る
+  try {
+    const eye2 = { x: bot.location.x, y: bot.location.y + 1.6, z: bot.location.z };
+    const g2 = evaluateDig(digBlockAt(bot), eye2, c, { reach: WORK_REACH, feetCell: { x: Math.floor(bot.location.x), y: Math.floor(bot.location.y), z: Math.floor(bot.location.z) }, via: opts.via || "path" });
+    if (g2.action === "hold") { try { r.lastDigHold = { why: g2.why, loc: { ...c }, at: Date.now() }; } catch {} return false; }
+    if (g2.action === "dig_first") { if ((opts._depth || 0) >= 1) return false; return breakForPath(bot, r, g2.cell, { via: opts.via || "path", _depth: (opts._depth || 0) + 1 }); }
+  } catch { try { r.lastDigHold = { why: "gate_error", loc: { ...c }, at: Date.now() }; } catch {} return false; } // 要望バッチA GAP-2 (cycle0821): ゲート例外時は fail-closed (掘らずに false)
+  const id = b.typeId;
+  try { b.setType("minecraft:air"); } catch (err) { noteFail(bot, "path:break_failed", err); return false; }
+  const drop = pathBlockDrop(id);
+  if (drop) { try { const cont = invOf(bot); const rest = cont ? cont.addItem(new ItemStack(drop[0], drop[1])) : new ItemStack(drop[0], drop[1]); if (rest) bot.dimension.spawnItem(rest, bot.location); } catch {} }
+  try { r.lastBreak = { act: "BREAK", ok: true, reason: "PATH", item: id, gained: drop ? drop[1] : 0, at: Date.now() }; commitLastAction(r, r.lastBreak); } catch {}
+  return true;
+}
+const PATH_DIG_TICKS = (id) => /_leaves$|grass|snow|vine|fern/.test(id) ? 1 : /dirt|sand|gravel|clay|mud|podzol|mycelium/.test(id) ? 2 : /deepslate|obsidian/.test(id) ? 6 : 4; // 移動ループ (2tick) 何回ぶんで壊すか
+// v0.4.69: 移動先の足元が固いブロックなら、その上面まで持ち上げる。持ち上げても体・目が入らないなら null (移動しない)。
+// 地上の経路移動は区間の高さを直線で補間するため、1 段上がる時に後半ずっと下半身がブロックに入ったまま滑っていた
+function liftFeet(dim, dest) {
+  let y = dest.y;
+  const bx = Math.floor(dest.x), bz = Math.floor(dest.z);
+  for (let k = 0; k < 2; k++) { const fy = Math.floor(y); if (solidAt(dim, { x: bx, y: fy, z: bz })) y = fy + 1; else break; }
+  for (const c of bodyCells({ x: dest.x, y, z: dest.z })) if (solidAt(dim, c)) return null;
+  return { ...dest, y };
+}
+// 埋まっていたら脱出する: 自然のブロックなら掘って消す。壊せないもの (人工物・岩盤) なら近くの空いた場所へ移る
+// 窒息救済V2 (キュー5, basics-suffocate DESIGN): 落下ブロック埋没/再充填の兆候では掘るより先に横へ逃げる
+const FALLING_BLOCK_IDS = new Set(["minecraft:sand","minecraft:red_sand","minecraft:suspicious_sand","minecraft:gravel","minecraft:suspicious_gravel","minecraft:white_concrete_powder","minecraft:orange_concrete_powder","minecraft:magenta_concrete_powder","minecraft:light_blue_concrete_powder","minecraft:yellow_concrete_powder","minecraft:lime_concrete_powder","minecraft:pink_concrete_powder","minecraft:gray_concrete_powder","minecraft:light_gray_concrete_powder","minecraft:cyan_concrete_powder","minecraft:purple_concrete_powder","minecraft:blue_concrete_powder","minecraft:brown_concrete_powder","minecraft:green_concrete_powder","minecraft:red_concrete_powder","minecraft:black_concrete_powder"]);
+function safeSpotWide(dim, loc) {
+  const bx = Math.floor(loc.x), by = Math.floor(loc.y), bz = Math.floor(loc.z);
+  const cellSafe = (x, y, z) => { try { const b = dim.getBlock({ x, y, z }); if (!b) return false; if (solidOfTypeId(b.typeId) && !b.isLiquid) return false; if (b.typeId.includes("lava")) return false; if (/fire|cactus|sweet_berry|powder_snow/.test(b.typeId)) return false; return true; } catch { return false; } };
+  const spotOk = (x, y, z) => {
+    for (const c of bodyCells({ x: x + 0.5, y, z: z + 0.5 })) if (!cellSafe(c.x, c.y, c.z)) return false;
+    try { const above = dim.getBlock({ x, y: Math.floor(y + 1.62) + 1, z }); if (above && FALLING_BLOCK_IDS.has(above.typeId)) return false; } catch { return false; }
+    return true;
+  };
+  const dys = [0, 1, -1, 2, -2, 3, 4, 5, 6, 7, 8];
+  for (const dy of dys) for (let ring = 1; ring <= 4; ring++) for (let dx = -ring; dx <= ring; dx++) for (let dz = -ring; dz <= ring; dz++) {
+    if (Math.max(Math.abs(dx), Math.abs(dz)) !== ring) continue;
+    const x = bx + dx, y = by + dy, z = bz + dz;
+    if (spotOk(x, y, z)) return { x: x + 0.5, y, z: z + 0.5 };
+  }
+  return null;
+}
+function selfRescue(bot, r) {
+  const dim = bot.dimension;
+  const stuck = bodyCells(bot.location).filter((c) => solidAt(dim, c));
+  if (!stuck.length) {
+    // キュー4 R4-1 (cycle1518-a01): crown (足+2・teleport_gate Tier2 と同一定義) 単独の塞がりは bodyCells (足・胴・目) に含まれず盲点だった。応答は葉限定・掘削のみ・移転なし。別の移動 tick でも同じセルが残る場合だけ掘り (r.crownSeen)、一過性の重なりでは発動しない。カウンタは rescueCount と分ける
+    try {
+      const crownCell = { x: Math.floor(bot.location.x), y: Math.floor(bot.location.y) + 2, z: Math.floor(bot.location.z) };
+      let cb = null; try { cb = dim.getBlock(crownCell); } catch {}
+      if (cb && /_leaves$/.test(cb.typeId) && solidAt(dim, crownCell)) {
+        const key = `${crownCell.x},${crownCell.y},${crownCell.z}`;
+        if (r.crownSeen === key) { if (breakForPath(bot, r, crownCell, { via: "rescue" })) { r.crownClearCount = (r.crownClearCount || 0) + 1; r.crownSeen = null; } }
+        else r.crownSeen = key;
+      } else r.crownSeen = null;
+    } catch {}
+    r.rescueNoSpot = null; r.rescueBackoffUntil = 0; if (r._rsqBroken) { const now = tick; for (const [k, t] of r._rsqBroken) if (now - t > 8) r._rsqBroken.delete(k); } return false; }
+  // 基礎 rescue:no_spot 無出口是正 (cycle1421, a03実測): 脱出不能が続く間は試行を5秒に1回へ間引き、API消費と失敗記録の氾濫を止める (出口は下の exhausted 遷移)
+  if (r.rescueBackoffUntil && Date.now() < r.rescueBackoffUntil && r._rescueLastTry && Date.now() - r._rescueLastTry < 5000) return true;
+  r._rescueLastTry = Date.now();
+  if (!r._rsqBroken) r._rsqBroken = new Map();
+  const now = tick;
+  const isColumnRisk = stuck.some((c) => { let b = null; try { b = dim.getBlock(c); } catch {} if (b && FALLING_BLOCK_IDS.has(b.typeId)) return true; const last = r._rsqBroken.get(`${c.x},${c.y},${c.z}`); return last !== undefined && now - last <= 8; });
+  const relocate = () => { const spot = safeSpotWide(dim, bot.location) || safeSpotNear(dim, bot.location, { upFirst: true }); if (!spot) return false; const g = placeGateDest(dim, bot.location, spot); if (!g.dest) return false; try { bot.teleport(g.dest); } catch { return false; } r.rescueCount = (r.rescueCount || 0) + 1; r.lastRescue = { via: "wide", at: now }; return true; }; // キュー4 R4-2 (cycle1518-a01): 移転先を place モード (crown hard) の共通ゲートへ通す。従来は無検査で crown の塞がった場所へ入れた。teleport 例外時は成功扱いせず掘削/no_spot 経路へ落とす
+  if (isColumnRisk && relocate()) { r.rescueNoSpot = null; r.rescueBackoffUntil = 0; return true; }
+  let freed = true;
+  for (const c of stuck) { if (!breakForPath(bot, r, c, { via: "rescue" })) { freed = false; break; } r._rsqBroken.set(`${c.x},${c.y},${c.z}`, now); }
+  if (!freed) {
+    if (!relocate()) {
+      noteFail(bot, "rescue:no_spot", new Error(JSON.stringify(stuck[0])));
+      // 基礎 rescue:no_spot 無出口是正 (cycle1421): 従来は記録だけで状態が進まず2tickごとに無制限に再突入していた。
+      // 30秒継続で exhausted へ遷移し、主人へ1回だけ知らせて120秒のバックオフへ入る (branchmine exhausted の作法)
+      const nowMs = Date.now();
+      if (!r.rescueNoSpot) r.rescueNoSpot = { since: nowMs, noted: false };
+      if (nowMs - r.rescueNoSpot.since >= 30000 && !r.rescueNoSpot.noted) {
+        r.rescueNoSpot.noted = true; r.rescueBackoffUntil = nowMs + 120000;
+        noteFail(bot, "rescue:no_spot_exhausted", new Error(JSON.stringify(stuck[0])));
+        try { const ow = getPlayer(dp(bot, "cb_owner", "")); if (ow) say(ow, bot, "埋まってしまい、自分では脱出できません。周囲を空けてください", true); } catch {}
+      }
+    }
+    return true;
+  }
+  r.rescueNoSpot = null; r.rescueBackoffUntil = 0;
+  r.rescueCount = (r.rescueCount || 0) + 1;
+  return true;
+}
+// 指示の実行中、進む先が自然のブロックで塞がっていて進めないなら、それを掘って進む
+function clearPathAhead(bot, r, blocked) {
+  if (!blocked || !r.target) return;
+  if (!((r.mission && r.mission.status === "active") || r.longtask || (r.buildPlan && r.buildPlan.stage === "build"))) { r.clearDig = null; return; } // 追従中はプレイヤーの周りを掘らない // BLD-06 (cycle1133): 建築中も掘進できるよう build 段階を許可 (掘否は canBreakForPath+dig_gate が担う)
+  const p = bot.location, t = r.target;
+  const dx = t.x - p.x, dz = t.z - p.z, dy = t.y - p.y, hd = Math.hypot(dx, dz);
+  if (Math.hypot(hd, dy) < 1.5) return;
+  if (r.tunnelPath && r.tunnelPath.length && Math.hypot(hd, dy) > 6) return; // 地下から遠くへ行く時は、横に掘り進まずに掘ってきた道で地上へ戻る
+  const cand = [];
+  if (hd > 0.6) {
+    const nx = Math.floor(p.x + (dx / hd) * 0.9), nz = Math.floor(p.z + (dz / hd) * 0.9);
+    if (nx !== Math.floor(p.x) || nz !== Math.floor(p.z)) for (const c of bodyCells({ x: nx + 0.5, y: p.y + Math.max(-1, Math.min(1, dy)) * 0.35, z: nz + 0.5 })) cand.push(c);
+  }
+  if (dy < -1 && hd < 1.5) cand.push({ x: Math.floor(p.x), y: Math.floor(p.y) - 1, z: Math.floor(p.z) });   // 真下へ
+  if (dy > 1 && hd < 1.5) cand.push({ x: Math.floor(p.x), y: Math.floor(p.y + 1.62) + 1, z: Math.floor(p.z) }); // 真上へ
+  const dim = bot.dimension;
+  for (const c of cand) {
+    let b = null; try { b = dim.getBlock(c); } catch {}
+    if (!b || !solidOfTypeId(b.typeId) || b.isLiquid) continue;
+    if (!canBreakForPath(bot, c, b)) { r.clearDig = null; return; } // 壊してはいけない物: 掘らずに既存の回避・見切りに任せる
+    const key = `${c.x},${c.y},${c.z}`;
+    if (!r.clearDig || r.clearDig.key !== key) r.clearDig = { key, left: PATH_DIG_TICKS(b.typeId) };
+    if (--r.clearDig.left <= 0) { breakForPath(bot, r, c, { via: "path" }); r.clearDig = null; r.stuckSec = 0; }
+    return;
+  }
+}
+// v0.4.70: 体 (模擬プレイヤー) の管理
+const bodies = createBodyManager(mcGametest, mcServer, { noteFail: (bot, where, err) => noteFail(bot, where, err) });
+if (BODY_SIM_ENABLE && !bodies.available) console.warn("[LIZE] simulated player body unavailable (Beta APIs off?) - using legacy movement");
+// ---------- メインループ ----------
+system.runInterval(() => {
+  tick++;
+  // 移動（2tickごと）: 既定はホバー飛行（fly）。fly が ground を返した時だけ nav/direct。
+  for (const [id, r] of bots) {
+    let bot = null; try { bot = world.getEntity(id); } catch {}
+    if (!bot) { try { if (r.wmem && r.wmem.dirty) r.wmem.save(); } catch {} try { bodies.release(r); } catch {} bots.delete(id); continue; } // v0.4.56 (外部レビュー指摘5): 消去前に未保存の世界記憶を書く
+    // v0.4.70: 体 (模擬プレイヤー) で歩ける間は体に任せる。任せられない間 (水・崖越え・地下など) は従来の移動の後、体を追従させる
+    let bodyMode = "legacy";
+    if (BODY_SIM_ENABLE && bodies.available) { try { bodyMode = bodies.tick(bot, r, { container: invOf(bot) }); } catch (err) { noteFail(bot, "body:tick", err); } }
+    if (bodyMode === "body") { r.flyMode = "body"; r.stuckSec = 0; continue; }
+    try { selfRescue(bot, r); } catch {} // v0.4.68: 埋まっていたら脱出 (窒息防止)。移動ループ (2tick) ごとに見る
+    // 作り込み POLISH-SND-SWIM-01 (cycle0731): 入水/出水の遷移でのみ水音を鳴らす (sfxSplash 実配線、表示層のみ・実機確認待ち)
+    try { const inW = !!bot.isInWater; if (r._wasInWater !== undefined && inW !== r._wasInWater) { try { sfxSplash(bot.dimension, bot.location); } catch {} } r._wasInWater = inW; } catch {}
+    // 作り込み POLISH-SND-STEP-01 (v0.4.89): 移動中の足音を足元素材で鳴らす (sfxStep 実配線、350ms間引き、表示層のみ)
+    try { const lp = r._stepSfxPos; const cp = bot.location; if (lp && Math.hypot(cp.x - lp.x, cp.z - lp.z) >= 0.4) { const nowMs = Date.now(); if (!r._stepSfxAt || nowMs - r._stepSfxAt >= 350) { const below = bot.dimension.getBlock({ x: Math.floor(cp.x), y: Math.floor(cp.y - 0.5), z: Math.floor(cp.z) }); if (below && solidOfTypeId(below.typeId)) { if (sfxStep(bot.dimension, { x: cp.x, y: cp.y, z: cp.z }, below.typeId, { medium: !!bot.isInWater ? "water" : null })) r._stepSfxAt = nowMs; } } } r._stepSfxPos = { x: cp.x, y: cp.y, z: cp.z }; } catch {} // POLISH-SND-ENV-01 (cycle1234): 水中では足音を鈍くする (medium は SWIM-01 で既読の isInWater 由来、追加の API 呼び出しなし、表示層のみ・実機確認待ち)
+    // 作り込み POLISH-SND-HURT-01 (cycle0942): 被弾音の実配線。sfxHurt は定義済みだが未配線だった。HP低下の辺でのみ鳴らす (表示層のみ・実機確認待ち)
+    try { if (!r.sfxState) r.sfxState = createSfxState(); const hpNow = hpOf(bot); if (typeof r._sfxPrevHp === "number" && hpNow.cur < r._sfxPrevHp - 0.01) { try { sfxHurt(r.sfxState, bot.dimension, bot.location, Date.now()); } catch {} } r._sfxPrevHp = hpNow.cur; } catch {}
+    // 作り込み POLISH-SND-LAND-01 (cycle0942): 着地音の実配線。sfxLand は定義済みだが未配線だった。selfFalling (supplySelfFalling) の真→偽の辺で、落下距離2以上なら足元素材の step 音を強めに鳴らす (表示層のみ・実機確認待ち)
+    // 作り込み POLISH-FX-ENVRESIDUE-01 (cycle0942): 環境残留表現の状態機械を配線。出水/粉雪脱出の辺から減衰プロファイルで残留を出す。パーティクルIDは未照合 (profile の particleId=null) のため現時点では r.lastResidue への記録のみで、照合済みIDが入った媒体から実表示が始まる (虚偽の見た目を作らない)。表示層のみ・実機確認待ち
+    try { const insideRes = bot.isInWater ? "water" : ((r.lastCtx && r.lastCtx.x && r.lastCtx.x.selfFreezing) ? "powder_snow" : null); if (!r.residueState) r.residueState = createResidueState(); const rtRes = residueTick(r.residueState, insideRes, Date.now()); r.residueState = rtRes.state; if (rtRes.emit) { r.lastResidue = { medium: rtRes.medium, particle: rtRes.particleId, at: Date.now() }; if (rtRes.particleId) { try { emitResidueParticle(bot.dimension, bot.location, rtRes.medium); } catch {} } } } catch {}
+    try { if (!r.breathColdState) r.breathColdState = { lastFiredAtMs: null, nextDueAtMs: null, coldSinceMs: null, fireCount: 0, wasEligible: false }; const bx = r.lastCtx?.x; const firedB = noteBreathCold(r.breathColdState, { cold: bx?.biome === "snow", inPowderSnow: bx?.selfFreezing === true, inWater: !!bot.isInWater, dimension: (() => { try { return bot.dimension.id; } catch { return null; } })(), danger: !!((r.lastCtx?.danger?.count ?? 0) > 0), falling: r.selfFalling === true, nowMs: Date.now() }); if (firedB) r.lastBreathCold = { at: Date.now(), count: r.breathColdState.fireCount }; } catch {} // POLISH-FX-BREATHCOLD-01 (cycle1343): 寒冷地で約4秒周期に発火を記録のみ (粒子ID未照合のため spawnParticle は呼ばない、ENVRESIDUE と同方式・実機確認待ち)
+    try { const fallingNow = !!(r.lastCtx && r.lastCtx.x && r.lastCtx.x.selfFalling); if (fallingNow) { if (typeof r.selfFallPeakY === "number") r._landPeakY = r.selfFallPeakY; } else if (r._landFalling) { const peak = (typeof r._landPeakY === "number") ? r._landPeakY : bot.location.y; if (peak - bot.location.y >= 2) { const below2 = bot.dimension.getBlock({ x: Math.floor(bot.location.x), y: Math.floor(bot.location.y - 0.5), z: Math.floor(bot.location.z) }); if (below2 && solidOfTypeId(below2.typeId)) { try { sfxLand(bot.dimension, bot.location, below2.typeId); } catch {} } } r._landPeakY = null; } r._landFalling = fallingNow; } catch {}
+    if (!r.target) { try { noteMove(bot, r, "idle"); } catch {} if (r.body) bodies.followBot(bot, r); continue; }
+    const pos0 = bot.location;
+    // --- 飛行を先に試す ---
+    let fres = null;
+    if (FLY_ENABLE) { try { fres = flyTick(flyOf(bot, r), pos0, 0.1, { ownerPos: r.ownerPosCache || null }); } catch (err) { noteFail(bot, "flyTick", err); } }
+    if (fres) { const fr = fres.reason || ""; if (fr && fr !== r.lastFlyReason) r.flyReasonCount = (r.flyReasonCount || 0) + 1; if (fr) r.lastFlyReason = fr; if (fres.arrived) r.flyArrivedAt = Date.now(); } // Phase2: fly理由の回収（追加のみ・挙動不変）
+    if (fres && fres.mode === "fly") {
+      if (fres.move) { try { bot.teleport(fres.move, { rotation: { x: 0, y: fres.move.yaw } }); } catch {} }
+      else { try { clearPathAhead(bot, r, ["dest_blocked", "flight_blocked", "no_progress"].includes(fres.reason) || r.stuckSec >= 1); } catch {} } // v0.4.68: 塞がれて動けない時は掘って進む
+      const t = r.target; const td = Math.hypot(t.x - pos0.x, t.y - pos0.y, t.z - pos0.z);
+      if (r.lastPos && Math.hypot(pos0.x - r.lastPos.x, pos0.y - r.lastPos.y, pos0.z - r.lastPos.z) < 0.05 && td > 2) r.stuckSec += 0.1; else r.stuckSec = 0;
+      r.lastPos = { ...pos0 };
+      r.flyMode = "fly";
+      movementWatchdog(bot, r, pos0);
+      try { noteMove(bot, r, "fly"); } catch {}
+      if (r.body) bodies.followBot(bot, r); // v0.4.70
+      continue;
+    }
+    if (r.flyMode === "fly") { try { navClearGoal(navOf(bot, r)); } catch {} } // fly→ground 切替時は nav の古い目標を捨てる
+    r.flyMode = "ground";
+    let res = null;
+    try { res = navTick(navOf(bot, r), bot.location, 0.1, { act: r.moveAct }); } catch {}
+    r.navMode = res?.mode || "direct";
+    if (res && res.mode === "path" && res.move) {
+      const p0 = bot.location;
+      const lifted = liftFeet(bot.dimension, { x: res.move.x, y: res.move.y, z: res.move.z }); // v0.4.69: 段差で下半身が埋まらない
+      if (lifted) { try { bot.teleport(lifted, { rotation: { x: 0, y: res.move.yaw } }); } catch {} } else { try { navClearGoal(navOf(bot, r)); } catch {} } // 体が入らないなら動かず経路を引き直す
+      const t = r.target; const hd = Math.hypot(t.x - p0.x, t.z - p0.z);
+      if (r.lastPos && Math.hypot(p0.x - r.lastPos.x, p0.z - r.lastPos.z) < 0.05 && hd > 2) r.stuckSec += 0.1; else r.stuckSec = 0;
+      r.lastPos = { ...p0 };
+    } else {
+      moveDirect(bot, r);
+    }
+    if (res) applyDoors(bot, res, r);
+    try { clearPathAhead(bot, r, r.stuckSec >= 1); } catch {} // v0.4.68: 地上移動でも塞がれていたら掘って進む
+    movementWatchdog(bot, r, pos0);
+    try { noteMove(bot, r, r.navMode === "path" ? "nav" : "direct"); } catch {}
+    if (r.body) bodies.followBot(bot, r); // v0.4.70
+  }
+}, 2);
+
+// ---------- v0.3.0: 指示ミッション / 建築 / 工場 / 視線 ----------
+const LIFE_CRITICAL_ACTS = new Set(["flee", "rest_at_home", "use_heal_item"]); // ミッション中の安全割り込みはこの集合に限る（挙動ベンチ弱点2。use_heal_item は装備文脈でのみ発火する自己回復で、ベンチ文脈では出現しない）
+function missionSig(m) { // Phase 0 負荷対策: 復元に必要な構造だけの軽量シグネチャ（obsCount/updatedAt/have は再導出できるので含めない）
+  if (!m) return "";
+  const steps = (m.steps || []).map((s) => `${s.status}:${s.banked || 0}:${s.base == null ? 0 : 1}:${s.searchStage || 0}`).join(",");
+  return `${m.status}|${m.currentStep}|${m.suspendReason || ""}|${m.suspendCount || 0}|${m.detour ? m.detour.phase + ":" + m.detour.resumeStep : ""}|${steps}`;
+}
+function persistMission(bot, r, force = false) {
+  const sig = missionSig(r.mission);
+  if (!force && sig === r.missionSig) return; // 復元に効く変化なし → DP書きを省略
+  r.missionSig = sig;
+  dps(bot, "cb_mission", r.mission ? JSON.stringify(r.mission) : "");
+}
+function countInv(e) { const out = Object.create(null); const cont = invOf(e); if (cont) for (let i = 0; i < cont.size; i++) { const it = cont.getItem(i); if (it) out[it.typeId] = (out[it.typeId] || 0) + it.amount; } return out; }
+function hasItem(bot, typeId) { return (countInv(bot)[typeId] || 0) > 0; }
+function returnPoint(bot, owner, m) {
+  if (m.order.returnTo === "home") { const h = homeOf(bot); if (h && h.dim === bot.dimension.id) return { x: h.x + 0.5, y: h.y + 1, z: h.z + 0.5 }; }
+  return { ...owner.location };
+}
+function behindOf(owner, d) { const vd = (() => { try { return owner.getViewDirection(); } catch { return { x: 0, z: 1 }; } })(); return { x: owner.location.x - vd.x * d, y: owner.location.y, z: owner.location.z - vd.z * d }; }
+const SCAN_TTL_MS = 4000;         // Phase 0 負荷対策: 型別キャッシュの保持時間 (v0.4.66: 広域化に合わせ 2.5→4 秒)
+// v0.4.66: 広域ブロック探索。dimension.getBlocks (ネイティブ) で一致ブロックの位置だけを受け取る。
+// 近い範囲から順に広げ (8→16→32)、最初に見つかった範囲で止める。石のような大量にある対象でも
+// 反復数を抑えられる。getBlocks が使えない・例外の環境では従来の ±8 の 1 マス走査へ戻る。
+const SCAN_RINGS = [{ h: 8, v: 4 }, { h: 16, v: 8 }, { h: 32, v: 12 }];
+const SCAN_ITER_CAP = 4000; // 1 回の問い合わせで見る一致位置の上限
+// v0.4.68: getBlocks 1 回あたりの体積上限 (fillBlocks と同じ 32768 に合わせる)。超える範囲は分けて問い合わせる
+const QUERY_MAX_VOLUME = 32768;
+function splitVolume(a, b) {
+  const out = [], stack = [[a, b]];
+  while (stack.length) {
+    const [p, q] = stack.pop();
+    const sx = q.x - p.x + 1, sy = q.y - p.y + 1, sz = q.z - p.z + 1;
+    if (sx * sy * sz <= QUERY_MAX_VOLUME) { out.push([p, q]); continue; }
+    if (sy >= sx && sy >= sz) { const m = p.y + Math.floor(sy / 2) - 1; stack.push([p, { ...q, y: m }], [{ ...p, y: m + 1 }, q]); }
+    else if (sx >= sz) { const m = p.x + Math.floor(sx / 2) - 1; stack.push([p, { ...q, x: m }], [{ ...p, x: m + 1 }, q]); }
+    else { const m = p.z + Math.floor(sz / 2) - 1; stack.push([p, { ...q, z: m }], [{ ...p, z: m + 1 }, q]); }
+  }
+  return out;
+}
+const warnedOnce = new Set();
+function warnOnce(key, msg) { if (warnedOnce.has(key)) return; warnedOnce.add(key); console.warn(msg); }
+let wideScanFails = 0; // getBlocks の連続失敗回数。WIDE_SCAN_MAX_FAILS 回続いたら以後は従来走査
+const WIDE_SCAN_MAX_FAILS = 5;
+function wideQuery(bot, typeIds) {
+  // 戻り値: { ok, best: { typeId: {x,y,z}|null } }。ok=false は「測れなかった」(呼び出し側が従来走査へ)
+  const best = {}; for (const id of typeIds) best[id] = null;
+  if (wideScanFails >= WIDE_SCAN_MAX_FAILS) return { ok: false, best };
+  const BV = mcServer.BlockVolume;
+  const dim = bot.dimension;
+  if (!BV || typeof dim.getBlocks !== "function") { wideScanFails = WIDE_SCAN_MAX_FAILS; return { ok: false, best }; }
+  let minY = -64, maxY = 319; try { minY = dim.heightRange.min; maxY = dim.heightRange.max - 1; } catch {}
+  const bx = Math.floor(bot.location.x), by = Math.floor(bot.location.y), bz = Math.floor(bot.location.z);
+  const want = new Set(typeIds);
+  const bd = {};
+  // 1 つの範囲・ID 群を問い合わせ、見つかった位置で best を更新する。例外はそのまま投げる
+  const queryRing = (ring, ids) => {
+    const y0 = Math.max(minY, by - ring.v), y1 = Math.min(maxY, by + ring.v);
+    if (y0 > y1) return false;
+    let n = 0, any = false;
+    for (const [va, vb] of splitVolume({ x: bx - ring.h, y: y0, z: bz - ring.h }, { x: bx + ring.h, y: y1, z: bz + ring.h })) {
+    const list = dim.getBlocks(new BV(va, vb), { includeTypes: ids }, true);
+    for (const loc of list.getBlockLocationIterator()) {
+      if (++n > SCAN_ITER_CAP) break;
+      let id = ids.length === 1 ? ids[0] : null;
+      if (!id) { try { id = dim.getBlock(loc)?.typeId ?? null; } catch { id = null; } }
+      if (!id || !want.has(id)) continue;
+      const dx = loc.x - bx, dy = loc.y - by, dz = loc.z - bz;
+      const dd = dx * dx + dz * dz + dy * dy * 2.25; // 上下は 1.5 倍遠いとみなす (掘り進む手間)
+      if (bd[id] === undefined || dd < bd[id]) { bd[id] = dd; best[id] = { x: loc.x, y: loc.y, z: loc.z }; any = true; }
+    }
+    if (n > SCAN_ITER_CAP) break;
+    }
+    return any;
+  };
+  let okAny = false, lastErr = null;
+  for (const ring of SCAN_RINGS) {
+    let any = false;
+    try { any = queryRing(ring, typeIds); okAny = true; }
+    catch (err) {
+      // 存在しない ID が混ざると一括の問い合わせが失敗しうる。ID ごとに試し直し、通るものだけ使う
+      lastErr = err;
+      warnOnce("wide:" + String(err).slice(0, 60), `[LIZE] wide scan error (ring ${ring.h}): ${err}`); // 最初の 1 回からログに出す
+      if (typeIds.length > 1) for (const id of typeIds) { try { if (queryRing(ring, [id])) any = true; okAny = true; } catch (e2) { lastErr = e2; } }
+    }
+    if (any) break; // 近い範囲で見つかったら、それより遠くは見ない
+  }
+  if (okAny) { wideScanFails = 0; return { ok: true, best }; }
+  wideScanFails++;
+  if (LIZE_DEBUG || wideScanFails === WIDE_SCAN_MAX_FAILS) console.warn(`[LIZE] wide scan failed (${wideScanFails}/${WIDE_SCAN_MAX_FAILS}): ${lastErr}`);
+  return { ok: false, best };
+}
+// (旧 SCAN_SPECIES_PER_TICK は v0.4.64 で廃止: 樹種別分割走査が pending 固着の原因だったため一括走査へ)
+function scanCachePeek(r, typeId) {
+  const ent = r.mScanMap && r.mScanMap[typeId];
+  if (!ent) return { state: "stale" };
+  if (Date.now() - ent.at >= ent.ttl) return { state: "stale" };
+  if (ent.loc) return { state: "hit", loc: ent.loc };
+  // Phase2 INSPECT Step2: 失敗過半の走査は absent と偽らない (unknown)。旧形式エントリ (failedCells無し) で loc無しも unknown
+  if (ent.failedCells === undefined || ent.failedCells * 2 > (ent.totalCells || 2601)) return { state: "unknown" };
+  return { state: "absent" };
+}
+function scanBlockNear(bot, r, typeId, ttlJitter = 0) {
+  const pt = r.percTargets || {};
+  for (const k of ["tree", "ore", "crop"]) if (pt[k] && pt[k].typeId === typeId) return { x: pt[k].x, y: pt[k].y, z: pt[k].z };
+  const now = Date.now();
+  if (!r.mScanMap) r.mScanMap = {};
+  const ent = r.mScanMap[typeId];
+  if (ent && now - ent.at < ent.ttl) return ent.loc;
+  { const wq = wideQuery(bot, [typeId]); if (wq.ok) { r.mScanMap[typeId] = { at: now, ttl: SCAN_TTL_MS + ttlJitter, loc: wq.best[typeId], failedCells: 0, totalCells: 2601 }; try { r.lastBlockScan = { typeId, failedCells: 0, totalCells: 2601, at: now, wide: true }; } catch {} return wq.best[typeId]; } } // v0.4.66: 広域探索
+  let best = null, bd = 1e9, failedCells = 0;
+  const bx = Math.floor(bot.location.x), by = Math.floor(bot.location.y), bz = Math.floor(bot.location.z);
+  for (let dx = -8; dx <= 8; dx++) for (let dy = -4; dy <= 4; dy++) for (let dz = -8; dz <= 8; dz++) {
+    let b = null; try { b = bot.dimension.getBlock({ x: bx + dx, y: by + dy, z: bz + dz }); } catch {}
+    if (!b) { failedCells++; continue; } // Phase2 INSPECT Step0: 失敗セル計数 (例外と未読込を1セル1回だけ数える)
+    if (b.typeId !== typeId) continue;
+    const dd = Math.hypot(dx, dy, dz); if (dd < bd) { bd = dd; best = { x: b.location.x, y: b.location.y, z: b.location.z }; }
+  }
+  r.mScanMap[typeId] = { at: now, ttl: SCAN_TTL_MS + ttlJitter, loc: best, failedCells, totalCells: 2601 };
+  try { r.lastBlockScan = { typeId, failedCells, totalCells: 2601, at: now }; } catch {}
+  return best;
+}
+// v0.4.64: 複数IDを1回の走査でまとめて確定させる。原木の樹種別分割走査 (1回2種まで) は
+// TTL (2.5〜4.1秒) より一巡 (約5秒) が長く、常に未測定種が残って pending が解けなかった。
+// 1走査で全ID分のキャッシュを同時に書くため、状態は必ず揃う。負荷は1種ぶんと同じ。
+function scanBlocksNear(bot, r, typeIds) {
+  const now = Date.now();
+  if (!r.mScanMap) r.mScanMap = {};
+  const want = new Set(typeIds);
+  const best = {}, bd = {};
+  for (const id of typeIds) { best[id] = null; bd[id] = Infinity; }
+  const pt = r.percTargets || {};
+  for (const k of ["tree", "ore", "crop"]) if (pt[k] && want.has(pt[k].typeId)) best[pt[k].typeId] = { x: pt[k].x, y: pt[k].y, z: pt[k].z };
+  { const wq = wideQuery(bot, typeIds); if (wq.ok) { for (const id of typeIds) r.mScanMap[id] = { at: now, ttl: SCAN_TTL_MS, loc: best[id] || wq.best[id], failedCells: 0, totalCells: 2601 }; try { r.lastBlockScan = { typeId: typeIds[0], failedCells: 0, totalCells: 2601, at: now, wide: true }; } catch {} for (const id of typeIds) if (!best[id]) best[id] = wq.best[id]; return best; } } // v0.4.66: 広域探索
+  let failedCells = 0;
+  const bx = Math.floor(bot.location.x), by = Math.floor(bot.location.y), bz = Math.floor(bot.location.z);
+  for (let dx = -8; dx <= 8; dx++) for (let dy = -4; dy <= 4; dy++) for (let dz = -8; dz <= 8; dz++) {
+    let b = null; try { b = bot.dimension.getBlock({ x: bx + dx, y: by + dy, z: bz + dz }); } catch {}
+    if (!b) { failedCells++; continue; }
+    if (!want.has(b.typeId)) continue;
+    const dd = dx * dx + dy * dy + dz * dz;
+    if (dd < bd[b.typeId]) { bd[b.typeId] = dd; best[b.typeId] = { x: b.location.x, y: b.location.y, z: b.location.z }; }
+  }
+  for (const id of typeIds) r.mScanMap[id] = { at: now, ttl: SCAN_TTL_MS, loc: best[id], failedCells, totalCells: 2601 };
+  try { r.lastBlockScan = { typeId: typeIds[0], failedCells, totalCells: 2601, at: now }; } catch {}
+  return best;
+}
+// Phase2 INSPECT 実体 (v0.4.8): scanBlockNear の三状態ラッパ。結果は {state, source, confidence, loc} で返し r.lastInspect へ記録のみ
+function inspectBlockNear(bot, r, typeId) {
+  let out = null;
+  try {
+    const pt = r.percTargets || {};
+    for (const k of ["tree", "ore", "crop"]) if (pt[k] && pt[k].typeId === typeId && bot?.dimension) { out = { state: "present", source: "perc", confidence: 0.9, loc: { x: pt[k].x, y: pt[k].y, z: pt[k].z } }; break; }
+    if (!out) {
+      const peek = scanCachePeek(r, typeId);
+      if (peek.state === "hit") out = { state: "present", source: "cache", confidence: 1, loc: peek.loc };
+      else if (peek.state === "absent") { const ent = r.mScanMap?.[typeId]; const f = ent?.failedCells ?? 0, t = ent?.totalCells ?? 2601; out = { state: "absent", source: "cache", confidence: Math.max(0, Math.min(1, 1 - f / t)), loc: null }; }
+      else if (peek.state === "unknown") out = { state: "unknown", source: "cache", confidence: 0, loc: null };
+      else { const loc = scanBlockNear(bot, r, typeId); const ent = r.mScanMap?.[typeId]; const f = ent?.failedCells ?? 0, t = ent?.totalCells ?? 2601; out = loc ? { state: "present", source: "scan", confidence: 1, loc } : (f * 2 > t ? { state: "unknown", source: "scan", confidence: 0, loc: null } : { state: "absent", source: "scan", confidence: Math.max(0, Math.min(1, 1 - f / t)), loc: null }); }
+    }
+  } catch { out = { state: "unknown", source: "scan", confidence: 0, loc: null }; }
+  try { r.lastInspect = { act: "INSPECT", state: out.state, source: out.source, confidence: out.confidence, typeId, at: Date.now() }; } catch {}
+  return out;
+}
+// Phase2 WITHDRAW 実体 (v0.4.8 Step A): withdraw.js executor へ実API ports を接続する。呼び出し口 (mission/planner) は Step B 以降
+function runWithdraw(bot, r, args) {
+  const home = args?.from?.home === true ? homeOf(bot) : null;
+  const targetPos = home ? { x: home.x, y: home.y, z: home.z } : (args?.from?.block ? { x: args.from.block.x, y: args.from.block.y, z: args.from.block.z } : args?.from);
+  const targetDim = home ? home.dim : (args?.from?.block?.dim || args?.from?.dim || bot.dimension.id);
+  const getBlockSafe = () => { try { return bot.dimension.getBlock({ x: Math.floor(targetPos.x), y: Math.floor(targetPos.y), z: Math.floor(targetPos.z) }) || null; } catch { return null; } };
+  const getSrcCont = () => { const b = getBlockSafe(); if (!b) return null; try { return b.getComponent("minecraft:inventory")?.container || null; } catch { return null; } };
+  const slotsOf = (cont) => { const out = []; if (!cont) return out; for (let i = 0; i < cont.size; i++) { let st = null; try { st = cont.getItem(i); } catch {} out.push(st ? { typeId: st.typeId, amount: st.amount, maxAmount: st.maxAmount || 64 } : null); } return out; };
+  const ex = createWithdrawExecutor({
+    readSnapshot: () => {
+      const b = (targetDim === bot.dimension.id) ? getBlockSafe() : null;
+      let contKnown = false, contPresent = false;
+      if (b) { contKnown = true; try { contPresent = !!b.getComponent("minecraft:inventory")?.container; } catch { contKnown = false; } }
+      let wasKnown = false; try { const wm = wmemOf(bot); wasKnown = !!(wm?.getContainer && targetPos && wm.getContainer(targetPos, targetDim)); } catch {}
+      return { botDim: bot.dimension.id, fromDim: targetDim, distance: targetPos ? dist(bot.location, { x: targetPos.x + 0.5, y: targetPos.y + 0.5, z: targetPos.z + 0.5 }) : null, invKnown: !!invOf(bot), blockReadOk: targetDim !== bot.dimension.id ? true : !!b, blockType: targetDim !== bot.dimension.id ? null : (b ? b.typeId : null), wasKnownContainer: wasKnown, containerKnown: contKnown, containerPresent: contPresent };
+    },
+    readSrcSlots: () => slotsOf(getSrcCont()),
+    readBotSlots: () => slotsOf(invOf(bot)),
+    applyTransfer: (srcAfter, dstAfter, transfers) => {
+      const sc = getSrcCont(), bc = invOf(bot); if (!sc || !bc) return false;
+      for (const t of transfers) {
+        let srcStack = null; try { srcStack = sc.getItem(t.srcSlot); } catch {}
+        if (!srcStack || t.moved <= 0) continue;
+        let give = null; try { give = srcStack.clone(); give.amount = t.moved; } catch { return false; }
+        let rest = null; try { rest = bc.addItem(give); } catch { return false; }
+        const actually = t.moved - (rest ? rest.amount : 0);
+        if (actually > 0) { try { const remain = srcStack.amount - actually; if (remain > 0) { const ns = srcStack.clone(); ns.amount = remain; sc.setItem(t.srcSlot, ns); } else sc.setItem(t.srcSlot, undefined); } catch { return false; } }
+      }
+      return true;
+    },
+    onScanned: (info) => { try { const wm = wmemOf(bot); if (wm?.recordContainer && targetPos) wm.recordContainer(targetPos, targetDim, { kind: info.blockType || undefined, source: "direct_inspect", confidence: 1, ...(info?.contents && typeof info.contents === "object" ? { contents: info.contents } : {}) }); } catch {} }, // Step2 (v0.4.18): contents が載っているときだけ転送
+    onForget: () => { try { const wm = wmemOf(bot); if (wm?.forgetContainer && targetPos) wm.forgetContainer(targetPos, targetDim); } catch {} },
+  }, { extraContainers: OF_CONTAINERS });
+  const res = ex.withdraw(args);
+  recordWithdraw(bot, r, res);
+  return res;
+}
+// Phase2 WITHDRAW Step B (v0.4.11): 既知コンテナ候補の供給。在庫は world_memory が保持しないため断定せず、確定は executor の stock が担う
+function buildWithdrawCandidate(bot, r, m, step) {
+  try {
+    if (!m) return null;
+    const wm = wmemOf(bot);
+    const list = wm?.knownContainers ? wm.knownContainers(bot.dimension.id) : [];
+    if (!(r.withdrawBlocked instanceof Set)) r.withdrawBlocked = new Set();
+    return selectWithdrawCandidate({ stepType: step?.type, detour: m.detour, blockedStatus: m.blocked, need: step?.need, have: step?.have, now: Date.now(), cooldownUntil: r.withdrawCooldownUntil || 0, item: step?.target, logBlockIds: LOG_BLOCK_IDS, containers: list, selfPos: bot.location, dim: bot.dimension.id, blockedKeys: r.withdrawBlocked, stepIndex: m.currentStep });
+  } catch { return null; }
+}
+// Phase2 WITHDRAW Step B: 実行結果の後処理。確定情報だけ blocked 集合へ、unknown 系は cooldown のみ。進捗は measure() 実測のみ (二重計上禁止)
+function handleWithdrawResult(bot, r, m, cand, res) {
+  try {
+    if (!(r.withdrawBlocked instanceof Set)) r.withdrawBlocked = new Set();
+    const key = `${m?.currentStep ?? 0}:${cand.dim || bot.dimension.id}:${cand.x},${cand.y},${cand.z}:${cand.item}`;
+    const block = () => { r.withdrawBlocked.add(key); if (r.withdrawBlocked.size > 64) r.withdrawBlocked.clear(); };
+    const cool = () => { r.withdrawCooldownUntil = Date.now() + 30000; };
+    if (!res) { cool(); return; }
+    if (res.ok) { if (res.detail?.partial && (res.detail.stock ?? 0) <= (res.detail.taken ?? 0)) block(); return; }
+    switch (res.reason) {
+      case "ITEM_NOT_FOUND": case "TARGET_MISSING": case "NOT_A_CONTAINER": case "WRONG_DIMENSION": block(); break;
+      case "TARGET_UNKNOWN": case "VERIFY_FAILED": case "API_ERROR": cool(); break;
+      case "INVENTORY_FULL": case "OUT_OF_RANGE": case "NOT_IMPLEMENTED": break;
+      default: cool(); break;
+    }
+  } catch {}
+}
+function itemTypeOf(e) { try { return e.getComponent("minecraft:item")?.itemStack?.typeId || null; } catch { return null; } }
+const LOG_BLOCK_IDS = ["minecraft:oak_log", "minecraft:spruce_log", "minecraft:birch_log", "minecraft:jungle_log", "minecraft:acacia_log", "minecraft:dark_oak_log", "minecraft:mangrove_log", "minecraft:cherry_log", "minecraft:pale_oak_log"];
+
+// ---------- v0.4.66: チャンク調査 (区画 = 4×4 チャンク = 64×64 ブロック、高さ全体) ----------
+// リゼのいる区画を 1 tick に 1 チャンクずつ getBlocks で調べ、原木と鉱石の位置を記録する。
+// 地下の鉱石も分かる。見つからなければ mission 側の探索が「まだ調べていない隣の区画」へ向かう。
+// チャンクは読み込まれている必要があるため、エンティティ側に minecraft:tick_world (半径4チャンク) を付けて、
+// リゼ自身がチャンクローダーとして周囲を読み込み続ける。
+const ORE_IDS = ["coal_ore", "deepslate_coal_ore", "iron_ore", "deepslate_iron_ore", "copper_ore", "deepslate_copper_ore",
+  "gold_ore", "deepslate_gold_ore", "redstone_ore", "deepslate_redstone_ore", "lit_redstone_ore", "lit_deepslate_redstone_ore",
+  "lapis_ore", "deepslate_lapis_ore", "diamond_ore", "deepslate_diamond_ore", "emerald_ore", "deepslate_emerald_ore",
+  "nether_gold_ore", "quartz_ore", "ancient_debris"].map((x) => "minecraft:" + x);
+const SURVEY_IDS = [...LOG_BLOCK_IDS, ...ORE_IDS];
+const REGION_SIZE = 64;                 // 4 チャンク
+const SURVEY_TTL_MS = 15 * 60 * 1000;   // 調査結果の保持時間
+const SURVEY_HITS_CAP = 96;             // 区画ごと・種類ごとに覚える位置の上限
+const SURVEY_ITER_CAP = 1200;           // 1 チャンクで見る一致位置の上限
+const EXPLORE_MAX_RING = 3;             // 探索開始区画から何区画先まで調べに行くか (±3 = 7×7 区画 ≒ ±220 ブロック)
+const surveys = new Map();              // "dim:rx,rz" -> { dim, rx, rz, at, doneMask, fails, hits: { typeId: [{x,y,z}] } }
+let surveyIds = SURVEY_IDS.slice();     // 使えない ID が見つかったら外す
+let surveyBroken = false;
+let surveySlowUntil = 0;
+let surveyRR = 0; // 調査する区画の巡回カウンタ (今いる区画を優先しつつ、隣の区画も少しずつ進める)
+const regionOf = (x, z) => ({ rx: Math.floor(x / REGION_SIZE), rz: Math.floor(z / REGION_SIZE) });
+const surveyKeyOf = (dimId, rx, rz) => `${dimId}:${rx},${rz}`;
+function surveyFresh(sv) { return !!sv && Date.now() - sv.at < SURVEY_TTL_MS; }
+function surveyDone(sv) { return surveyFresh(sv) && sv.doneMask === 0xffff; }
+function surveyAvailable() { return !surveyBroken && !!mcServer.BlockVolume; }
+function requestSurvey(dimId, rx, rz, prio = 1) {
+  if (!surveyAvailable()) return null;
+  const key = surveyKeyOf(dimId, rx, rz);
+  let sv = surveys.get(key);
+  if (!sv || !surveyFresh(sv)) { sv = { dim: dimId, rx, rz, at: Date.now(), doneMask: 0, fails: 0, hits: {}, wantAt: Date.now() }; surveys.set(key, sv); }
+  sv.wantAt = Date.now(); sv.prio = prio;
+  if (surveys.size > 400) { const old = [...surveys.entries()].sort((a, b) => (a[1].wantAt || 0) - (b[1].wantAt || 0)).slice(0, 100); for (const [k] of old) surveys.delete(k); }
+  return sv;
+}
+// survey CAP B-prime (cycle1703): unit-based progress helpers. splitVolume untouched (shared utility)
+function halveUnit(va, vb) {
+  const sx = vb.x - va.x + 1, sy = vb.y - va.y + 1, sz = vb.z - va.z + 1;
+  if (sx <= 1 && sy <= 1 && sz <= 1) return null;
+  if (sy >= sx && sy >= sz) { const m = va.y + Math.floor(sy / 2) - 1; return [[va, { ...vb, y: m }], [{ ...va, y: m + 1 }, vb]]; }
+  if (sx >= sz) { const m = va.x + Math.floor(sx / 2) - 1; return [[va, { ...vb, x: m }], [{ ...va, x: m + 1 }, vb]]; }
+  const m = va.z + Math.floor(sz / 2) - 1; return [[va, { ...vb, z: m }], [{ ...va, z: m + 1 }, vb]];
+}
+function recordHit(sv, id, loc) {
+  const arr = sv.hits[id] || (sv.hits[id] = []);
+  for (const h of arr) if (h.x === loc.x && h.y === loc.y && h.z === loc.z) return;
+  if (arr.length < SURVEY_HITS_CAP) arr.push({ x: loc.x, y: loc.y, z: loc.z });
+}
+// 1 chunk survey. Returns: "done" | "partial" | "unloaded" | "error"  (partial = progress saved in sv.units)
+function surveyChunk(sv, idx) {
+  const dim = world.getDimension(sv.dim);
+  const cx = sv.rx * 4 + (idx & 3), cz = sv.rz * 4 + (idx >> 2);
+  let minY = -64, maxY = 319; try { minY = dim.heightRange.min; maxY = dim.heightRange.max - 1; } catch {}
+  if (!sv.units) sv.units = {};
+  if (!sv.units[idx]) sv.units[idx] = splitVolume({ x: cx * 16, y: minY, z: cz * 16 }, { x: cx * 16 + 15, y: maxY, z: cz * 16 + 15 });
+  const stack = sv.units[idx];
+  let budget = 0;
+  while (stack.length > 0) {
+    const unit = stack[stack.length - 1];
+    const freshStart = budget === 0;
+    let list = null;
+    try { list = dim.getBlocks(new mcServer.BlockVolume(unit[0], unit[1]), { includeTypes: surveyIds }, false); }
+    catch (err) {
+      const msg = String(err && (err.name || "") + " " + (err.message || err));
+      if (/unloaded/i.test(msg)) return "unloaded";
+      warnOnce("survey:" + msg.slice(0, 60), `[LIZE] chunk survey error: ${msg}`);
+      if (!sv.idCheck) {
+        sv.idCheck = true;
+        const okIds = [];
+        for (const id of surveyIds) { try { dim.containsBlock(new mcServer.BlockVolume({ x: cx * 16, y: 0, z: cz * 16 }, { x: cx * 16, y: 0, z: cz * 16 }), { includeTypes: [id] }, true); okIds.push(id); } catch {} }
+        if (okIds.length && okIds.length < surveyIds.length) { surveyIds = okIds; return "error"; }
+      }
+      return "error";
+    }
+    let truncated = false;
+    for (const loc of list.getBlockLocationIterator()) {
+      if (++budget > SURVEY_ITER_CAP) { truncated = true; break; }
+      let id = null; try { id = dim.getBlock(loc)?.typeId ?? null; } catch {}
+      if (!id) continue;
+      recordHit(sv, id, loc);
+    }
+    if (!truncated) { stack.pop(); continue; }
+    if (freshStart) {
+      stack.pop();
+      const halves = halveUnit(unit[0], unit[1]);
+      if (halves) for (const h of halves) stack.push(h);
+    }
+    return "partial";
+  }
+  return "done";
+}
+// 調査の実行: 毎 tick、待ちのある区画を 1 チャンクだけ進める (重い時は間引く)
+system.runInterval(() => {
+  if (!surveyAvailable() || Date.now() < surveySlowUntil) return;
+  const queue = [];
+  for (const v of surveys.values()) if (surveyFresh(v) && v.doneMask !== 0xffff && Date.now() - (v.wantAt || 0) < 10000) queue.push(v);
+  if (!queue.length) return;
+  queue.sort((a, b) => (b.prio || 0) - (a.prio || 0) || (b.wantAt || 0) - (a.wantAt || 0));
+  // 偶数 tick は最優先 (今いる区画)、奇数 tick は残りを順番に。今いる区画が終わっていれば隣だけを進める
+  surveyRR++;
+  const sv = (surveyRR % 2 === 0 || queue.length === 1) ? queue[0] : queue[1 + (Math.floor(surveyRR / 2) % (queue.length - 1))];
+  const start = sv.nextIdx || 0;
+  for (let k = 0; k < 16; k++) {
+    const idx = (start + k) % 16;
+    if (sv.doneMask & (1 << idx)) continue;
+    const t0 = Date.now();
+    let res = "error"; try { res = surveyChunk(sv, idx); } catch { res = "error"; }
+    const ms = Date.now() - t0;
+    if (ms > 25) surveySlowUntil = Date.now() + ms * 2; // 処理落ち防止: 重かった分だけ次を遅らせる
+    sv.nextIdx = (idx + 1) % 16;
+    if (res === "done") { sv.doneMask |= (1 << idx); sv.at = Date.now(); }
+    else if (res === "partial") { sv.at = Date.now(); } // B-prime: progress refreshes freshness only
+    else if (res === "error") { sv.fails++; if (sv.fails > 40) { surveyBroken = true; console.warn("[LIZE] chunk survey disabled (getBlocks keeps failing)"); } }
+    // unloaded は次の tick に別のチャンクを試す (リゼが近づけば読み込まれる)
+    break;
+  }
+}, 1);
+// 調査結果から、指定 ID の一番近い位置を探す (ban 中の位置は除く)。現物が変わっていたら記録から消す
+function lookupSurvey(bot, ids, banKey = null) {
+  if (!surveyAvailable()) return null;
+  const dimId = bot.dimension.id, p = bot.location;
+  const { rx, rz } = regionOf(p.x, p.z);
+  const want = new Set(ids);
+  const cands = [];
+  for (const sv of surveys.values()) {
+    if (sv.dim !== dimId || !surveyFresh(sv)) continue;
+    if (Math.abs(sv.rx - rx) > EXPLORE_MAX_RING + 1 || Math.abs(sv.rz - rz) > EXPLORE_MAX_RING + 1) continue;
+    for (const id of Object.keys(sv.hits)) {
+      if (!want.has(id)) continue;
+      for (const loc of sv.hits[id]) {
+        if (banKey && banKey === `${loc.x},${loc.y},${loc.z}`) continue;
+        const dx = loc.x - p.x, dy = loc.y - p.y, dz = loc.z - p.z;
+        cands.push({ sv, id, loc, d: dx * dx + dz * dz + dy * dy * 2.25 });
+      }
+    }
+  }
+  cands.sort((a, b) => a.d - b.d);
+  for (const c of cands.slice(0, 12)) {
+    let b = null; try { b = bot.dimension.getBlock(c.loc); } catch {}
+    if (b && b.typeId !== c.id) { const arr = c.sv.hits[c.id]; const i = arr.indexOf(c.loc); if (i >= 0) arr.splice(i, 1); continue; } // もう無い (掘られた等)
+    return { loc: { ...c.loc }, typeId: c.id };
+  }
+  return null;
+}
+// 探索: 中心区画から近い順に、まだ調べ終えていない区画を返す。全部調べ終えていれば null
+function nextExploreRegion(dimId, center, from) {
+  const c = regionOf(center.x, center.z);
+  const list = [];
+  for (let dx = -EXPLORE_MAX_RING; dx <= EXPLORE_MAX_RING; dx++) for (let dz = -EXPLORE_MAX_RING; dz <= EXPLORE_MAX_RING; dz++) {
+    const rx = c.rx + dx, rz = c.rz + dz;
+    if (surveyDone(surveys.get(surveyKeyOf(dimId, rx, rz)))) continue;
+    const mx = rx * REGION_SIZE + REGION_SIZE / 2, mz = rz * REGION_SIZE + REGION_SIZE / 2;
+    const ring = Math.max(Math.abs(dx), Math.abs(dz));
+    list.push({ rx, rz, x: mx, z: mz, ring, d: Math.hypot(mx - from.x, mz - from.z) });
+  }
+  if (!list.length) return null;
+  list.sort((a, b) => a.ring - b.ring || a.d - b.d); // 内側の輪から、今いる場所に近い順
+  return list[0];
+}
+// ---------- v0.4.66: 地下の対象へのトンネル掘り ----------
+// 対象が地中にあって立ち位置が無いとき、1×2 の通路を階段状に掘って近づく。溶岩が隣接するマスは掘らない。
+const TUNNEL_DIG_PER_TICK = 6; // 1 マスあたりの掘り回数の上限 (石 4・深層岩 6)
+// 真上に「地形」の固いブロック (葉・原木・草花は数えない) が 2 つ以上あれば地中とみなす。
+// 木の幹は真上が葉や原木なので地中にならない (以前は葉で地中と誤判定し、空中をトンネル掘りで 1 秒 1 マスずつ進んでいた)
+function isUnderground(bot, loc) {
+  try {
+    const dim = bot.dimension; const top = dim.getTopmostBlock({ x: loc.x, z: loc.z });
+    if (!top || top.location.y <= loc.y) return false;
+    // cycle1400: 数え上げは underground_math の純粋核へ移譲 (規則は同一、雪層の扱いをテストで固定)
+    return isUndergroundColumn((y) => { try { const b = dim.getBlock({ x: loc.x, y, z: loc.z }); return b ? b.typeId : null; } catch { return null; } }, solidOfTypeId, loc.y, top.location.y);
+  } catch { return false; }
+}
+function shouldTunnel(bot, r, loc) {
+  const eye = { x: bot.location.x, y: bot.location.y + 1.6, z: bot.location.z };
+  if (dist(eye, { x: loc.x + 0.5, y: loc.y + 0.5, z: loc.z + 0.5 }) <= WORK_REACH) return false; // 手が届くなら普通に掘る
+  if (r.tunnel && r.tunnel.key === `${loc.x},${loc.y},${loc.z}`) return true;                       // 掘り始めたら続ける
+  return !workStandPoint(bot, loc) || isUnderground(bot, loc);
+}
+function lavaNear(dim, c) {
+  for (const [dx, dy, dz] of [[0, 0, 0], [1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]) {
+    try { const b = dim.getBlock({ x: c.x + dx, y: c.y + dy, z: c.z + dz }); if (b && b.typeId.includes("lava")) return true; } catch {}
+  }
+  return false;
+}
+function abandonTunnel(bot, owner, r, why) {
+  r.mBanKey = r.mTargetKey; r.mBanUntil = Date.now() + 120000; r.mTargetLoc = null; r.mTargetKey = ""; r.mTargetSince = Date.now();
+  r.tunnel = null; r.work = null;
+  try { r.lastBreak = { act: "BREAK", ok: false, reason: why, item: null, at: Date.now() }; commitLastAction(r, r.lastBreak); } catch {}
+  if (!r.tunnelWarnAt || Date.now() - r.tunnelWarnAt > 60000) { r.tunnelWarnAt = Date.now(); try { say(owner, bot, why === "LAVA" ? "その先は溶岩があります。別の鉱石を探します" : "そこへは掘り進めませんでした。別のものを探します", true); } catch {} }
+}
+// 掘った道をたどって地上へ戻る。掘り作業中でなく、地中にいて、行き先が 6 ブロック以上先のときだけ
+function exitTunnelIfNeeded(bot, r) {
+  try {
+    if (!r.tunnelPath || !r.tunnelPath.length) { r.tunnelExiting = false; return; }
+    if (r.tunnelExiting && r.work) r.work = null; // 戻る間は掘りかけを捨てる
+    const p = bot.location;
+    const last = r.tunnelPath[r.tunnelPath.length - 1];
+    if (dist(p, last) > 16) { r.tunnelPath = []; r.tunnelExiting = false; return; } // 呼び戻し等の別手段で離れた: 道はもう使わない
+    if (!r.tunnelExiting) {
+      // v0.4.68: 手の届かない場所の古い作業 (掘り終えた後に残った r.work) は「作業中」とみなさない
+      let working = !!(r.work && r.work.loc && Date.now() - (r.work.touchedAt || 0) < 3000 && dist({ x: p.x, y: p.y + 1.6, z: p.z }, { x: r.work.loc.x + 0.5, y: r.work.loc.y + 0.5, z: r.work.loc.z + 0.5 }) <= WORK_REACH + 1);
+      if (working) { try { const wb = bot.dimension.getBlock(r.work.loc); if (!wb || wb.typeId !== r.work.typeId) { working = false; r.work = null; } } catch {} } // 掘り終えて空気になった作業は捨てる
+      if (r.tunnel || working || !r.target || dist(p, r.target) < 6) return;
+      // 帰り道が残っている = 自分で掘ったトンネルの中。真上が自分で掘った縦穴だと地形判定では地上に見えるので、記録で判断する
+      r.tunnelExiting = true; // 戻り始めたら入口まで戻り切る (地表の手前で止まると、斜めの通路から出られない)
+    }
+    let step = null;
+    for (let i = 0; i < 4 && r.tunnelPath.length; i++) {
+      const cand = r.tunnelPath.pop();
+      const g = tunnelGateDest(bot, r, cand); // queue3 step3: 帰路も tunnel ゲート経由 (再充填セルへ無検査で入らない)
+      if (!g.dest) { r.tunnelPath.push(cand); break; } // hold: step を消費しない (道に戻す)
+      step = g.dest; try { bot.teleport(step); } catch {}
+    }
+    if (!r.tunnelPath.length) r.tunnelExiting = false;
+    if (step) r.target = { ...step };
+  } catch {}
+}
+function tickTunnel(bot, owner, r, ctx, goal) {
+  const dim = bot.dimension, pos = bot.location;
+  const key = `${goal.x},${goal.y},${goal.z}`;
+  if (!r.tunnel || r.tunnel.key !== key) r.tunnel = { key, lastStepAt: Date.now(), steps: 0 };
+  const bx = Math.floor(pos.x), by = Math.floor(pos.y), bz = Math.floor(pos.z);
+  const dx = goal.x - bx, dy = goal.y - by, dz = goal.z - bz;
+  // 水平に遠い対象は、地上を飛んで真上まで行ってから掘り下げる (地中を横に掘り進むより速い)
+  const hd = Math.hypot(goal.x + 0.5 - pos.x, goal.z + 0.5 - pos.z);
+  if (hd > 6) {
+    if (r.tunnelPath && r.tunnelPath.length) { r.tunnelExiting = true; r.target = { ...r.tunnelPath[r.tunnelPath.length - 1] }; return; } // まず掘った道をたどって地上へ
+    if (!isUnderground(bot, { x: bx, y: by, z: bz })) {
+      let topY = goal.y; try { const top = dim.getTopmostBlock({ x: goal.x, z: goal.z }); if (top) topY = top.location.y + 1; } catch {}
+      r.target = { x: goal.x + 0.5, y: Math.max(topY + 1.2, pos.y), z: goal.z + 0.5 };
+      if (r.tunnel.bestHd === undefined || hd < r.tunnel.bestHd - 1) { r.tunnel.bestHd = hd; r.mTargetSince = Date.now(); } // 近づいている間は「進捗あり」
+      return;
+    }
+  }
+  let next, cells;
+  if (Math.abs(dx) <= 1 && Math.abs(dz) <= 1 && dy < -1) { next = { x: bx, y: by - 1, z: bz }; cells = [next]; }                       // 真下へ
+  else if (Math.abs(dx) <= 1 && Math.abs(dz) <= 1 && dy > 2) { next = { x: bx, y: by + 1, z: bz }; cells = [{ x: bx, y: by + 2, z: bz }]; } // 真上へ
+  else {
+    const sx = Math.abs(dx) >= Math.abs(dz) ? Math.sign(dx) : 0, sz = sx === 0 ? Math.sign(dz) : 0;
+    const ny = dy < -1 ? by - 1 : dy > 1 ? by + 1 : by;                                                                      // 階段状に上下
+    next = { x: bx + sx, y: ny, z: bz + sz };
+    cells = [next, { x: next.x, y: ny + 1, z: next.z }];
+    if (ny > by) cells.push({ x: bx, y: by + 2, z: bz });                                                                     // 上り階段は頭上も
+  }
+  for (const c of cells) if (lavaNear(dim, c)) { abandonTunnel(bot, owner, r, "LAVA"); return; }
+  for (const c of cells) {
+    let b = null; try { b = dim.getBlock(c); } catch {}
+    if (!b) { r.target = { x: pos.x, y: pos.y, z: pos.z }; return; }                                                         // 未読: その場で待つ
+    if (b.typeId === "minecraft:air") continue;
+    if (b.isLiquid || b.typeId === "minecraft:bedrock") { abandonTunnel(bot, owner, r, b.isLiquid ? "LIQUID" : "BEDROCK"); return; }
+    if (!startWork(bot, r, { x: c.x, y: c.y, z: c.z, typeId: b.typeId }, { skipAccess: true })) { abandonTunnel(bot, owner, r, "GUARDED"); return; } // v0.4.76 a06 M3: 坑道セル自体が対象なので遮蔽解決はしない
+    for (let i = 0; i < TUNNEL_DIG_PER_TICK && r.work; i++) tickWork(bot, owner, r, ctx);
+    if (r.lastBreak && r.lastBreak.ok === false && r.lastBreak.reason === "TOOL_INSUFFICIENT") { abandonTunnel(bot, owner, r, "TOOL_INSUFFICIENT"); return; }
+    r.target = { x: pos.x, y: pos.y, z: pos.z };
+    r.tunnel.lastStepAt = Date.now(); r.mTargetSince = Date.now(); // 掘っている間は「進捗あり」
+    if (r.work) return;   // まだ掘り切れていない (硬いブロック): 次の判断で続き
+    // 掘り切れたら、同じ判断の中で通路の次のマスへ (1 回で 2 マス掘れる)
+    let bb = null; try { bb = dim.getBlock(c); } catch {}
+    if (bb && bb.typeId !== "minecraft:air") return;
+  }
+  // 通路が開いた → 1 マス進む
+  const dest = { x: next.x + 0.5, y: next.y, z: next.z + 0.5 };
+  const tg = tunnelGateDest(bot, r, dest); // queue3 step3: 前進も tunnel ゲート経由 (落下ブロックの再充填へ入らない)
+  if (!tg.dest) { r.target = { x: pos.x, y: pos.y, z: pos.z }; return; } // hold: steps を進めず現在位置に留まる
+  if (!r.tunnelPath) r.tunnelPath = [];
+  r.tunnelPath.push({ x: pos.x, y: pos.y, z: pos.z }); if (r.tunnelPath.length > 400) r.tunnelPath.shift(); // 帰り道
+  try { bot.teleport(tg.dest); } catch {}
+  r.target = tg.dest; r.tunnel.steps++; r.tunnel.lastStepAt = Date.now(); r.mTargetSince = Date.now();
+}
+function findMissionTarget(bot, r, scan, step, scanUnknown = false) {
+  const target = step.target;
+  if (step.type === "hunt_entity") {
+    let e = null;
+    if (target && target !== "hostile") e = (scan?.hostiles || []).find((x) => x.typeId === target) || (scan?.animals || []).find((x) => x.typeId === target);
+    if (!e) e = scan?.nearestHostile || null;
+    return e ? { found: true, kind: "entity", loc: { ...e.location }, typeId: target, entity: e } : (scanUnknown ? { found: false, detail: { state: "unknown" } } : { found: false });
+  }
+  // 原木の汎用扱い：「原木」や特定樹種の指定でも、周りの自然の木なら樹種を問わず一番近いものを伐る
+  const tail = String(target || "").split(":").pop();
+  if ((step.type === "gather_block" || step.type === "side_collect") && (tail === "log" || tail.endsWith("_log"))) {
+    const ids = tail === "log" ? LOG_BLOCK_IDS : [`minecraft:${tail}`, ...LOG_BLOCK_IDS.filter((x) => x !== `minecraft:${tail}`)];
+    // v0.4.64: 全樹種を1回の走査で確定させる (scanBlocksNear)。どれか1種でも stale なら一括走査し、
+    // 全種の状態が必ず揃うため pending は発生しない。unknown (走査失敗過半) の扱いは従来どおり。
+    if (ids.some((id) => scanCachePeek(r, id).state === "stale")) scanBlocksNear(bot, r, ids);
+    let best = null, sawUnknown = false;
+    for (const id of ids) {
+      const peek = scanCachePeek(r, id);
+      if (peek.state === "hit" && peek.loc) { const d = dist(bot.location, peek.loc); if (!best || d < best.d) best = { loc: peek.loc, typeId: id, d }; }
+      else if (peek.state === "unknown") sawUnknown = true;
+    }
+    if (best) return { found: true, kind: "block", loc: best.loc, typeId: best.typeId, detail: { state: "present" } };
+    if (sawUnknown) return { found: false, detail: { state: "unknown" } }; // Step 3b: 測れていない間はドロップへ逸れない
+    { const sv = lookupSurvey(bot, ids, Date.now() < (r.mBanUntil || 0) ? r.mBanKey : null); if (sv) return { found: true, kind: "block", loc: sv.loc, typeId: sv.typeId, detail: { state: "present", via: "survey" } }; } // v0.4.66: チャンク調査の結果
+    const it = (scan?.items || []).find((x) => LOG_BLOCK_IDS.includes(itemTypeOf(x)));
+    if (it) return { found: true, kind: "item", loc: { ...it.location }, typeId: target, entity: it, detail: { state: "present" } };
+    return { found: false, detail: { state: "absent" } }; // ここへ来るのは全樹種 absent 確定時のみ (Step 3b)
+  }
+  const entry = findSources(target);
+  const sources = entry ? entry.sources : [];
+  let anyUnknown = false;
+  // Step 3b R3 (v0.4.13): unknown は記録だけでなく遮断する (後続 source/直接ID/ドロップへ素通りさせない)
+  const noteScanState = (id) => { try { if (scanCachePeek(r, id).state === "unknown") { anyUnknown = true; return true; } } catch {} return false; };
+  for (const s of sources) {
+    if (s.kind === "block") { const loc = scanBlockNear(bot, r, s.id); if (loc) return { found: true, kind: "block", loc, typeId: s.id, detail: { state: "present" } }; if (noteScanState(s.id)) return { found: false, detail: { state: "unknown" } }; }
+    else if (s.kind === "entity") { const e = (scan?.hostiles || []).find((x) => x.typeId === s.id) || (scan?.animals || []).find((x) => x.typeId === s.id); if (e) return { found: true, kind: "entity", loc: { ...e.location }, typeId: target, entity: e, detail: { state: "present" } }; if (scanUnknown) anyUnknown = true; }
+    else if (s.kind === "craft") {
+      const loc = scanBlockNear(bot, r, s.id); if (loc) return { found: true, kind: "block", loc, typeId: s.id, detail: { state: "present" } }; if (noteScanState(s.id)) return { found: false, detail: { state: "unknown" } };
+      const it = (scan?.items || []).find((x) => itemTypeOf(x) === s.id); if (it) return { found: true, kind: "item", loc: { ...it.location }, typeId: s.id, entity: it, detail: { state: "present" } };
+    }
+  }
+  { const blockIds = sources.filter((s) => s.kind === "block" || s.kind === "craft").map((s) => s.id); // v0.4.66: 近くに無ければチャンク調査の結果 (地下の鉱石も)
+    if (blockIds.length && !anyUnknown) { const sv = lookupSurvey(bot, blockIds, Date.now() < (r.mBanUntil || 0) ? r.mBanKey : null); if (sv) return { found: true, kind: "block", loc: sv.loc, typeId: sv.typeId, detail: { state: "present", via: "survey" } }; } }
+  if (target && target.includes(":")) { const loc = scanBlockNear(bot, r, target); if (loc) return { found: true, kind: "block", loc, typeId: target, detail: { state: "present" } }; if (noteScanState(target)) return { found: false, detail: { state: "unknown" } }; }
+  if (anyUnknown) return { found: false, detail: { state: "unknown" } }; // R3 防御層: 将来の走査地点追加でもドロップ候補へ unknown を素通りさせない
+  const dropId = sources[0]?.dropItem;
+  const cand = (scan?.items || []).find((x) => { const tid = itemTypeOf(x); return tid === target || (dropId && tid === dropId); });
+  if (cand) return { found: true, kind: "item", loc: { ...cand.location }, typeId: target, entity: cand, detail: { state: "present" } };
+  return { found: false, detail: { state: anyUnknown ? "unknown" : "absent" } };
+}
+function zapEntity(bot, r, e) {
+  const core = equipCoreOf(bot, r);
+  const d = dist(bot.location, e.location);
+  // 銃装備時は射程内なら射撃（連射間隔・装弾・命中は中核側が管理する）
+  if (core) {
+    let snap = null; try { snap = core.snapshot(); } catch {}
+    if (snap && snap.hasGun && d <= snap.gunRange && d >= 2) {
+      try { const sr = core.shootAt({ distance: d, applyDamage: (amt) => e.applyDamage(amt, { cause: "projectile", damagingEntity: bot }) }); r.lastAttack = { ok: !!sr?.ok, reason: sr?.reason || null, at: Date.now() }; if (sr?.ok) { try { sfxAttack(bot.dimension, bot.location); } catch {} } } catch {} // Phase2: ATTACK結果の回収（記録のみ）/ POLISH-SND-ATTACK-01 (cycle0841): 射撃成功時のみ攻撃音 (表示層のみ・実機確認待ち)
+      return;
+    }
+  }
+  if (Date.now() - (r.zapAt || 0) <= 900) return;
+  r.zapAt = Date.now();
+  const dmg = core ? core.weaponDamage().damage : 2; // 装備中核の武器ダメージ表（素手2。フォールバックも表と一致させる v0.4.88）
+  try { e.applyDamage(dmg, { cause: "entityAttack", damagingEntity: bot }); } catch {}
+  try { sfxAttack(bot.dimension, bot.location); } catch {} // POLISH-SND-ATTACK-01 (cycle0841): 近接攻撃音 (表示層のみ・実機確認待ち)
+}
+function pickupItemEntity(bot, owner, itemEnt, ctx) {
+  const r = rt(bot);
+  const cont = invOf(bot); let stack = null; try { stack = itemEnt.getComponent("minecraft:item")?.itemStack; } catch {}
+  if (!cont || !stack) { recordTake(r, "pickupItemEntity", { ok: false, reason: cont ? "ITEM_NOT_FOUND" : "TARGET_UNKNOWN", item: stack?.typeId || null }); return; }
+  const rest = cont.addItem(stack);
+  if (!rest) { try { itemEnt.remove(); } catch {} const st = stats(bot); st.pickup = (st.pickup || 0) + stack.amount; saveStats(bot, st); recordTake(r, "pickupItemEntity", { ok: true, taken: stack.amount, item: stack.typeId }); noteInspectPickup(bot, r, ctx, stack.typeId); try { if (!r.sfxState) r.sfxState = createSfxState(); sfxPickup(r.sfxState, bot.dimension, bot.location, Date.now()); } catch {} } // POLISH-SND-PICKUP-01 (cycle0710): 回収音 (表示層のみ・実機確認待ち)
+  else if (rest.amount < stack.amount) { try { itemEnt.remove(); bot.dimension.spawnItem(rest, itemEnt.location); } catch {} recordTake(r, "pickupItemEntity", { ok: true, taken: stack.amount - rest.amount, partial: true, item: stack.typeId }); }
+  else { recordTake(r, "pickupItemEntity", { ok: false, reason: "INVENTORY_FULL", item: stack.typeId }); noteTakeFull(bot, r, String(itemEnt.id) + ":" + stack.typeId, stack.typeId); }
+}
+function startMission(bot, owner, r, mo, announce = true, opts = {}) {
+  if (!mo.legsOnly) r.toolPrepTotal = 0; // キュー0副次 R1 (cycle1421): 道具準備の通算上限は新規注文ごとに数え直す (leg 子ミッションでは消さない)
+  // 工程（クラフト/精錬/ツール自作）が要る注文は、長期自律タスクとして自分で手段を組み立てる
+  if (!opts.noLongTask && !mo.legsOnly) {
+    let ltPlan = null;
+    try { ltPlan = planLongTask(mo, countInv(bot)); } catch { ltPlan = null; }
+    // v0.4.67: 計画処理は ID によって minecraft: が無いと失敗する (stone_axe 等)。読み取り側は付けないので付けて再試行
+    if (!(ltPlan && ltPlan.feasible) && typeof mo.target === "string" && !mo.target.includes(":")) { try { const p2 = planLongTask({ ...mo, target: "minecraft:" + mo.target }, countInv(bot)); if (p2 && p2.feasible) { ltPlan = p2; mo = { ...mo, target: "minecraft:" + mo.target }; } } catch {} }
+    if (ltPlan && ltPlan.feasible) { startLongTask(bot, owner, r, mo, ltPlan, announce); return null; }
+  }
+  const m = createMission(mo, null);
+  r.mission = m; r.missionKills = 0; r.suspendNotified = false; r.mFound = false; r.sideTask = null;
+  r.withdrawBlocked = new Set(); r.withdrawCooldownUntil = 0; r.withdrawTargetKey = null; // Phase2 WITHDRAW Step B: 試行済み情報は mission 単位で初期化
+  persistMission(bot, r, true);
+  dps(bot, "cb_order", JSON.stringify({ ...mo, startedAt: Date.now() }));
+  if (announce) {
+    const plan = planFor(mo.target, { count: mo.amount });
+    const h = mo.constraints?.hostiles;
+    const ht = h === "ignore" ? "敵は無視して進みます。" : h === "fight" ? "敵は倒しながら行きます。" : "敵は避けて通ります。";
+    const sides = (mo.sideTasks || []).map((s) => nameOfItem(s.target)).join("、");
+    let line = `承知しました。${nameOfItem(mo.target)}を${mo.amount}個、集めます。${ht}${sides ? `途中で${sides}も集めながら行きます。` : ""}${mo.returnTo === "home" ? "集めたら拠点へ入庫します。" : ""}`;
+    if (plan?.support === "gather_only") line += "精錬の工程は未対応です。原料の回収まで行います。";
+    if (plan?.support === "unsupported") line += "……その素材は、私では採取できません。別の方法を考えてください。";
+    say(owner, bot, line, true);
+  }
+  return m;
+}
+// Phase3 stale是正 F2 (v0.4.22, cycle1301 A05/A16): ミッション終了・差替時に計画系レコードを無効化する。残留した allow を将来の読み手が使う事故を防ぐ (記録の掃除のみ、分岐には使わない)。
+function clearPlanRecords(r) { try { r.toolNeed = null; r.lastPlan = null; r.lastPlanGate = null; r.lastPlanGateP3 = null; r.lastPlanRevalP4 = null; r.lastPlanGateUnified = null; r.lastPlanRevalFull = null; r.lastPlanRevalAdopt = null; r.lastPlanRevalFullAdopt = null; r.lastPlanGateUnifiedAdopt = null; r.lastGoal = null; r.lastPlanAt = 0; r.planAdoptSeen = null; r.planAdoptShieldUsedFor = null; r.lastPlanAdoptEffect = null; r.tracePlanSeen = null; r.traceActSeen = null; } catch {} }
+function finishMission(bot, owner, r) {
+  r.mission = null; clearPlanRecords(r);
+  persistMission(bot, r, true);
+  dps(bot, "cb_order", "");
+  if (r.buildPlan && r.buildPlan.stage === "gather") advanceBuildGather(bot, owner, r);
+}
+// BLD1621-04 (cycle1640): gather 中の集めミッションが完了以外の形で消えた時に buildPlan を畳む (孤児化防止)。同一性確認つき。
+function foldGatherBuildPlan(bot, owner, r, reason, dyingMission) {
+  const bp = r.buildPlan; if (!bp || bp.stage !== "gather") return false;
+  const miss = bp.missing?.[bp.missingIdx];
+  if (dyingMission) { const o = dyingMission.order; if (!o || o.legsOnly !== true || !miss || o.target !== miss.item) return false; }
+  try { say(owner, bot, `建築を中断しました。${bp.name}の材料、${miss ? nameOfItem(miss.item) : "材料"}が集めきれませんでした`, true); } catch {}
+  try { noteFail(bot, "place:build_gather_folded", new Error(`build gather folded: reason=${reason} missingIdx=${bp.missingIdx}/${bp.missing?.length ?? 0} item=${miss?.item ?? "?"}`)); } catch {}
+  r.buildPlan = null;
+  r.buildStallKey = null; r.buildStallSince = 0; r.buildStallBest = null; r.buildDangerSince = null; r.buildDangerNoted = false; r.buildDimSince = null; r.buildDimNoted = false; r.buildProgressAt = null; r.buildProgressIdx = null; r.buildProgressPlaced = null;
+  return true;
+}
+
+// ---------- v0.4.0: 長期自律タスク ----------
+function lname(item) { return item === "group:logs" ? "原木" : item === "group:planks" ? "板材" : item === "group:cobble" ? "丸石" : nameOfItem(item); }
+function saveLongTask(bot, r) { dps(bot, "cb_longtask", r.longtask ? JSON.stringify(r.longtask) : ""); }
+function startLongTask(bot, owner, r, mo, plan, announce = true) {
+  const ltName = (plan.target.name && !String(plan.target.name).includes(":")) ? plan.target.name : (mo.name || lname(plan.target.item)); // v0.4.67(外部): ID のまま表示しない
+  r.longtask = { target: plan.target.item, name: ltName, amount: plan.target.count, legs: plan.legs, legIdx: 0, phase: "legs", returnTo: mo.returnTo || "owner", hostiles: mo.constraints?.hostiles || "avoid", forbiddenTargets: mo.constraints?.forbiddenTargets || [], startedAt: Date.now() };
+  r.mission = null; clearPlanRecords(r); r.ltLegActive = false; r.mineLeg = null; r.spiral = null;
+  persistMission(bot, r, true); saveLongTask(bot, r);
+  dps(bot, "cb_order", JSON.stringify({ ...mo, longtask: true, startedAt: Date.now() }));
+  if (announce) say(owner, bot, `承知しました。${ltName}を${plan.target.count}個ですね。手段は私が組み立てます。全${plan.legs.length}工程、まず「${legLabel(plan.legs[0], lname)}」から始めます。遠くへ行くかもしれませんが、呼び戻せば戻ります`, true);
+}
+function completeLongTask(bot, owner, r, ok = true, note = "", msg = null) {
+  const lt = r.longtask;
+  if (msg) say(owner, bot, msg, true);
+  else if (ok) say(owner, bot, `長期タスク、完了しました。${lt.name}を${lt.amount}個、${lt.returnTo === "home" ? "拠点へ入庫しました" : "お渡ししました"}${note}`, true);
+  else say(owner, bot, `長期タスクは揃えたのですが、納品できませんでした。${note}`, true);
+  r.longtask = null; r.mineLeg = null; r.spiral = null; r.ltLegActive = false;
+  saveLongTask(bot, r);
+  dps(bot, "cb_order", "");
+}
+// 工程に要る作業台/かまどを、近くに無ければ所持品から足元へ置く
+function pickUpPlacedStation(bot, r) {
+  const ps = r.placedStation; if (!ps) return;
+  try {
+    if (bot.dimension.id !== ps.dim) { r.placedStation = null; return; }
+    // 要望バッチA GAP-3 (cycle0821): 到達の原則 — 設置物中心まで 8 を超えたら遠隔回収せず、記録を保持して近づいたときに回収する
+    if (dist(bot.location, { x: ps.x + 0.5, y: ps.y + 0.5, z: ps.z + 0.5 }) > 8) return;
+    r.placedStation = null;
+    const b = bot.dimension.getBlock({ x: ps.x, y: ps.y, z: ps.z });
+    if (!b || b.typeId !== ps.id) return;
+    if (ps.id === "minecraft:furnace") { const c = b.getComponent("minecraft:inventory")?.container; if (c) for (let i = 0; i < c.size; i++) if (c.getItem(i)) return; } // 中身が残っているかまどは置いたままにする
+    b.setType("minecraft:air");
+    const bc = invOf(bot); let rest = 1; if (bc) rest = addTo(bc, ps.id, 1);
+    if (rest > 0) bot.dimension.spawnItem(new ItemStack(ps.id, rest), bot.location);
+  } catch (err) { noteFail(bot, "station:pickup_failed", err); }
+}
+function ensureStation(bot, r, leg) {
+  const need = leg.type === "smelt" ? "minecraft:furnace" : leg.station === "table" ? "minecraft:crafting_table" : null;
+  if (!need) return true;
+  const pos = bot.location, dim = bot.dimension;
+  for (let dx = -4; dx <= 4; dx++) for (let dy = -2; dy <= 2; dy++) for (let dz = -4; dz <= 4; dz++) {
+    let b = null; try { b = dim.getBlock({ x: Math.floor(pos.x) + dx, y: Math.floor(pos.y) + dy, z: Math.floor(pos.z) + dz }); } catch {}
+    if (b && b.typeId === need) return true;
+  }
+  if (!hasItem(bot, need)) return false;
+  const fx = Math.floor(pos.x), fy = Math.floor(pos.y), fz = Math.floor(pos.z);
+  // v0.4.67: 置き場所は足元の隣 4 マスだけでなく、周囲 5×3×5 の「空いていて足場がある」マスから近い順に探す
+  // (トンネルの中では隣 4 マスが全部岩で、作業台を持っていても置けずに長期タスクが中断していた)。自分の体の位置は除く
+  const spots = [];
+  for (let dy = 1; dy >= -1; dy--) for (let dx = -2; dx <= 2; dx++) for (let dz = -2; dz <= 2; dz++) { // 下り階段のトンネルでは、通ってきたマスは 1 段上
+    if (dx === 0 && dz === 0) continue;
+    spots.push([dx, dz, dy, Math.abs(dx) + Math.abs(dz) + Math.abs(dy) * 0.5]);
+  }
+  spots.push([0, 0, 2, 9], [0, 0, -1, 9.5]); // 最後の手段: 頭の上・足元の下
+  spots.sort((a, b) => a[3] - b[3]);
+  for (const [dx, dz, sdy] of spots) {
+    let cell = null, below = null;
+    try { cell = dim.getBlock({ x: fx + dx, y: fy + sdy, z: fz + dz }); below = dim.getBlock({ x: fx + dx, y: fy + sdy - 1, z: fz + dz }); } catch {}
+    if (cell && below && cell.typeId === "minecraft:air" && below.typeId !== "minecraft:air" && !below.isLiquid) {
+      if (!takeFromInv(bot, need, 1)) return false;
+      try {
+        cell.setType(need);
+        let placed = false; try { const rb = dim.getBlock({ x: fx + dx, y: fy + sdy, z: fz + dz }); placed = !!rb && rb.typeId === need; } catch {}
+        if (placed) { try { r.lastPlace = { act: "PLACE", mode: "station", ok: true, reason: null, item: need, at: Date.now() }; commitLastAction(r, r.lastPlace); } catch {} try { sfxPlace(dim, { x: fx + dx + 0.5, y: fy + sdy + 0.5, z: fz + dz + 0.5 }, need); } catch {} r.placedStation = { x: fx + dx, y: fy + sdy, z: fz + dz, id: need, dim: dim.id }; return true; } // v0.4.67: 使い終わったら回収する / POLISH-SND-PLACE-01 (v0.4.90): 設置音
+        throw new Error("station verify failed");
+      } catch (err) {
+        // Phase2 PLACE (v0.4.8): 消費後の設置失敗でアイテムを消失させない (ロールバック: インベントリへ戻し、満杯なら足元へ)
+        try { const bc = invOf(bot); let rest = 1; if (bc) rest = addTo(bc, need, 1); if (rest > 0) bot.dimension.spawnItem(new ItemStack(need, rest), bot.location); } catch {}
+        try { r.lastPlace = { act: "PLACE", mode: "station", ok: false, reason: "SET_FAILED", item: need, at: Date.now() }; commitLastAction(r, r.lastPlace); } catch {}
+        noteFail(bot, "place:set_failed", err);
+        return false;
+      }
+    }
+  }
+  // v0.4.67: 縦穴やトンネルの中で置き場所が無い時は、横の土・石を 1 マス掘ってそこに置く (掘ったブロックは手持ちへ)
+  for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+    const c = { x: fx + dx, y: fy, z: fz + dz };
+    let cell = null; try { cell = dim.getBlock(c); } catch {}
+    if (!cell || cell.typeId === "minecraft:air" || cell.isLiquid || cell.typeId === "minecraft:bedrock") continue;
+    const id = cell.typeId;
+    if (/_ore$|ancient_debris/.test(id) || ARTIFICIAL_HINTS.some((h) => id.includes(h)) || isContainerBlock(id)) continue; // 鉱石・人工物・入れ物は壊さない
+    if (requiredPickLevel(id) > bestPickLevel(bot) || lavaNear(dim, c)) continue;
+    if (!takeFromInv(bot, need, 1)) return false;
+    try {
+      cell.setType(need);
+      const keep = id === "minecraft:grass_block" ? "minecraft:dirt" : id === "minecraft:stone" ? "minecraft:cobblestone" : id === "minecraft:deepslate" ? "minecraft:cobbled_deepslate" : id;
+      try { const bc = invOf(bot); let rest = 1; if (bc) rest = addTo(bc, keep, 1); if (rest > 0) dim.spawnItem(new ItemStack(keep, rest), bot.location); } catch {}
+      r.placedStation = { ...c, id: need, dim: dim.id };
+      try { r.lastPlace = { act: "PLACE", mode: "station", ok: true, reason: null, item: need, at: Date.now() }; commitLastAction(r, r.lastPlace); } catch {}
+      try { sfxPlace(dim, { x: c.x + 0.5, y: c.y + 0.5, z: c.z + 0.5 }, need); } catch {} // POLISH-SND-PLACE-01 (v0.4.90): 設置音 (carve 経路)
+      return true;
+    } catch (err) { try { const bc = invOf(bot); let rest = 1; if (bc) rest = addTo(bc, need, 1); if (rest > 0) dim.spawnItem(new ItemStack(need, rest), bot.location); } catch {} noteFail(bot, "place:carve_failed", err); return false; }
+  }
+  return false;
+}
+// ブランチマイニング：目標深度まで縦穴を掘り、深度では前方を掘り進む。鉱石が見つかれば通常の採取に戻る。
+function tickBranchMine(bot, owner, r, ctx) {
+  const leg = r.mineLeg; if (!leg) return;
+  // キュー7 (cycle1443): survey ヒント方向 (本関数内に置く: digdown E2E ハーネスが本関数を逐語抽出して評価するため)
+  const surveyHintDir = () => {
+    try {
+      const hints = collectHints(surveys, { dimId: bot.dimension?.id, now: Date.now() });
+      const ore = hints.filter((h) => h.typeId === leg?.item || /_ore$/.test(h.typeId || ""));
+      if (!ore.length) return null;
+      const best = chooseHint(bot.location, ore, { depth: leg?.depth });
+      if (!best) return null;
+      const dir = hintDirection(bot.location, best.loc);
+      if (dir) { try { r.lastSurveyHint = { mode: "steer", typeId: best.typeId, loc: best.loc, at: Date.now() }; } catch {} }
+      return dir;
+    } catch { return null; }
+  };
+  const pos = bot.location, dim = bot.dimension;
+  const targetY = leg.depth;
+  const digAt = (x, y, z) => {
+    let b = null; try { b = dim.getBlock({ x, y, z }); } catch {}
+    // INSPECT P0 (v0.4.19): 未読セル (!b / 読み取り例外) は空洞ではない。"unknown" として区別し、降下・前進・掘削の根拠にしない
+    if (!b) return "unknown";
+    try {
+      if (b.typeId === "minecraft:air") return "clear";
+      if (b.isLiquid) return "liquid"; // v0.4.56 (外部レビュー指摘4): 液体を「空いている」と扱って降りない/進まない
+      if (b.typeId === "minecraft:bedrock") return "blocked";
+    } catch { return "unknown"; }
+    if (startWork(bot, r, { x, y, z, typeId: b.typeId }, { skipAccess: true })) { r.target = { x: x + 0.5, y, z: z + 0.5 }; tickWork(bot, owner, r, ctx); tickWork(bot, owner, r, ctx); tickWork(bot, owner, r, ctx); } // 掘削ペース×3（縦穴・坑道を実用速度で）。v0.4.76 a06 M3: 坑道セル自体が対象なので遮蔽解決はしない
+    // cycle0922 キュー0副次 (a02 P0): tickWork が TOOL_INSUFFICIENT で畳んでも無条件に "digging" を返すと、
+    // 呼び出し側が同セルを毎 tick 再試行し 30 秒終了保証の対象外で無限ループになる。鮮度つきで伝播させる。
+    try { const lb = r.lastBreak; if (lb && lb.reason === "TOOL_INSUFFICIENT" && lb.item === b.typeId && Date.now() - (lb.at || 0) < 2000) return "tool"; } catch {}
+    // M-1051-1 (cycle1153): 掘削ゲートの恒常 hold を "digging" に潰すと見切り・終了が一切ない永久滞留になる。
+    // 新鮮な lastDigHold が対象セルと一致すれば "held" として伝播し、呼び出し側の30秒累計 (holdHeld) で leg を畳む。
+    try { const lh = r.lastDigHold; if (lh && lh.loc && lh.loc.x === x && lh.loc.y === y && lh.loc.z === z && Date.now() - (lh.at || 0) < 2000) return "held"; } catch {}
+    return "digging";
+  };
+  // unknown の保持と終了保証 (cycle1156/a04+a23): その場ホールドを明示し (残留 target の消費を防ぐ)、
+  // leg 単位で進捗なし unknown 累計が 30 秒を超えたら mineLeg を畳んで既存の中断経路へ委ねる (復活ループ断ち)。
+  const holdUnknown = () => {
+    r.target = { x: pos.x, y: pos.y, z: pos.z };
+    try {
+      const now = Date.now(), key = `${leg.item || ""}@${leg.depth ?? ""}`;
+      const cnt = countOfGroup(countInv(bot), leg.item);
+      if (!r.branchUnknownLeg || r.branchUnknownLeg.key !== key) r.branchUnknownLeg = { key, totalMs: 0, lastAt: now, count: cnt, noted: false };
+      const bu = r.branchUnknownLeg;
+      if (cnt > (bu.count || 0)) { bu.totalMs = 0; bu.count = cnt; } // 進捗があれば累計を消す
+      if (bu.lastAt && now - bu.lastAt < 2000) bu.totalMs += now - bu.lastAt;
+      bu.lastAt = now;
+      if (!bu.noted) { bu.noted = true; noteFail(bot, "branchmine:unknown", new Error(key)); }
+      if (bu.totalMs > 30000) { noteFail(bot, "branchmine:unknown_exhausted", new Error(key)); r.branchUnknownLeg = null; r.mineLeg = null; r.spiral = null; }
+    } catch {}
+  };
+  // M-1051-1 (cycle1153): hold 側の終了保証 (holdUnknown と同型)。累計キーは leg+セル+理由 (変われば進捗として別累計)。
+  // 所持数が増えたらリセット。30秒超で leg を畳んで既存の中断経路へ委ねる (方向転換はしない: hold は壁の証拠ではない)。
+  const holdHeld = () => {
+    r.target = { x: pos.x, y: pos.y, z: pos.z };
+    try {
+      const now = Date.now(), lh = r.lastDigHold || {};
+      const key = `${leg.item || ""}@${leg.depth ?? ""}|${lh.loc ? `${lh.loc.x},${lh.loc.y},${lh.loc.z}` : ""}|${lh.why || ""}`;
+      const cnt = countOfGroup(countInv(bot), leg.item);
+      if (!r.branchHoldLeg || r.branchHoldLeg.key !== key) r.branchHoldLeg = { key, totalMs: 0, lastAt: now, count: cnt, noted: false };
+      const bh = r.branchHoldLeg;
+      if (cnt > (bh.count || 0)) { bh.totalMs = 0; bh.count = cnt; }
+      if (bh.lastAt && now - bh.lastAt < 2000) bh.totalMs += now - bh.lastAt;
+      bh.lastAt = now;
+      if (!bh.noted) { bh.noted = true; noteFail(bot, "branchmine:hold", new Error(key)); }
+      if (bh.totalMs > 30000) { noteFail(bot, "branchmine:hold_exhausted", new Error(key)); r.branchHoldLeg = null; r.mineLeg = null; r.spiral = null; }
+    } catch {}
+  };
+  // SPIRAL-GATEHOLD-NOEXIT 是正 (cycle1421, a08実測 F2): 段移動の tunnel ゲート hold には累計時計が無く、
+  // ゲート常時 hold で 10,000 tick でも終了0回だった。holdHeld と同型に leg+段セルで累計し、30秒超で leg を畳んで既存の中断経路へ委ねる
+  const holdGateHeld = (stepCell) => {
+    r.target = { x: pos.x, y: pos.y, z: pos.z };
+    try {
+      const now = Date.now();
+      const key = `${leg.item || ""}@${leg.depth ?? ""}|gate|${stepCell ? `${stepCell.x},${stepCell.y},${stepCell.z}` : ""}`;
+      const cnt = countOfGroup(countInv(bot), leg.item);
+      if (!r.branchGateLeg || r.branchGateLeg.key !== key) r.branchGateLeg = { key, totalMs: 0, lastAt: now, count: cnt, noted: false };
+      const bg = r.branchGateLeg;
+      if (cnt > (bg.count || 0)) { bg.totalMs = 0; bg.count = cnt; }
+      if (bg.lastAt && now - bg.lastAt < 2000) bg.totalMs += now - bg.lastAt;
+      bg.lastAt = now;
+      if (!bg.noted) { bg.noted = true; noteFail(bot, "branchmine:gate_hold", new Error(key)); }
+      if (bg.totalMs > 30000) { noteFail(bot, "branchmine:gate_hold_exhausted", new Error(key)); r.branchGateLeg = null; r.mineLeg = null; r.spiral = null; }
+    } catch {}
+  };
+  // SPIRAL F1 是正 (cycle1443, a07実測 390/390 到達不能): 完了分岐は降下ガード (pos.y > targetY+2) の内側にだけあり、
+  // k>=total のとき pos.y<=targetY でガードと矛盾して永遠に発火せず、r.spiral が stale 残留していた。
+  // ガードの前に完了を判定し、出口 heading を mineDir へ引き継いで螺旋を畳む。
+  try {
+    const st0 = r.spiral, k0 = `${leg.item || ""}@${leg.depth ?? ""}`;
+    if (st0 && st0.key === k0) {
+      const lk0 = spiralLocateK(st0, pos), tot0 = spiralStepsTotal(st0);
+      if (lk0 != null && lk0 >= tot0) { const h0 = spiralHeading(st0, tot0); r.mineDir = { x: h0[0], z: h0[1] }; r.spiral = null; }
+    }
+  } catch {}
+  if (pos.y > targetY + 2) {
+    // 螺旋階段 (要望バッチB, v0.4.90): 縦穴＋飛行一気降下を廃し、2×2螺旋を1段ずつ掘って降りる (歩いて戻れる形状)。
+    // 幾何は spiral.js (純粋)、掘削は digAt (skipAccess→gateVia "tunnel" で掘削ゲート＋self_support免除)、
+    // 移動は tunnelGateDest 経由で、段列を tunnelPath へ積むため帰路は exitTunnelIfNeeded がそのまま使える。
+    const sKey = `${leg.item || ""}@${leg.depth ?? ""}`;
+    let st = r.spiral;
+    if (!st || st.key !== sKey) {
+      const wantDir = r.mineDir ? [r.mineDir.x, r.mineDir.z] : (() => { const hd = surveyHintDir(); return hd ? [hd.x, hd.z] : [1, 0]; })(); // キュー7 (cycle1443): 螺旋の出口方向を survey ヒントへ寄せる
+      const v = chooseSpiralVariant({ y0: Math.floor(pos.y), targetY, wantDir });
+      st = r.spiral = { ...createSpiral({ x: Math.floor(pos.x), z: Math.floor(pos.z), y: Math.floor(pos.y), targetY, chirality: v.chirality, phase: v.phase }), key: sKey };
+    } else {
+      const lk = spiralLocateK(st, pos);
+      if (lk == null) { // 螺旋の外に出ている: 現在セルで再アンカー (交差セルは「既に空＝開通済み」で吸収)
+        const wantDir = r.mineDir ? [r.mineDir.x, r.mineDir.z] : (() => { const hd = surveyHintDir(); return hd ? [hd.x, hd.z] : [1, 0]; })(); // キュー7 (cycle1443): 螺旋の出口方向を survey ヒントへ寄せる
+        const v = chooseSpiralVariant({ y0: Math.floor(pos.y), targetY, wantDir });
+        st = r.spiral = { ...createSpiral({ x: Math.floor(pos.x), z: Math.floor(pos.z), y: Math.floor(pos.y), targetY, chirality: v.chirality, phase: v.phase }), key: sKey };
+      } else st.k = lk;
+    }
+    const total = spiralStepsTotal(st);
+    if (st.k >= total) { const h = spiralHeading(st, total); r.mineDir = { x: h[0], z: h[1] }; r.spiral = null; /* 到達: この tick は前方掘りへ落とす */ }
+    else {
+      for (const c of spiralDigCells(st, st.k + 1)) { // 頭上→足元の順 (順序がゲート成立の要)
+        if (lavaNear(dim, c)) { r.mineLeg = null; r.spiral = null; r.target = { x: pos.x, y: pos.y, z: pos.z }; return; }
+        const res = digAt(c.x, c.y, c.z);
+        if (res === "tool") { r.mineLeg = null; r.spiral = null; r.target = { x: pos.x, y: pos.y, z: pos.z }; return; } // cycle0922: 道具不足は方向転換では解けないため leg を畳む (toolNeed は tickWork が記録)
+        if (res === "unknown") { holdUnknown(); return; }
+        if (res === "held") { holdHeld(); return; } // M-1051-1 (cycle1153)
+        if (res === "blocked" || res === "liquid") { r.mineLeg = null; r.spiral = null; r.target = { x: pos.x, y: pos.y, z: pos.z }; return; } // 原点固定の螺旋では方向転換が無意味なため leg を畳み既存中断経路へ
+        if (res === "digging") { let bb = null; try { bb = dim.getBlock(c); } catch {} if (!bb || bb.typeId !== "minecraft:air") { r.target = { x: pos.x, y: pos.y, z: pos.z }; return; } } // 掘り切れていない: 次 tick 持ち越し、移動しない
+      }
+      const step = spiralStepCell(st, st.k + 1);
+      const dest = { x: step.x + 0.5, y: step.y, z: step.z + 0.5 };
+      const tg = tunnelGateDest(bot, r, dest);
+      if (!tg.dest) { holdGateHeld(step); return; } // hold: k を進めない。SPIRAL-GATEHOLD-NOEXIT (cycle1421): 累計30秒で leg を畳む
+      if (!r.tunnelPath) r.tunnelPath = [];
+      r.tunnelPath.push({ x: pos.x, y: pos.y, z: pos.z }); if (r.tunnelPath.length > 400) r.tunnelPath.shift();
+      try { bot.teleport(tg.dest); } catch {}
+      r.target = tg.dest; st.k++;
+      return;
+    }
+  }
+  // 深度到達：前方2セル（下・上）を掘り進む
+  if (!r.mineDir) {
+    // キュー7 (cycle1443): 深度帯到達後は survey ヒントへ誘導する (D2形状)。ヒント無し/陳腐/遠方は従来ランダムと完全一致。
+    let steered = null;
+    try {
+      const hints = collectHints(surveys, { dimId: dim?.id, now: Date.now() }).filter((h) => h.typeId === leg.item || /_ore$/.test(h.typeId || ""));
+      const dec = steerDecision({ pos, leg, hints, now: Date.now() });
+      try { r.lastSurveyHint = { mode: dec.mode, reason: dec.reason || null, typeId: dec.hint?.typeId || null, at: Date.now() }; } catch {}
+      if (dec.mode === "steer" && dec.dir) steered = dec.dir;
+    } catch {}
+    if (steered) r.mineDir = steered;
+    else { const DIRS4 = [[1, 0], [-1, 0], [0, 1], [0, -1]]; const dd = DIRS4[Math.floor(Math.random() * 4)]; r.mineDir = { x: dd[0], z: dd[1] }; }
+  } // 基礎 BM-12 (v0.4.65): 方向は4直交のみ。角度の丸めは約1/3で斜めになり、nav の角抜け禁止 (両直交セルの到達可能性が必須) と矛盾して坑道を通れなかった
+  const d = r.mineDir, fx = Math.floor(pos.x) + d.x, fz = Math.floor(pos.z) + d.z, fy = Math.floor(pos.y) - 1;
+  for (const yy of [fy, fy + 1]) {
+    const res = digAt(fx, yy, fz);
+    if (res === "tool") { r.mineLeg = null; r.target = { x: pos.x, y: pos.y, z: pos.z }; return; } // cycle0922: 道具不足で leg を畳み無限再試行を断つ
+    if (res === "blocked" || res === "liquid") { r.mineDir = { x: d.z, z: -d.x }; return; }
+    if (res === "unknown") { holdUnknown(); return; } // 片方でも未読なら前進しない (方向転換もしない: 未読は壁の証拠ではない)
+    if (res === "held") { holdHeld(); return; } // M-1051-1 (cycle1153)
+    if (res === "digging") return;
+  }
+  r.target = { x: pos.x + d.x * 3, y: pos.y, z: pos.z + d.z * 3 };
+}
+// グループ指定 (group:planks 等) を、手持ちの樹種に合わせた具体的な ID にする (計画処理はグループを受け付けない)
+function concreteItemOf(item, inv) {
+  const held = (suffix) => Object.keys(inv || {}).find((k) => k.endsWith(suffix) && (inv[k] || 0) > 0);
+  if (item === "group:planks") { const p = held("_planks"); if (p) return p; const l = held("_log"); if (l) return l.replace(/_log$/, "_planks"); return "minecraft:oak_planks"; }
+  if (item === "group:logs") return held("_log") || "minecraft:oak_log";
+  if (item === "group:cobble") return "minecraft:cobblestone";
+  return item;
+}
+// queue2 (basics-digdown-dec fix3 + basics-orechain-audit): mineLeg は leg の出自でなく対象の性質で決める。
+// findSources の block 源が石系・鉱石系 (stone/deepslate/_ore/ancient_debris) なら潜行対象とする。
+// ただし源の dim が現在次元と異なる場合は立てない (quartz/nether_gold_ore 等でオーバーワールド無限坑道化を防ぐ次元ガード)。
+function mineLegForLeg(leg, bot) {
+  try {
+    const curDim = String(bot?.dimension?.id || "");
+    const curShort = curDim.includes("nether") ? "nether" : curDim.includes("the_end") || curDim.endsWith(":end") ? "end" : "overworld";
+    const dimOk = (d) => !d || d === curShort;
+    if (leg?.dim && !dimOk(leg.dim)) return null;
+    if (leg?.depth != null) return { depth: leg.depth, item: leg.item };
+    const target = (() => { try { return legMissionTarget(leg); } catch { return leg?.item; } })();
+    const isStoneOre = (id) => typeof id === "string" && (id === "minecraft:stone" || id === "minecraft:deepslate" || id === "minecraft:ancient_debris" || id.endsWith("_ore"));
+    // via が直接石系・鉱石系ならそれも性質として認める (修理フォールバック等で via のみ残るケース)
+    const candIds = [];
+    try { const e = findSources(target); if (e?.sources) for (const s of e.sources) if (s?.kind === "block") candIds.push(s); } catch {}
+    try { const e2 = leg?.item && leg.item !== target ? findSources(leg.item) : null; if (e2?.sources) for (const s of e2.sources) if (s?.kind === "block") candIds.push(s); } catch {}
+    for (const s of candIds) { if (isStoneOre(s.id) && dimOk(s.where?.dim || "overworld")) return { depth: Math.floor(bot.location.y) - 4, item: leg.item }; }
+    if (leg?.via && isStoneOre(leg.via)) {
+      // via の次元は sourcing 源で確認できる場合だけ許可し、不明な nether 系は立てない
+      let viaDim = null; try { const ev = findSources(target); const hit = ev?.sources?.find((s) => s.id === leg.via); viaDim = hit?.where?.dim || null; } catch {}
+      if (dimOk(viaDim)) return { depth: Math.floor(bot.location.y) - 4, item: leg.item };
+    }
+    if (leg?.item === "group:cobble") return { depth: Math.floor(bot.location.y) - 4, item: leg.item };
+    return null;
+  } catch { return null; }
+}
+// キュー0副次 R1 (cycle1421, a01実測/a02設計A′): 単発ミッション側の toolNeed 消費点。
+// 消費ロジックは複写せず、適格な単発 gather ミッションを「再開 leg 1本の合成長期タスク」へ昇格させ、
+// toolNeed を残したまま次 tick の tickLongTask 内消費点 (差し込み・上限・終端・発話) へ委ねる。
+function tickToolPrepPromote(bot, owner, r) {
+  try {
+    if (!r.toolNeed) return false;
+    // 掃除は lt 側消費点と同一条件 (鮮度300秒 / 充足済み)
+    if (Date.now() - (r.toolNeed.at || 0) >= 300000 || bestPickLevel(bot) >= (r.toolNeed.reqLv || 0)) { r.toolNeed = null; return false; }
+    const m = r.mission, mo = m?.order;
+    // 適格ゲート: 等価な gather leg で表せる単発ミッションだけを昇格する (寄り道・建築・工程子ミッションは親の経路へ委ねる)
+    if (!m || m.status !== "active" || !mo || mo.kind !== "gather" || mo.legsOnly) return false;
+    if (r.buildPlan) return false;
+    if ((r.toolNeed.reqLv || 0) < 1) return false;
+    const step = m.steps?.[m.currentStep];
+    if (!step || step.type !== "gather_block") return false;
+    if ((m.steps || []).some((s) => s.type === "side_collect" && s.status !== "done")) return false;
+    const remain = (mo.amount || 0) - (step.have || 0);
+    if (remain <= 0) return false;
+    const needTotal = countOfGroup(countInv(bot), mo.target) + remain; // leg の need は lt 意味論 (手持ち+不足分、材料不足差し込みの前例)
+    const resumeLeg = { type: "gather", item: mo.target, need: needTotal, via: null, yRange: null, depth: mineDepthFor(mo.target), crafts: 0, needs: null, station: null };
+    r.longtask = { target: mo.target, name: mo.name || lname(mo.target), amount: mo.amount, legs: [resumeLeg], legIdx: 0, phase: "legs", returnTo: mo.returnTo || "owner", hostiles: mo.constraints?.hostiles || "avoid", forbiddenTargets: mo.constraints?.forbiddenTargets || [], startedAt: m.startedAt || Date.now(), toolRepairs: r.toolPrepTotal || 0 };
+    r.mission = null; r.ltLegActive = false; r.mineLeg = null; r.spiral = null;
+    persistMission(bot, r, true); saveLongTask(bot, r);
+    // toolNeed は消さない: 次 tick の tickLongTask が既存消費点で道具準備 leg を resumeLeg の前へ差し込む
+    return true;
+  } catch { return false; }
+}
+function tickLongTask(bot, owner, r, ctx) {
+  const lt = r.longtask; if (!lt) return false;
+  if (lt.phase === "deliver") {
+    // LT-DELIVER-NOEXIT (cycle1322, a01): deliver 相の終了保証。従来は上限が無く、入庫常時失敗/未到達で
+    // 毎tick占有し続け cb_longtask 永続化で再起動でも解消しなかった。計数は lt 自体に保持し再起動を跨ぐ。
+    // 旧セーブ復元時は遅延初期化する (未初期化の NaN 比較で出口が閉じる同型事故の予防)。
+    if (lt.deliverSince == null) { lt.deliverSince = Date.now(); lt.deliverFails = lt.deliverFails || 0; }
+    if (Date.now() - lt.deliverSince > LT_DELIVER_TIMEOUT_MS) { noteFail(bot, "longtask:deliver_timeout", new Error(lt.target)); completeLongTask(bot, owner, r, false, "", `長期タスク、ここまでです。${lt.name}は揃えたのですが、お届け先へ辿り着けませんでした`); return true; }
+    if (lt.returnTo === "home") {
+      const h = homeOf(bot); const rp = h ? { x: h.x + 0.5, y: h.y + 1, z: h.z + 0.5 } : behindOf(owner, 2);
+      if (dist(bot.location, rp) <= DELIVER_RANGE) { r.justDeposited = false; doDeliver(bot, owner, r, { order: { returnTo: "home" } }); if (r.justDeposited) { completeLongTask(bot, owner, r); return true; } lt.deliverFails = (lt.deliverFails || 0) + 1; if (lt.deliverFails > LT_DELIVER_FAIL_LIMIT) { noteFail(bot, "longtask:deliver_failed", new Error(lt.target)); completeLongTask(bot, owner, r, false, "", `長期タスク、ここまでです。${lt.name}は揃えたのですが、拠点へ入庫できませんでした。チェストの空きや設置を確認してください`); return true; } saveLongTask(bot, r); return true; } // v0.4.79 B-1+C-2: 入庫実測なしで完了しない。事前クリアで残留フラグの偽完了も防ぐ
+      r.target = rp; r.moveAct = "follow"; return true;
+    }
+    if (dist(bot.location, owner.location) <= DELIVER_RANGE) {
+      const bc = invOf(bot), oc = invOf(owner);
+      let delivered = 0;
+      // v0.4.70: 手持ちが足りない (探し尽くしても見つからなかった等) 時は、ある分だけ渡して正しく伝える。
+      // 以前は必要数ちょうどを取り出そうとして失敗し、手持ちも渡さず「相手の持ち物がいっぱい」と事実と違う理由を伝えていた
+      const have = bc ? countOfGroup(countInv(bot), lt.target) : 0;
+      const want = Math.min(have, lt.amount);
+      if (bc && oc && want > 0) {
+        const used = consumeFrom(bc, lt.target, want);
+        const n = used ? Object.values(used).reduce((a, v) => a + v, 0) : 0;
+        if (n > 0) { const left = addTo(oc, lt.target, n); delivered = n - left; if (left > 0) addTo(bc, lt.target, left); } // 入らなかった分は自分の手元へ戻す（消さない）
+      }
+      if (have < lt.amount) {
+        if (delivered > 0) completeLongTask(bot, owner, r, true, "", `長期タスク、ここまでです。${lt.name}は${lt.amount}個のうち${delivered}個しか集まらなかったので、その分をお渡ししました`);
+        else completeLongTask(bot, owner, r, false, "", `長期タスク、ここまでです。${lt.name}を集めきれませんでした`);
+        return true;
+      }
+      if (delivered >= lt.amount) completeLongTask(bot, owner, r);
+      else if (delivered > 0) completeLongTask(bot, owner, r, true, `（${delivered}個だけ渡せました。残りは私が持っています）`);
+      else { noteFail(bot, "longtask:deliver_failed", new Error(lt.target)); completeLongTask(bot, owner, r, false, "相手の持ち物がいっぱいのようです"); }
+      return true;
+    }
+    r.target = behindOf(owner, 2); r.moveAct = "follow"; return true;
+  }
+  // cycle0942 キュー0副次: toolNeed の消費点 (道具準備 leg への移行)。tickWork/branchmine が記録した
+  // 道具不足を、station 修理差し込みと同型で「必要等級のツルハシを作る工程」へ変換する。
+  // 対象は toolNeed.item 個別ではなく収穫等級だけで決める (汎用)。差し込みは最大3回・工程60件まで。
+  if (r.toolNeed && (Date.now() - (r.toolNeed.at || 0) >= 300000 || bestPickLevel(bot) >= (r.toolNeed.reqLv || 0))) r.toolNeed = null; // 鮮度切れ/充足済みは掃除
+  if (r.toolNeed) {
+    const pickId = pickaxeItemForLevel(r.toolNeed.reqLv || 0);
+    // cycle1234 (キュー0副次 R2, a02監査): toolRepairs は差し込み成功時だけ数える
+    // (従来は成否判定より前に無条件加算され、上限の意味が弱まっていた)。
+    // 上限到達時は station 修理と同型に、理由を述べて長期タスクを中断する終端分岐を持つ
+    // (従来は終端が無く、元の leg 再開→再発→再消費の緩いループが残っていた)。
+    const toolCapReached = (lt.toolRepairs || 0) >= 3 || lt.legs.length > 60;
+    let ins = null;
+    if (!toolCapReached) { try { const sub = planLongTask({ target: pickId, amount: 1 }, countInv(bot)); if (sub && sub.feasible && sub.legs && sub.legs.length) ins = sub.legs; } catch {} }
+    r.toolNeed = null; // 成否どちらでも消費する (同じ不足で毎tick差し込み続けない)
+    if (!ins && toolCapReached) {
+      say(owner, bot, `長期タスクを中断しました。ツルハシを用意できませんでした`, true); r.longtask = null; saveLongTask(bot, r); return true;
+    }
+    if (ins) {
+      lt.toolRepairs = (lt.toolRepairs || 0) + 1;
+      r.toolPrepTotal = Math.max(r.toolPrepTotal || 0, lt.toolRepairs); // キュー0副次 R1 (cycle1421): 昇格を跨いでも通算上限が効くよう鏡写しする (追加のみ)
+      if (r.mission) { r.mission = null; clearPlanRecords(r); persistMission(bot, r, true); }
+      r.ltLegActive = false; r.mineLeg = null; r.spiral = null;
+      lt.legs.splice(lt.legIdx, 0, ...ins);
+      saveLongTask(bot, r);
+      say(owner, bot, `ツルハシが足りません。${nameOfItem(pickId)}を用意してから続けます`, true);
+      return false;
+    }
+  }
+  if (r.mission) {
+    if (r.mission.status === "done") { r.mission = null; clearPlanRecords(r); persistMission(bot, r, true); }
+    else if (r.mission.status === "suspended") {
+      // RR-05 (cycle1303): cannot_recover は集約ヘルパー tickSuspendedResume が担う (回復待ち→実測再開→期限切れ)。
+      // mineLeg の有無で再開可否を決めない (leg の出自でなく mission の回復状態が性質)。expired のときだけ下の終端へ落とす
+      if (r.mission.suspendReason === "cannot_recover") {
+        const sres = tickSuspendedResume(bot, r);
+        if (sres === "waiting") return true;
+        if (sres === "resumed") return false;
+      } else {
+        // 従来経路 (cannot_recover 以外): mineLeg がある間は即再開、それ以外は終端 (現行挙動を維持)
+        if (r.mineLeg) { r.mission.status = "active"; r.mission.suspendReason = null; persistMission(bot, r, true); return false; }
+      }
+      { say(owner, bot, `長期タスクを中断しました。${SUSPEND_JP[r.mission.suspendReason] || "進めなくなりました"}`, true); r.mission = null; clearPlanRecords(r); persistMission(bot, r, true); r.longtask = null; r.mineLeg = null; r.spiral = null; saveLongTask(bot, r); return true; }
+    }
+    else return false; // 実行中は tickMission に任せる
+  }
+  if (r.ltLegActive && !r.mission) { r.ltLegActive = false; r.mineLeg = null; r.spiral = null; lt.legIdx++; saveLongTask(bot, r); } // leg はミッションが終了したときだけ消費する (不変条件の明示、cycle0238-a01 実測で現行挙動と完全一致)
+  let guard = 0;
+  while (lt.legIdx < lt.legs.length && guard++ < 40) {
+    const leg = lt.legs[lt.legIdx];
+    if (leg.type === "gather" || leg.type === "hunt") {
+      const remain = (leg.need || 1) - countOfGroup(countInv(bot), leg.item);
+      if (remain <= 0) { lt.legIdx++; continue; }
+      // 丸石は地表に露出していないことが多いので、少し潜って掘る。鉱石は素材ごとの目標深度へ。
+      r.mineLeg = mineLegForLeg(leg, bot); r.mineDir = null; // queue2: 性質判定+次元ガードは mineLegForLeg へ集約 (旧3分岐の group:cobble / cobblestone+via=stone は同関数内で同等に成立)
+      startMission(bot, owner, r, { kind: leg.type === "hunt" ? "hunt" : "gather", target: legMissionTarget(leg), amount: remain, constraints: { hostiles: lt.hostiles, forbiddenTargets: lt.forbiddenTargets || [] }, sideTasks: [], returnTo: lt.returnTo, legsOnly: true }, false, { noLongTask: true });
+      r.ltLegActive = true;
+      say(owner, bot, `工程${lt.legIdx + 1}/${lt.legs.length}：${legLabel(leg, lname)}`, true);
+      saveLongTask(bot, r);
+      return false;
+    }
+    if (leg.type === "craft" || leg.type === "smelt") {
+      if (countOfGroup(countInv(bot), leg.item) >= (leg.need || 1)) { lt.legIdx++; continue; }
+      if (!ensureStation(bot, r, leg)) {
+        // v0.4.67: 作業台・かまどを持っていない (計画処理が工程を入れ忘れることがある) なら、作る工程を差し込んで続ける
+        const stationId = leg.type === "smelt" ? "minecraft:furnace" : "minecraft:crafting_table";
+        leg.stationRepairs = (leg.stationRepairs || 0) + 1;
+        let ins = null;
+        if (!hasItem(bot, stationId) && leg.stationRepairs <= 3 && lt.legs.length <= 60) { try { const sub = planLongTask({ target: stationId, amount: 1 }, countInv(bot)); if (sub && sub.feasible && sub.legs && sub.legs.length) ins = sub.legs; } catch {} }
+        if (ins) { lt.legs.splice(lt.legIdx, 0, ...ins); saveLongTask(bot, r); continue; }
+        say(owner, bot, `長期タスクを中断しました。${leg.type === "smelt" ? "かまど" : "作業台"}を用意できませんでした`, true); r.longtask = null; saveLongTask(bot, r); return true;
+      }
+      const res = leg.type === "craft" ? executeCraftLeg(invOf(bot), leg) : executeSmeltLeg(invOf(bot), leg);
+      // 6-ML ML-H01/H02 (cycle1322, a02): CRAFT/SMELT の実行結果を result 軸へ記録する (記録のみ・分岐不変)。
+      // fromCraftResult は act を持たないため、rec 形へ射影してから commit する (そのままでは EXP 化されない)。
+      try { const norm = fromCraftResult(res); const rec = { act: leg.type === "craft" ? "CRAFT" : "SMELT", ok: !!norm?.ok, reason: norm?.reason || null, item: res?.produced || leg.item || null, gained: res?.ok ? (leg.need || 0) : 0, at: Date.now() }; if (leg.type === "craft") r.lastCraft = rec; else r.lastSmelt = rec; commitLastAction(r, rec); } catch {}
+      pickUpPlacedStation(bot, r); // v0.4.67: 自分で置いた作業台・かまどは持ち歩く (置きっぱなしだと、遠くで次の工程を始めた時に用意できず中断していた)
+      if (res.bucketPending > 0) { // SMELT P2: 空バケツ返却の残数は足元へ16個ずつ落とし、失敗は記録する (drink_milk と同型)
+        let rest = res.bucketPending, dropFailed = false;
+        while (rest > 0) { const chunk = Math.min(16, rest); try { bot.dimension.spawnItem(new ItemStack("minecraft:bucket", chunk), bot.location); rest -= chunk; try { if (shouldToss({ spawned: true, suppressed: !!((r.lastCtx?.danger?.count ?? 0) > 0) || !!r.work, lastFiredMs: r.tossAnimLastAt ?? null, nowMs: Date.now() })) { r.tossAnimAt = Date.now(); r.tossAnimLastAt = r.tossAnimAt; r.lastToss = { at: r.tossAnimAt, armPitchDeg: -35 }; } } catch {} } catch { dropFailed = true; break; } } // POLISH-ANIM-TOSS-01 (cycle1400): 出現成功の辺でのみ投げ出し表現を開始 (表示層のみ)
+        if (dropFailed || rest > 0) noteFail(bot, "smelt:bucket_lost", new Error("empty bucket drop failed"));
+      }
+      if (res.ok) { say(owner, bot, `工程${lt.legIdx + 1}/${lt.legs.length}：${nameOfItem(res.produced || leg.item)}ができました`, true); lt.legIdx++; saveLongTask(bot, r); continue; }
+      if (res.missing) { // 材料不足は、不足分の工程を組み立て直して差し込む (自己修正)
+        // v0.4.67: 以前は「不足数」を必要数にした採取工程を差し込んでいた。工程側は「手持ちの合計 >= 必要数」で完了と
+        // 判定するため、手持ちが少しでもあると即完了→クラフトがまた不足→差し込み…を 1 回の判断で 40 回繰り返し、
+        // 工程が数分で 2000 を超えて cb_longtask の保存 (上限 32KB) に失敗していた。板材のように「集められない」材料もあった。
+        leg.repairs = (leg.repairs || 0) + 1;
+        if (leg.repairs > 3 || lt.legs.length > 60) {
+          noteFail(bot, "longtask:repair_exhausted", new Error(`${leg.item} missing ${res.missing}`));
+          say(owner, bot, `長期タスクを中断しました。${lname(res.missing)}の見積もりが合わず、材料を揃えきれませんでした`, true);
+          r.longtask = null; saveLongTask(bot, r); return true;
+        }
+        const inv = countInv(bot);
+        const needTotal = countOfGroup(inv, res.missing) + (res.missingCount || 1); // 必要数は「手持ち + 不足分」の合計
+        let ins = null;
+        try { const sub = planLongTask({ target: concreteItemOf(res.missing, inv), amount: needTotal }, inv); if (sub && sub.feasible && sub.legs && sub.legs.length) ins = sub.legs; } catch {}
+        if (!ins) ins = [{ type: "gather", item: res.missing, need: needTotal, via: null, yRange: null, depth: mineDepthFor(res.missing), crafts: 0, needs: null, station: null }];
+        lt.legs.splice(lt.legIdx, 0, ...ins);
+        saveLongTask(bot, r); continue;
+      }
+      say(owner, bot, `長期タスクを中断しました。${res.reason || "工程に失敗しました"}`, true); r.longtask = null; saveLongTask(bot, r); return true;
+    }
+    lt.legIdx++;
+  }
+  if (lt.legIdx >= lt.legs.length) { lt.phase = "deliver"; lt.deliverSince = Date.now(); lt.deliverFails = 0; saveLongTask(bot, r); say(owner, bot, `${lt.name}が揃いました。お届けします`, true); return true; }
+  return false;
+}
+function cancelMission(bot, owner, r, silent = false) {
+  if (r.mission) { r.mission = null; clearPlanRecords(r); persistMission(bot, r, true); dps(bot, "cb_order", ""); }
+  r.buildPlan = null;
+  r.buildStallKey = null; r.buildStallSince = 0; r.buildStallBest = null; r.buildDangerSince = null; r.buildDangerNoted = false; r.buildProgressAt = null; r.buildProgressIdx = null; r.buildProgressPlaced = null; // 基礎 R-3 (v0.4.81, cycle0417-a04): 中止した建築の stall/危険時計を残さない + BUILD-HOLD-NOEXIT (cycle1343)
+  if (!silent) say(owner, bot, "指示、中止しました。……今の作業はここまでです", true);
+}
+const SUSPEND_JP = { target_not_found: "対象が見つかりませんでした", no_progress: "進捗が止まってしまいました", cannot_reach_area: "指定の場所へ辿り着けませんでした", cannot_return: "帰還できませんでした", cannot_recover: "体力が回復しませんでした" }; // cannot_recover は cycle0731
+function handleMissionSay(bot, owner, r, d) {
+  const m = r.mission; if (!m) return;
+  if (d.reason === "step_complete") { if (!m.order.legsOnly) say(owner, bot, `${nameOfItem(m.order.target)}、必要数は揃いました。……悪くない進みです`); return; }
+  if (d.reason === "mission_complete") {
+    if (!m.order.legsOnly) {
+      if (r.deliverFail) say(owner, bot, `集めたのですが、${m.order.returnTo === "home" ? "拠点へ入庫できませんでした" : "お渡しできませんでした"}。相手側の空きがないか、チェストが見つかりませんでした`, true);
+      else say(owner, bot, `指示、完了しました。${nameOfItem(m.order.target)}を${m.order.amount}個、${m.order.returnTo === "home" ? "拠点へ入庫しました" : "お渡ししました"}`, true);
+    }
+    r.deliverFail = false;
+    finishMission(bot, owner, r);
+    return;
+  }
+  if (typeof d.reason === "string" && d.reason.startsWith("suspended:")) {
+    if (!r.suspendNotified) { r.suspendNotified = true; say(owner, bot, `指示を保留しました。${SUSPEND_JP[d.reason.slice(10)] || "進めなくなりました"}。……指示自体は残してあります`, true); }
+    return;
+  }
+  if (d.reason === "detour_resume") say(owner, bot, "本作業に戻ります");
+}
+function doDeliver(bot, owner, r, m) {
+  if (m.order.returnTo === "home") { execArrive(bot, owner, { act: "deposit" }, r.lastCtx || {}, null); if (r.justDeposited) { r.deliveredFlag = true; r.deliverFail = false; } return; }
+  const oc = invOf(owner); if (!oc) { r.deliverFail = true; noteFail(bot, "deliver:no_owner_inv", new Error("owner inventory unavailable")); return; }
+  const res = transferFiltered(bot, oc, null); recordStore(r, "doDeliver", res);
+  // 検証: 1個も渡せなかったら「成功したつもり」にせず失敗として記録する
+  r.deliverFail = res.moved === 0;
+  if (res.moved === 0) noteFail(bot, "deliver:nothing_moved", new Error("transfer moved 0"));
+  if (res.moved > 0) { const st = stats(bot); st.deliver = (st.deliver || 0) + res.moved; saveStats(bot, st); r.deliveredFlag = true; r.justDelivered = true; system.runTimeout(() => { r.justDelivered = false; }, 100); dps(bot, "cb_bond", Math.min(100, dp(bot, "cb_bond", 30) + 1)); noteNod(r, res.moved); }
+}
+// POLISH-ANIM-NOD-01 (cycle1036): 納品で実際に渡せたときだけ頷きを開始する (表示層のみ)
+// POLISH-ANIM-FLINCH-01 (cycle1051): 予兆エンティティの出現の辺で身構えを開始する (表示層のみ・実機確認待ち)
+function noteFlinch(bot, r, cand) {
+  try {
+    if (!r) return;
+    const prev = r.flinchSeenIds instanceof Set ? r.flinchSeenIds : new Set();
+    let inWater = false; try { inWater = !!bot.isInWater; } catch {}
+    const res = decideFlinch(prev, Array.isArray(cand) ? cand : [], { lastFiredMs: r.flinchAnimLastAt ?? null, nowMs: Date.now(), inWater, falling: r.selfFalling === true });
+    r.flinchSeenIds = new Set((Array.isArray(cand) ? cand : []).map(e => e.id));
+    if (res && res.flinch) { r.flinchAnimAt = Date.now(); r.flinchAnimLastAt = r.flinchAnimAt; }
+  } catch {}
+}
+function noteNod(r, moved) { try { if (shouldNod({ moved, lastFiredMs: r.nodAnimLastAt ?? null, nowMs: Date.now() })) { r.nodAnimAt = Date.now(); r.nodAnimLastAt = r.nodAnimAt; } } catch {} }
+// POLISH-ANIM-SUMMONSCAN-01 (cycle1110): 明示召喚・復元が成功した辺でのみ見回しを開始する (表示層のみ・実機確認待ち)。追随テレポートでは呼ばない
+function noteSummonScan(r) { try { if (r && shouldSummonScan({ lastFiredMs: r.summonScanLastAt ?? null, nowMs: Date.now() })) { r.summonScanAt = Date.now(); r.summonScanLastAt = r.summonScanAt; } } catch {} }
+// POLISH-ANIM-SKYGLANCE-01 (cycle1133): 雨の降り始めの辺でのみ見上げを開始する (表示層のみ・実機確認待ち)。辺は結果に関わらず毎回消費する
+// POLISH-ANIM-LOOKBACK-01 (cycle1153): 主人距離が閾値10を下から上へ跨いだ辺でのみ振り返りを開始する (表示層のみ・実機確認待ち)。辺は結果に関わらず毎回消費する
+function noteLookback(r, c) {
+  try {
+    if (!r || !c) return;
+    const prev = r.lookbackPrevDist;
+    const d = c.self?.distOwner;
+    r.lookbackPrevDist = d;
+    let inWater = false; try { inWater = !!c.x?.inWater; } catch {}
+    if (shouldLookback({ prevDist: prev, dist: d, danger: !!(c.danger && c.danger.count > 0), working: !!r.work, falling: r.selfFalling === true, inWater, inspectActive: isInspectActive(r.inspectAnimAt, Date.now()), nodActive: isNodActive(r.nodAnimAt, Date.now()), flinchActive: isFlinchActive(r.flinchAnimAt, Date.now()), summonScanActive: isSummonScanActive(r.summonScanAt, Date.now()), skyglanceActive: isSkyglanceActive(r.skyglanceAt, Date.now()), lastFiredMs: r.lookbackAnimLastAt ?? null, nowMs: Date.now() })) { r.lookbackAnimAt = Date.now(); r.lookbackAnimLastAt = r.lookbackAnimAt; }
+  } catch {}
+}
+// POLISH-ANIM-DRYOFF-01 (cycle1322): 雨上がりの辺でのみ水払いを開始する (表示層のみ・実機確認待ち)。状態は dryoffState に分離保持し skyglance の prevRaining と干渉しない
+// POLISH-ANIM-THRESHOLD-01 (cycle1503): 狭い開口部 (左右が固体で挟まれた足セル) へ入った辺でのみ発火を記録する (表示層のみ・実機確認待ち)。開口判定は種別でなく固体配置だけを見る汎用形。
+function noteThreshold(bot, dim, r, c) {
+  try {
+    if (!bot || !dim || !r) return;
+    if (!r.thresholdState) r.thresholdState = createThresholdState();
+    const fx = Math.floor(bot.location.x), fy = Math.floor(bot.location.y), fz = Math.floor(bot.location.z);
+    const solid = (x, y, z) => { try { const b = dim.getBlock({ x, y, z }); return !!b && solidOfTypeId(b.typeId) && !b.isLiquid; } catch { return false; } };
+    const inOpening = (solid(fx - 1, fy, fz) && solid(fx + 1, fy, fz)) || (solid(fx, fy, fz - 1) && solid(fx, fy, fz + 1));
+    const fired = noteThresholdState(r.thresholdState, { inOpening, nowMs: Date.now(), danger: !!(c?.danger && c.danger.count > 0), hasWorkTarget: !!r.work, falling: r.selfFalling === true, inWater: !!c?.x?.inWater, flinchActive: isFlinchActive(r.flinchAnimAt, Date.now()) });
+    if (fired) r.lastThreshold = { at: Date.now(), firedCount: r.thresholdState.firedCount };
+  } catch {}
+}
+// POLISH-ANIM-ICEBALANCE-01 (cycle1543): 氷上で止まる/向きを変える辺でのみバランス取りを記録する (表示層のみ・実機確認待ち)。
+// 足元カテゴリは sfx.js の分類が単一の正。ロール/腕は RP 受け口が無いため r.lastIcebalance 記録のみ、ピッチだけ applyGaze 最下位へ重畳する。
+function noteIcebalanceTick(bot, dim, r, c) {
+  try {
+    if (!bot || !dim || !r) return;
+    if (!r.icebalanceState) r.icebalanceState = createIcebalanceState();
+    let groundCategory = null;
+    try { const gb = dim.getBlock({ x: Math.floor(bot.location.x), y: Math.floor(bot.location.y) - 1, z: Math.floor(bot.location.z) }); if (gb) groundCategory = materialOfTypeId(gb.typeId); } catch {}
+    let horizSpeed = null;
+    try { const v = bot.getVelocity(); if (v) horizSpeed = Math.abs(v.x) + Math.abs(v.z); } catch {}
+    let yawDeg = null;
+    try { const rot = bot.getRotation(); if (rot && Number.isFinite(rot.y)) yawDeg = rot.y; } catch {}
+    let flying = false; try { flying = bot.isFlying === true; } catch {}
+    const fired = noteIcebalanceState(r.icebalanceState, { groundCategory, horizSpeed, yawDeg, nowMs: Date.now(), danger: !!(c?.danger && c.danger.count > 0), hasWorkTarget: !!r.work, falling: r.selfFalling === true, selfFalling: r.selfFalling === true, inWater: !!c?.x?.inWater, flying, flinchActive: isFlinchActive(r.flinchAnimAt, Date.now()), intentionalDescent: !!(r.mission?.descent || r.spiralDescent) });
+    if (fired) { const s = sampleIcebalance(r.icebalanceState, Date.now()); r.lastIcebalance = { at: Date.now(), firedCount: r.icebalanceState.firedCount, trigger: s.trigger, rollSign: s.rollSign }; }
+  } catch {}
+}
+
+// POLISH-ANIM-STEPUP-01 (cycle1603): 地上歩行で足元がちょうど +1 上がった辺でのみ発火を記録する (表示層のみ・実機確認待ち)。
+// 膝上げは RP 受け口が無いため r.lastStepup 記録のみ、視線ピッチだけ applyGaze 最下位へ重畳する。
+function noteStepupTick(bot, dim, r, c) {
+  try {
+    if (!bot || !r) return;
+    if (!r.stepupState) r.stepupState = createStepupState();
+    const footY = Math.floor(bot.location.y);
+    let flying = false; try { flying = bot.isFlying === true; } catch {}
+    const fired = noteStepupState(r.stepupState, { footY, nowMs: Date.now(), danger: !!(c?.danger && c.danger.count > 0), hasWorkTarget: !!r.work, falling: r.selfFalling === true, selfFalling: r.selfFalling === true, inWater: !!c?.x?.inWater, flying, hovering: flying, flinchActive: isFlinchActive(r.flinchAnimAt, Date.now()), intentionalDescent: !!(r.mission?.descent || r.spiralDescent) });
+    if (fired) { const s = sampleStepup(r.stepupState, Date.now()); r.lastStepup = { at: Date.now(), firedCount: r.stepupState.firedCount, trigger: s.trigger }; }
+  } catch {}
+}
+// POLISH-ANIM-EDGEPEEK-01 (cycle1518): 進行方向 1 セル先の落差が 2〜4 マスの範囲へ入った辺でのみ発火を記録する (表示層のみ・実機確認待ち)。落差は固体配置だけから取る汎用形で、ブロック種別の個別判定はしない
+function noteEdgepeek(bot, dim, r, c) {
+  try {
+    if (!bot || !dim || !r) return;
+    if (!r.edgepeekState) r.edgepeekState = createEdgepeekState();
+    const rot = (() => { try { return bot.getRotation(); } catch { return null; } })();
+    if (!rot || !Number.isFinite(rot.y)) return;
+    const rad = rot.y * Math.PI / 180;
+    const dx = Math.round(-Math.sin(rad)), dz = Math.round(Math.cos(rad));
+    const fx = Math.floor(bot.location.x), fy = Math.floor(bot.location.y), fz = Math.floor(bot.location.z);
+    const solid = (x, y, z) => { try { const b = dim.getBlock({ x, y, z }); return !!b && solidOfTypeId(b.typeId) && !b.isLiquid; } catch { return false; } };
+    let dropDepth;
+    if (!solid(fx + dx, fy - 1, fz + dz)) {
+      for (let d = 1; d <= 8; d++) { if (solid(fx + dx, fy - 1 - d, fz + dz)) { dropDepth = d; break; } }
+    } else { dropDepth = 0; }
+    const fired = noteEdgepeekState(r.edgepeekState, { dropDepth, nowMs: Date.now(), danger: !!(c?.danger && c.danger.count > 0), hasWorkTarget: !!r.work, falling: r.selfFalling === true, selfFalling: r.selfFalling === true, inWater: !!c?.x?.inWater, flinchActive: isFlinchActive(r.flinchAnimAt, Date.now()), intentionalDescent: !!(r.mission?.descent || r.spiralDescent) });
+    if (fired) r.lastEdgepeek = { at: Date.now(), firedCount: r.edgepeekState.firedCount };
+  } catch {}
+}
+function noteDryoff(r, c) {
+  try {
+    if (!r || !c) return;
+    if (!r.dryoffState) r.dryoffState = { prevRaining: undefined, startedAtMs: null, lastFiredAtMs: null };
+    let inWater = false; try { inWater = !!c.x?.inWater; } catch {}
+    const fired = noteDryoffState(r.dryoffState, { isRaining: c.env?.isRaining === true, nowMs: Date.now(), danger: !!(c.danger && c.danger.count > 0), hasWorkTarget: !!r.work, falling: r.selfFalling === true, inWater, flinchActive: isFlinchActive(r.flinchAnimAt, Date.now()), inspectActive: isInspectActive(r.inspectAnimAt, Date.now()), nodActive: isNodActive(r.nodAnimAt, Date.now()), skyglanceActive: isSkyglanceActive(r.skyglanceAt, Date.now()), lookbackActive: isLookbackActive(r.lookbackAnimAt, Date.now()), summonScanActive: isSummonScanActive(r.summonScanAt, Date.now()) });
+    if (fired) r.dryoffAt = r.dryoffState.startedAtMs;
+  } catch {}
+}
+function noteSkyglance(r, raining, danger) {
+  try {
+    if (!r) return;
+    const was = r.prevRaining;
+    r.prevRaining = raining === true;
+    if (shouldSkyglance({ wasRaining: was, isRaining: raining === true, danger: danger === true, hasWorkTarget: !!r.work, flinchActive: isFlinchActive(r.flinchAnimAt, Date.now()), inspectActive: isInspectActive(r.inspectAnimAt, Date.now()), nodActive: isNodActive(r.nodAnimAt, Date.now()), lastFiredAtMs: r.skyglanceLastAt ?? null, nowMs: Date.now() })) { r.skyglanceAt = Date.now(); r.skyglanceLastAt = r.skyglanceAt; }
+  } catch {}
+}
+function execSideTask(bot, owner, r, ctx, scan) {
+  const t = r.sideTask; if (!t) return;
+  try { noteAttempt(r.sideState, t, Date.now()); } catch {}
+  if (t.type === "pickup") {
+    r.target = { x: t.pos.x + 0.5, y: t.pos.y, z: t.pos.z + 0.5 };
+    const e = (scan?.items || []).find((x) => x.id === t.targetId);
+    if (e && dist(bot.location, e.location) < 1.9) pickupItemEntity(bot, owner, e, ctx);
+  } else if (t.type === "hunt") {
+    const e = [...(scan?.hostiles || []), ...(scan?.animals || [])].find((x) => x.id === t.targetId) || [...(scan?.hostiles || []), ...(scan?.animals || [])].find((x) => x.typeId === t.entityType);
+    if (e) { r.target = { ...e.location }; if (dist(bot.location, e.location) < 3.2) zapEntity(bot, r, e); }
+    else r.target = { x: t.pos.x + 0.5, y: t.pos.y, z: t.pos.z + 0.5 };
+  } else if (t.type === "break" || t.type === "harvest") {
+    if (startWork(bot, r, { x: t.pos.x, y: t.pos.y, z: t.pos.z, typeId: t.blockType })) tickWork(bot, owner, r, ctx);
+    else r.target = { x: t.pos.x + 0.5, y: t.pos.y, z: t.pos.z + 0.5 };
+  }
+}
+function applyDirective(bot, owner, r, ctx, scan, d) {
+  const m = r.mission;
+  switch (d.action) {
+    case "move": {
+      let tgt = null; const t = d.target;
+      if (t === "owner") tgt = behindOf(owner, 2);
+      else if (t === "home") { const h = homeOf(bot); tgt = h ? { x: h.x + 0.5, y: h.y + 1, z: h.z + 0.5 } : behindOf(owner, 2); }
+      else if (t && t.type === "search" && t.regionMode) { const c = t.center || bot.location; const nr = nextExploreRegion(bot.dimension.id, c, bot.location); tgt = nr ? { x: nr.x, y: bot.location.y, z: nr.z } : { ...bot.location }; r.exploreRegion = nr; } // v0.4.66: まだ調べていない区画の中心へ
+      else if (t && t.type === "search") { if (t.wp) { tgt = { x: t.wp.x, y: bot.location.y, z: t.wp.z }; } else { const c = t.center || bot.location; const ang = ((r.mission?.obsCount || 0) % 8) * (Math.PI / 4); const rad = Math.min(t.radius || 8, 24); tgt = { x: c.x + Math.cos(ang) * rad, y: c.y, z: c.z + Math.sin(ang) * rad }; } } // v0.4.64: 巡回点 wp があればそこへ直行する (旧来の毎秒45°回転は円運動の原因だったため wp 無しの後方互換としてのみ残す)
+      else if (t && typeof t === "object" && typeof t.x === "number") tgt = { x: t.x, y: t.y, z: t.z };
+      else tgt = behindOf(owner, 2);
+      r.target = tgt; r.moveAct = "follow";
+      break;
+    }
+    case "work": {
+      if (d.step === "side_collect" && r.sideTask) { execSideTask(bot, owner, r, ctx, scan); r.moveAct = "follow"; break; }
+      if (r.mTargetKind === "entity" && r.mTargetEntity) { const e = r.mTargetEntity; r.target = { ...e.location }; if (dist(bot.location, e.location) < 3.2) zapEntity(bot, r, e); }
+      else if (r.mTargetKind === "item" && r.mTargetEntity) { const e = r.mTargetEntity; r.target = { x: e.location.x, y: e.location.y, z: e.location.z }; if (dist(bot.location, e.location) < 1.9) pickupItemEntity(bot, owner, e, ctx); }
+      else if (r.mTargetLoc && r.mTargetKind === "block" && shouldTunnel(bot, r, r.mTargetLoc)) tickTunnel(bot, owner, r, ctx, r.mTargetLoc); // v0.4.66: 地中の対象へ掘り進む
+      else if (r.mTargetLoc) { if (r.tunnel) r.tunnel = null; if (startWork(bot, r, { x: r.mTargetLoc.x, y: r.mTargetLoc.y, z: r.mTargetLoc.z, typeId: r.mTargetType })) tickWork(bot, owner, r, ctx); else r.target = { x: r.mTargetLoc.x + 0.5, y: r.mTargetLoc.y, z: r.mTargetLoc.z + 0.5 }; }
+      else r.target = behindOf(owner, 2);
+      r.moveAct = "follow";
+      break;
+    }
+    case "withdraw": { // Phase2 WITHDRAW Step B: 範囲外は移動のみ (runWithdraw 0回)、範囲内だけ不足分を1回実行
+      const t = d.target;
+      if (!t || typeof t.x !== "number") { r.target = { ...bot.location }; break; }
+      const center = { x: t.x + 0.5, y: t.y + 0.5, z: t.z + 0.5 };
+      if (dist(bot.location, center) > WITHDRAW_RANGE) { r.target = center; r.moveAct = "follow"; r.withdrawTargetKey = d.withdrawKey || null; break; }
+      const res = runWithdraw(bot, r, { from: { x: t.x, y: t.y, z: t.z, dim: t.dim || bot.dimension.id }, item: t.item, count: Math.max(1, d.needRemaining || 1) });
+      handleWithdrawResult(bot, r, m, t, res);
+      r.target = { ...bot.location };
+      break;
+    }
+    case "zap": { const e = scan?.nearestHostile; if (e) { r.target = { ...e.location }; if (dist(bot.location, e.location) < 3.2) zapEntity(bot, r, e); } r.moveAct = "zap"; break; }
+    case "deliver": { const rp = returnPoint(bot, owner, m); r.target = rp; if (r.mAtReturn) doDeliver(bot, owner, r, m); r.moveAct = "follow"; break; }
+    case "say": handleMissionSay(bot, owner, r, d); r.target = { ...bot.location }; break;
+    default: r.target = { ...bot.location }; break;
+  }
+}
+// 固定中のミッション目標がまだ実在するか（ブロックは同種か／エンティティ・アイテムは有効か）
+function missionTargetValid(bot, r) {
+  if (!r.mTargetLoc) return false;
+  if (r.mTargetKind === "block") { let b = null; try { b = bot.dimension.getBlock(r.mTargetLoc); } catch {} return !!b && b.typeId === r.mTargetType; }
+  if (r.mTargetEntity) { try { return typeof r.mTargetEntity.isValid === "function" ? !!r.mTargetEntity.isValid() : !!r.mTargetEntity.isValid; } catch { return false; } }
+  return true;
+}
+function tickMission(bot, owner, ctx, scan) {
+  const r = rt(bot); const m = r.mission;
+  if (!m || m.status !== "active") return false;
+  // 所持品が読めない時は「0個」と誤認して進めない（unknown を 0 と混同しない）
+  if (ctx.x && ctx.x.invOk === false) { noteFail(bot, "mission:inv_unreadable", new Error("inventory unavailable")); return true; }
+  // 寄り道の機会走査（side ステップがある間だけ）
+  r.sideTask = null;
+  const sideSteps = m.steps.filter((s) => s.type === "side_collect" && s.status !== "done");
+  if (sideSteps.length) {
+    const sideOrders = sideSteps.map((s) => ({ item: s.target, amount: s.need, have: s.have || 0, target: s.target, label: nameOfItem(s.target) }));
+    r.sideState.now = Date.now();
+    try { pruneCooldowns(r.sideState, Date.now()); } catch {}
+    try { r.sideTask = scanOpportunities(ctx, sideOrders, r.sideState); } catch {}
+  }
+  const step = m.steps[m.currentStep];
+  let ft = { found: false };
+  if (step && (step.type === "gather_block" || step.type === "hunt_entity" || step.type === "side_collect")) {
+    // 進捗が増えたら見切りタイマーをリセット。45秒進捗なしの対象は60秒避けて探し直す（到達不能な1個に固着しない）
+    const curHave = step.have || 0;
+    // Phase2 INSPECT Step 3b R4 (v0.4.13): 前tickの対象状態が unknown/pending なら、その経過分 (上限10秒) は測れていなかった時間として見切り時計へ算入しない
+    const prevTS = r.mTargetState;
+    if (r.mTargetSince && prevTS && (prevTS.state === "unknown" || prevTS.state === "pending") && prevTS.typeId === (step.target ?? null) && typeof prevTS.at === "number") { r.mTargetSince += Math.max(0, Math.min(Date.now() - prevTS.at, 10000)); }
+    if (curHave !== r.mLastHave) { r.mLastHave = curHave; r.mTargetSince = Date.now(); }
+    else if (r.mTargetLoc && r.mTargetSince && Date.now() - r.mTargetSince > 45000 && !(r.tunnel && r.tunnel.key === r.mTargetKey && Date.now() - r.tunnel.lastStepAt < 15000)) { /* v0.4.66: 掘り進めている間は見切らない */ r.mBanKey = r.mTargetKey; r.mBanUntil = Date.now() + 60000; r.mTargetLoc = null; r.mTargetKey = ""; r.mTargetSince = Date.now(); }
+    // 目標の固定: 一度狙った対象は、消える/壊れるまで変えない（毎tickの最寄り再選択による上下動・迷走を断つ）
+    if (r.mTargetLoc && missionTargetValid(bot, r)) ft = { found: true, kind: r.mTargetKind, loc: r.mTargetLoc, typeId: r.mTargetType, entity: r.mTargetEntity };
+    else {
+      ft = findMissionTarget(bot, r, scan, step, ctx.x?.obs ? ctx.x.obs.scan !== "ok" : ctx.x?.scanOk === false);
+      if (ft.found && ft.loc && r.mBanKey === `${ft.loc.x},${ft.loc.y},${ft.loc.z}` && Date.now() < r.mBanUntil) {
+        // v0.4.66: 一番近いものを避けている時は、調査結果から次に近いものを選ぶ (隣の鉱石を見落とさない)
+        let alt = null; try { if (ft.kind === "block" && ft.typeId) alt = lookupSurvey(bot, [ft.typeId], r.mBanKey); } catch {}
+        ft = alt ? { found: true, kind: "block", loc: alt.loc, typeId: alt.typeId, detail: { state: "present", via: "survey" } } : { found: false };
+      }
+    }
+  }
+  r.mFound = !!ft.found;
+  try { r.mTargetState = { state: ft.found ? "present" : (ft.detail?.state || "absent"), typeId: step?.target || null, at: Date.now() }; } catch {} // Phase2 INSPECT Step 3a (v0.4.11): 対象状態の記録のみ (分岐は変えない、読み手移行は Step 3b)
+  // Phase3 GOAP-lite 影評価 (v0.4.12→v0.4.14): gather ステップについて代替調達＋CRAFT/PLACE 計画を 5 秒間引きで計算し r.lastPlan へ記録するだけ (実行・分岐は変えない、Phase 4 の読み手用)。state は goap_state が三状態で構築する (99 番兵は廃止: near は存在=1、chest は中身実測の合算のみ)
+  try {
+    if (step && step.type === "gather_block" && step.target && Date.now() - (r.lastPlanAt || 0) > 5000) {
+      r.lastPlanAt = Date.now();
+      let containers = []; try { const wm = wmemOf(bot); if (wm?.knownContainers) containers = wm.knownContainers(bot.dimension.id); } catch {}
+      const srcState = ft.found ? "present" : ((ft.detail?.state === "unknown" || ft.detail?.state === "pending") ? "unknown" : "absent");
+      // NQ-01 P1 (v0.4.18): 同スコープの実測距離を影評価へ追加するだけ (新規走査なし、分岐不変)。
+      // ft.kind==="item" はドロップ、"block" は採取源。"entity"/未発見は両方 null (UNKNOWN)
+      let sourceDist = null, dropDist = null;
+      if (ft.found && ft.loc) { const d = dist(bot.location, ft.loc); if (ft.kind === "item") dropDist = d; else if (ft.kind === "block") sourceDist = d; }
+      const ev = buildEvaluationFromCtx(ctx, { target: step.target, need: Math.max(1, step.need || 1), have: step.have || 0, recipes: buildRecipes(WOOD_SPECIES[0]), containers, sourceStatus: srcState, now: Date.now(), sourceDist, dropDist });
+      const res = goapPlan(ev.state, ev.goal, ev.actions);
+      const psteps = res?.ok ? (res.actions || res.steps || []).map((a) => a.id || a) : [];
+      r.lastPlan = { ok: !!res?.ok, reason: res?.ok ? null : (res?.reason || null), steps: psteps, cost: res?.ok ? (res.cost ?? null) : null, at: Date.now(), candKey: null, pk: psteps.some((s) => typeof s === "string" && (s.startsWith("CRAFT:") || s.startsWith("PLACE:") || s.startsWith("SMELT:"))) ? "craft" : "gather", unk: Array.isArray(ev.meta?.unknownReasons) ? ev.meta.unknownReasons.length : 0 };
+      // Phase3 NQ-02 (v0.4.17): Goal述語の正式表現で現在目標を記録のみ (分岐・実行は変えない)。ev.state は flat GOAP state で、inv fact の有無が三状態を担う
+      try { const gg = makeInvGoal(step.target, Math.max(1, step.need || 1), { source: "mission" }); r.lastGoal = gg ? { goal: gg, key: goalKey(gg), state: evalGoal(gg, ev.state), at: r.lastPlan.at } : null; } catch { r.lastGoal = null; }
+      // Phase3 S1b前提工事 P1/P2 (v0.4.17→v0.4.19 残欠是正): 第一手の pre と計画時 factStatus/state を追加保持のみ (既存7フィールド不変、読み手は Phase4)。v0.4.19: 対を局所で完成させてから公開し、第一手が無い計画では a1:null を明示、snap へ対同一性の at を付ける (cycle1156/a05)
+      try { const pair = buildP3Material(res, ev); r.lastPlan.a1 = pair.a1; r.lastPlan.snap = pair.snap ? { factStatus: pair.snap.factStatus, state: pair.snap.state, at: r.lastPlan.at, chest: pair.snap.chest ?? null, stationStatus: pair.snap.stationStatus ?? null, unknownFacts: Array.isArray(pair.snap.unknownFacts) ? pair.snap.unknownFacts : [] } : null; } catch { try { r.lastPlan.a1 = null; r.lastPlan.snap = null; } catch {} }
+      // Phase3 P3本体化 (v0.4.24): 旧ゲート (S1a) の記録は廃止し、第一手ゲートの正は P3 のみとした。r.lastPlanGate フィールド自体は互換のため clearPlanRecords の null 代入でのみ保持する (書込み停止)
+      // Phase3 S1b P3 (v0.4.19): applicable 三状態再確認ゲートを二重記録のみで併走させる (第一手の実 pre と snap だけを見る。既存ゲート・分岐・実行は不変、読み手化と旧経路削除は次サイクル以降)
+      try { const g3 = evaluateFirstStepP3(r.lastPlan); const g3v = g3?.verdict || "unknown", g3r = g3?.reason || null; r.lastPlanGateP3 = { verdict: g3v, reason: g3r, firstStep: g3?.firstStep ?? null, at: r.lastPlan.at, checks: Array.isArray(g3?.checks) ? g3.checks : null, ...(g3v === "allow" ? { scope: g3r === "already_satisfied" ? "no_first_step" : "first_step_pre_at_plan_time" } : {}) }; } catch { r.lastPlanGateP3 = null; }
+      // Phase3 S1b P4 (v0.4.20): Goal同一性の材料 goalKey を lastPlan へ追加保持し (r.lastGoal.key と同一 try 由来の値を対で入れる)、同一性再検証を記録のみで接続 (分岐・実行は不変、読み手化は G5/G7 と別段)。検証は計画生成直後の自己整合として行い、失敗時は null で stale 誤読を防ぐ
+      try { r.lastPlan.goalKey = r.lastGoal?.key ?? null; const p4Now = Date.now(); const rv = revalidateP4(r.lastPlan, r.lastGoal?.key ?? null, p4Now); const rvv = rv?.verdict || "unknown", rvr = rv?.reason || null; r.lastPlanRevalP4 = { verdict: rvv, reason: rvr, firstStep: rv?.firstStep ?? null, at: p4Now, checks: rv?.checks ?? null, ...(rvv === "allow" ? { scope: "plan_identity_at_adoption" } : {}) }; } catch { r.lastPlanRevalP4 = null; }
+      // Phase3 S1b P5 (v0.4.21): 合成レコードを記録のみで追加 (複写のみ・再計算なし。現行の P4 記録は生成直後の自己整合であり、採用時点の再検証の実働証拠ではない)
+      try { r.lastPlanGateUnified = buildUnifiedRecord(r.lastPlanGateP3, r.lastPlanRevalP4, r.lastPlan.at); } catch { r.lastPlanGateUnified = null; }
+      // Phase3 S1b P4拡張 (v0.4.22): sig/needRemain を追加保持し全項目再検証を記録のみで接続 (生成直後の自己整合。candKey は B2 (v0.4.27) で計画時点の containers snapshot から独立に導出し保持する (採用側の再選定との照合が証拠であり、値の複写はしない)。読み手化は解禁後)
+      try { const nr = needRemainOf(Math.max(1, step.need || 1), step.have || 0); r.lastPlan.needRemain = nr; const firstId = Array.isArray(r.lastPlan.steps) && r.lastPlan.steps.length ? r.lastPlan.steps[0] : null; const sig = computePlanSig({ missionId: m?.id ?? "m", stepIndex: m?.currentStep ?? 0, stepType: step.type, target: step.target, need: Math.max(1, step.need || 1), goalKey: r.lastPlan.goalKey, firstStep: firstId }); r.lastPlan.sig = sig; let planCandKey = null; try { const pcand = selectWithdrawCandidate({ stepType: step.type, detour: m?.detour, blockedStatus: m?.blocked, need: step?.need, have: step?.have, now: r.lastPlan.at, cooldownUntil: r.withdrawCooldownUntil || 0, item: step.target, logBlockIds: LOG_BLOCK_IDS, containers, selfPos: bot.location, dim: bot.dimension.id, blockedKeys: (r.withdrawBlocked instanceof Set || Array.isArray(r.withdrawBlocked)) ? r.withdrawBlocked : [], stepIndex: m?.currentStep }); planCandKey = candKeyForFirstStep({ firstStep: firstId, stepTarget: step.target, stepIndex: m?.currentStep, cand: pcand }); } catch { planCandKey = null; } r.lastPlan.candKey = planCandKey; const fNow = Date.now(); const fv = revalidateFull(r.lastPlan, r.lastGoal?.key ?? null, fNow, { sig, needRemain: nr, candKey: planCandKey, stepTarget: step.target, safety: { missionActive: true, stepType: step.type, detour: !!m?.detour, mineLeg: !!r.mineLeg, invKnown: ctx.x?.obs ? ctx.x.obs.inv === "ok" : ctx.x?.invOk !== false, invFull: !!ctx.inv?.full, selfHpPct: ctx.self?.hpPct ?? null, targetKnown: ft.found ? true : ((ft.detail?.state || "absent") === "absent"), foundTarget: !!ft.found } }); const fvv = fv?.verdict || "unknown"; r.lastPlanRevalFull = { verdict: fvv, reason: fv?.reason || null, firstStep: fv?.firstStep ?? null, at: fNow, checks: fv?.checks ?? null, ...(fvv === "allow" ? { scope: "plan_identity_full_at_plan_time" } : {}) }; } catch { r.lastPlanRevalFull = null; }
+      // Phase4 cb_trace plan配線 (v0.4.57): 影評価が揃った時点で計画要約を記録のみ (分岐・実行は不変、読み手は表示専用)。
+      // 器側 dedup は末尾1件との比較のみで result/fail の挟み込みに弱いため、接続側にも seen キー (g|p|r) を持ち、記録成功時のみ前進させる (cycle2153-a02)
+      try { const pev = mapPlanEvent(r.lastPlan, r.lastGoal); if (pev) { const pk = `${pev.g || ""}|${pev.p || ""}|${pev.r || ""}`; if (r.tracePlanSeen !== pk && r.trace?.record(pev)) r.tracePlanSeen = pk; } } catch {}
+      // Phase4 failAgg U1 R-1 影読み手 (cycle1421, a05設計): failRate の初の判断側読み手。ただし本段は記録のみ (shadow) で、計画・分岐には使わない。
+      // 試行0の Action は載せない (未実測を 0% と誤読させない)。消費への昇格は次段でブレンド式と一緒に判断する
+      try { if (r.failAgg) { const rates = {}; for (const ak of ["BREAK", "PLACE", "TAKE", "STORE", "WITHDRAW", "CRAFT", "SMELT"]) { const fr = failRate(r.failAgg, ak); if (fr && fr.trials > 0) rates[ak] = fr; } r.lastFailBlend = { at: Date.now(), rates, shadow: true }; } } catch {}
+    }
+  } catch {}
+  if (ft.found) { const key = ft.loc ? `${ft.loc.x},${ft.loc.y},${ft.loc.z}` : ""; if (key !== r.mTargetKey) { r.mTargetKey = key; r.mTargetSince = Date.now(); } r.mTargetLoc = ft.loc; r.mTargetType = ft.typeId; r.mTargetEntity = ft.entity || null; r.mTargetKind = ft.kind; }
+  // Phase2 INSPECT Step 3c-2 (v0.4.34, U4): 位置スナップショットと距離・帰還判定を1つの try で確定させる。位置が読めなければ posKnown=false とし、捏造値ではなく既存定義 (nearestDist 不明=-1 / atReturn=false) で obs を作って advance へ届ける
+  let rp = null, nearestDist = -1, posSnap = null, dimSnap = null, posKnown = true;
+  try {
+    posSnap = { x: bot.location.x, y: bot.location.y, z: bot.location.z };
+    dimSnap = bot.dimension.id;
+    rp = returnPoint(bot, owner, m);
+    if (step?.type === "goto_area" && step.target && typeof step.target === "object") nearestDist = dist(posSnap, step.target);
+    if (step?.type === "return" || step?.type === "deliver") nearestDist = dist(posSnap, rp);
+    r.mAtReturn = dist(posSnap, rp) <= 3.2; // 到着信号は return/goto と共用の 3.2 を維持 (v0.4.79 で狭小化と deliverInRange 分離供給の双方を試行したが digdown E2E シナリオB が回帰したため不採用。帯域 2.6<d<=3.2 は applyDirective が毎tick target を張り続けて接近し、出口は mission deliver の trackStall が担保する)
+  } catch { posKnown = false; nearestDist = -1; r.mAtReturn = false; posSnap = null; dimSnap = null; }
+  // 原木は樹種を問わず合算して数える（ジャングルでオーク指定でも進捗が進むように）
+  let invCounts = ctx.x?.items || {};
+  if (step && (step.type === "gather_block" || step.type === "side_collect") && step.target) {
+    const st = String(step.target).split(":").pop();
+    if (st === "log" || st.endsWith("_log")) {
+      const total = LOG_BLOCK_IDS.reduce((a, id) => a + (invCounts[id] || 0), 0);
+      invCounts = { ...invCounts, [step.target]: total };
+    }
+  }
+  // v0.4.66: 指示の実行中は、いる区画 (4×4 チャンク) を調査する。見つからなければ未調査の区画へ探しに行く
+  let regionSearch = false, searchExhausted = false;
+  try {
+    if (surveyAvailable()) {
+      const rg = regionOf(bot.location.x, bot.location.z);
+      const cur = requestSurvey(bot.dimension.id, rg.rx, rg.rz, 2);
+      for (const [ox, oz] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]]) requestSurvey(bot.dimension.id, rg.rx + ox, rg.rz + oz, 1); // 隣の区画も、読み込まれている分だけ
+      // 区画の中心に 20 秒いても調査が終わらない (チャンクが読み込まれない等) なら、調べ終えた扱いにして先へ進む
+      const ex = r.exploreRegion;
+      if (cur && ex && ex.rx === rg.rx && ex.rz === rg.rz && Math.hypot(bot.location.x - ex.x, bot.location.z - ex.z) < 12) {
+        if (!r.exploreArrivedAt) r.exploreArrivedAt = Date.now();
+        else if (Date.now() - r.exploreArrivedAt > 20000 && cur.doneMask !== 0xffff) { cur.doneMask = 0xffff; noteFail(bot, "survey:region_incomplete", new Error(`${rg.rx},${rg.rz}`)); }
+      } else r.exploreArrivedAt = 0;
+      if (step && (step.type === "gather_block" || step.type === "side_collect") && !ft.found) {
+        regionSearch = true;
+        if (r.mineLeg) {
+          // 地中素材の leg: 区画探索は開始区画のみ。全49区画が尽きるまで searchExhausted にならず、
+          // tickBranchMine のゲート (!regionMode) が開かないため、開始区画の調査完了をもって
+          // 「探し尽くした」とし、absent 確定 → 潜行へ進む (Step 3b の規則はゲート側で従来どおり効く)。
+          const sc = step.searchCenter || bot.location;
+          const sr = regionOf(sc.x, sc.z);
+          searchExhausted = surveyDone(surveys.get(surveyKeyOf(bot.dimension.id, sr.rx, sr.rz)));
+        } else {
+          searchExhausted = !nextExploreRegion(bot.dimension.id, step.searchCenter || bot.location, bot.location);
+        }
+      }
+    }
+  } catch {}
+  const wCand = buildWithdrawCandidate(bot, r, m, step);
+  const obs = {
+    regionSearch, searchExhausted,
+    invCounts, kills: r.missionKills || 0, nearestDist,
+    dangerDist: ctx.danger.nearestDist, pos: posSnap, dim: dimSnap,
+    foundTarget: !!ft.found, foundSide: r.sideTask ? r.sideTask.itemType : null,
+    selfHpPct: ctx.self.hpPct, invFull: ctx.inv.full, atReturn: r.mAtReturn, delivered: !!r.deliveredFlag, posKnown, // Step 3c-2: 位置が測れていない間は true にならない
+    invKnown: ctx.x?.obs ? ctx.x.obs.inv === "ok" : ctx.x?.invOk !== false, dangerKnown: ctx.x?.obs ? ctx.x.obs.scan === "ok" : ctx.x?.scanOk !== false,
+    withdrawCandidate: wCand, withdrawInRange: wCand ? dist(bot.location, { x: wCand.x + 0.5, y: wCand.y + 0.5, z: wCand.z + 0.5 }) <= WITHDRAW_RANGE : false,
+    withdrawDist: (wCand && posKnown) ? dist(bot.location, { x: wCand.x + 0.5, y: wCand.y + 0.5, z: wCand.z + 0.5 }) : null,
+    withdrawBlocked: r.withdrawBlocked instanceof Set ? [...r.withdrawBlocked] : [],
+    targetState: ft.found ? "present" : (ft.detail?.state || "absent"), targetKnown: ft.found ? true : ((ft.detail?.state || "absent") === "absent"), // Step 3b: unknown/pending は targetKnown=false
+  };
+  r.deliveredFlag = false;
+  // Phase3 S1b 採用tick記録 (v0.4.22, cycle1301 A18): advance 直前に現在 step から Goal キーを再生成して同一性を記録のみで再検証する (分岐・実行は不変、GOAP_ADOPT_S1B は不変)
+  try { if (r.lastPlan && step && step.type === "gather_block" && step.target) { const ak = goalKey(makeInvGoal(step.target, Math.max(1, step.need || 1), { source: "mission" })); const aNow = Date.now(); const av = revalidateP4(r.lastPlan, ak, aNow); const avv = av?.verdict || "unknown"; r.lastPlanRevalAdopt = { verdict: avv, reason: av?.reason || null, firstStep: av?.firstStep ?? null, at: aNow, checks: av?.checks ?? null, ...(avv === "allow" ? { scope: "plan_identity_at_adoption_tick" } : {}) }; } } catch { r.lastPlanRevalAdopt = null; }
+  // Phase3 S1b candKey採用側供給 (v0.4.23, cycle1315-a01 Phase A): 採用tickで Full 版再検証を記録のみで併走させる。candKey は実行系候補 wCand から withdrawKeyOf で作る現在側だけを供給し、計画側 (r.lastPlan.candKey) は読み取り専用 (自己充足=恒真式化を禁止)。計画側 candKey は B2 (v0.4.27) で結線済みであり、両側とも供給済み (計画側は読み取り専用・自己複写禁止)。分岐・実行は不変
+  try { if (r.lastPlan && step && step.type === "gather_block" && step.target) { const ak = goalKey(makeInvGoal(step.target, Math.max(1, step.need || 1), { source: "mission" })); const aNow = Date.now(); const firstStep = Array.isArray(r.lastPlan.steps) && r.lastPlan.steps.length ? r.lastPlan.steps[0] : null; let aCandKey = null; try { aCandKey = candKeyForFirstStep({ firstStep, stepTarget: step.target, stepIndex: m?.currentStep, cand: wCand }); } catch { aCandKey = null; } /* B1 (v0.4.26): 射影は純粋関数へ (検証部込みで同値) */ const aSig = computePlanSig({ missionId: m?.id ?? "m", stepIndex: m?.currentStep ?? 0, stepType: step.type, target: step.target, need: Math.max(1, step.need || 1), goalKey: ak, firstStep }); const aNr = needRemainOf(Math.max(1, step.need || 1), step.have || 0); const aSafety = { missionActive: !!m && m.status === "active", stepType: step.type, detour: !!m?.detour, mineLeg: !!r.mineLeg, invKnown: ctx.x?.obs ? ctx.x.obs.inv === "ok" : ctx.x?.invOk !== false, invFull: !!ctx.inv?.full, selfHpPct: ctx.self?.hpPct ?? null, targetKnown: ft.found ? true : ((ft.detail?.state || "absent") === "absent"), foundTarget: !!ft.found, withdrawBlocked: obs.withdrawBlocked, cooldownUntil: r.withdrawCooldownUntil || 0 }; const fv = revalidateFull(r.lastPlan, ak, aNow, { sig: aSig, needRemain: aNr, candKey: aCandKey, stepTarget: step.target, safety: aSafety }); const fvv = fv?.verdict || "unknown"; r.lastPlanRevalFullAdopt = { verdict: fvv, reason: fv?.reason || null, firstStep: fv?.firstStep ?? null, at: aNow, checks: fv?.checks ?? null, ...(fvv === "allow" ? { scope: "plan_identity_full_at_adoption_tick" } : {}) }; } } catch { r.lastPlanRevalFullAdopt = null; }
+  // Phase3 S1b SYN-1 (v0.4.45): 採用tick合成を記録のみで接続 (材料は当tickで揃う P3 (計画時点) と Full採用版のみ。計画時点の Full は自己整合のため合成相手にしない。分岐・実行は不変、読み手は解禁後の別版)
+  try { if (r.lastPlan && step && step.type === "gather_block" && step.target) { r.lastPlanGateUnifiedAdopt = buildAdoptUnifiedRecord(r.lastPlanGateP3, r.lastPlanRevalFullAdopt, r.lastPlan.at); } } catch { r.lastPlanGateUnifiedAdopt = null; }
+  // Phase3 READ-1 (v0.4.54): G-2 連続2回 allow の観測数え。入力は採用tick合成のみ、キーは (planAt, sig)。
+  // not_allow/合成なし/キー欠落/非gather/例外では連続性を断つ (fail-closed)。観測時点では消費しない。
+  let adoptCalls = 0, adoptPlanAt = null, adoptSig = null, adoptConj = null;
+  try {
+    if (GOAP_ADOPT_S1B) {
+      const adoptRec = r.lastPlanGateUnifiedAdopt;
+      adoptPlanAt = (typeof adoptRec?.at === "number" && Number.isFinite(adoptRec.at)) ? adoptRec.at : null;
+      adoptSig = (typeof r.lastPlan?.sig === "string" && r.lastPlan.sig) ? r.lastPlan.sig : null;
+      adoptConj = (adoptRec && typeof adoptRec.conjunction === "string") ? adoptRec.conjunction : null;
+      if (step && step.type === "gather_block" && step.target && adoptPlanAt !== null && adoptSig !== null && adoptConj === "allow") {
+        const prev = r.planAdoptSeen;
+        adoptCalls = (prev && prev.at === adoptPlanAt && prev.sig === adoptSig && typeof prev.calls === "number") ? prev.calls + 1 : 1;
+        r.planAdoptSeen = { at: adoptPlanAt, sig: adoptSig, calls: adoptCalls };
+      } else {
+        r.planAdoptSeen = (adoptPlanAt !== null && adoptSig !== null) ? { at: adoptPlanAt, sig: adoptSig, calls: 0 } : null;
+        adoptCalls = 0;
+      }
+      const shieldUsed = !!(r.planAdoptShieldUsedFor && r.planAdoptShieldUsedFor.at === adoptPlanAt && r.planAdoptShieldUsedFor.sig === adoptSig);
+      obs.planAdoptAllow = (adoptCalls >= 2 && !shieldUsed) ? true : false;
+    }
+  } catch { adoptCalls = 0; try { obs.planAdoptAllow = false; } catch {} try { r.planAdoptSeen = null; } catch {} }
+  let d = null;
+  try { d = advance(m, obs); } catch {}
+  // Phase3 READ-1 (v0.4.54): G-1 第1層 採用会計 (転記のみ・再分類なし) + 消費記録。applyDirective より前に確定させる
+  try {
+    if (GOAP_ADOPT_S1B) {
+      r.lastPlanAdoptEffect = { conjunction: adoptConj, hasRecord: !!r.lastPlanGateUnifiedAdopt, action: d?.action ?? null, reason: d?.reason ?? null, planShield: d?.planShield === true, planAt: adoptPlanAt, sig: adoptSig, calls: adoptCalls, discounted: adoptCalls >= 2, at: Date.now() };
+      if (d?.planShield === true && adoptPlanAt !== null && typeof adoptSig === "string" && adoptSig) r.planAdoptShieldUsedFor = { at: adoptPlanAt, sig: adoptSig };
+    }
+  } catch {}
+  // Phase4 cb_trace replan配線 (v0.4.60): suspend 遷移のみを記録専用で転記する (分岐・実行は不変)。
+  // 接続点は advance 直後のここ1点のみ。tickMission の入口が active 限定のため、この位置で suspended: を
+  // 見たことは「この tick の advance で新たに suspend した」ことと等価であり、追加ガードなしに1回だけ記録できる。
+  try { if (typeof d?.reason === "string" && d.reason.startsWith("suspended:")) { const rev = mapReplanEvent(m, d); if (rev) r.trace?.record(rev); } } catch {}
+  persistMission(bot, r);
+  if (!d) return false;
+  applyDirective(bot, owner, r, ctx, scan, d);
+  // 鉱石 leg で周囲に見つからなければ、自分で潜って掘り進む（ブランチマイニング）
+  if (step && step.type === "gather_block" && !ft.found && (ft.detail?.state || "absent") === "absent" && r.mineLeg && !d?.target?.regionMode) tickBranchMine(bot, owner, r, ctx); // v0.4.66: 区画探索が残っている間はそちらを優先 (探し尽くしたらブランチマイニング) // Step 3b: ブランチマインは absent 確定時のみ
+  return true;
+}
+// ---------- 建築 ----------
+function computeMissing(bot, owner, summary) {
+  const invB = countInv(bot); // BLD-01 (cycle1133): 判定は設置・消費するリゼ単独の在庫で見る (主人所持との合算は gather→全量納品で在庫0に戻り設置不能になる)
+  return Object.entries(summary).filter(([item, n]) => (invB[item] || 0) < n).map(([item, n]) => ({ item, amount: n - (invB[item] || 0) }));
+}
+function startBuild(bot, owner, r, name, cells, origin, gatherFirst) {
+  const summary = Object.create(null);
+  for (const cell of cells) { if (cell.skipCount) continue; const item = cell.item || resolveMaterialItem(cell.material); if (item) summary[item] = (summary[item] || 0) + 1; }
+  const missing = computeMissing(bot, owner, summary);
+  r.buildPlan = { name, cells, origin: { x: Math.floor(origin.x), y: Math.floor(origin.y), z: Math.floor(origin.z) }, dim: (() => { try { return owner?.dimension?.id || null; } catch { return null; } })(), idx: 0, placed: 0, skipped: [], stage: gatherFirst && missing.length ? "gather" : "build", missing, missingIdx: 0 }; // buildPlan次元ガード (cycle0821): 原点の次元は主人 (原点=主人位置) の完全IDで記録する
+  r.buildStallKey = null; r.buildStallSince = 0; r.buildStallBest = null; r.buildDangerSince = null; r.buildDangerNoted = false; r.buildDimSince = null; r.buildDimNoted = false; r.buildProgressAt = Date.now(); r.buildProgressIdx = 0; r.buildProgressPlaced = 0; // 基礎 R-3 (v0.4.81, cycle0417-a04): 前の建築の stall/危険時計を持ち越さない + BUILD-HOLD-NOEXIT (cycle1343): 無進捗時計の起点
+  if (r.buildPlan.stage === "gather") { say(owner, bot, `承知しました。${name}ですね。材料が${missing.length}種、足りません。先に集めてきます`, true); startNextGather(bot, owner, r); }
+  else say(owner, bot, `承知しました。${name}を建てます。場所は、あなたの今の位置です`, true);
+}
+function startNextGather(bot, owner, r) {
+  const bp = r.buildPlan; if (!bp) return;
+  const miss = bp.missing[bp.missingIdx];
+  if (!miss) { bp.stage = "build"; say(owner, bot, `材料が揃いました。${bp.name}を建て始めます`, true); return; }
+  say(owner, bot, `材料集めです。${nameOfItem(miss.item)}を${miss.amount}個、集めてきます`, true);
+  startMission(bot, owner, r, { kind: "gather", target: miss.item, amount: miss.amount, constraints: { hostiles: "avoid" }, sideTasks: [], returnTo: "owner", legsOnly: true }, false, { noLongTask: true }); // BLD-01 (cycle1133): legsOnly で完了時の全量納品を止め、集めた材料をリゼが保持したまま build へ進む
+}
+function advanceBuildGather(bot, owner, r) { const bp = r.buildPlan; if (!bp || bp.stage !== "gather") return; bp.missingIdx++; startNextGather(bot, owner, r); }
+function tickBuild(bot, owner, r, ctx) {
+  const bp = r.buildPlan; if (!bp || bp.stage !== "build") return false;
+  if (!bp.dim) { try { bp.dim = bot.dimension.id; } catch {} } // buildPlan次元ガード (cycle0821): dim 欠落の計画は現在次元を採用して捨てない (移行形)
+  // BUILD-HOLD-NOEXIT (cycle1343, 案A): 無進捗の最終上限。進捗は idx/placed の増加のみ (距離短縮は数えない)。
+  // 判定は次元・危険の両保留より前で、保留中も実時間で数える (stall 時計への保留差し引きは本時計に適用しない)。
+  {
+    const nowB = Date.now();
+    if (r.buildProgressAt == null) { r.buildProgressAt = nowB; r.buildProgressIdx = bp.idx; r.buildProgressPlaced = bp.placed; } // 移行形: 起点なしの計画は今を起点にする
+    else if (bp.idx > (r.buildProgressIdx ?? 0) || bp.placed > (r.buildProgressPlaced ?? 0)) { r.buildProgressAt = nowB; r.buildProgressIdx = bp.idx; r.buildProgressPlaced = bp.placed; }
+    else if (nowB - r.buildProgressAt > BUILD_NO_PROGRESS_TIMEOUT_MS) {
+      const hold = r.buildDimSince != null ? "dim" : (r.buildDangerSince != null ? "danger" : "none");
+      try { say(owner, bot, `建築を中断しました。${bp.name}は、5分間進みませんでした。置いた${bp.placed}箇所は、そのまま残します`, true); } catch {}
+      noteFail(bot, "place:build_no_progress_timeout", new Error(`build no progress 300s: hold=${hold} idx=${bp.idx}/${bp.cells.length} placed=${bp.placed}`));
+      r.buildPlan = null; r.buildStallKey = null; r.buildStallSince = 0; r.buildStallBest = null; r.buildDangerSince = null; r.buildDangerNoted = false; r.buildDimSince = null; r.buildDimNoted = false; r.buildProgressAt = null; r.buildProgressIdx = null; r.buildProgressPlaced = null;
+      return true;
+    }
+    if (bp.idx < (r.buildProgressIdx ?? 0)) r.buildProgressIdx = bp.idx; // 減った場合はスナップショットだけ追随 (時刻は戻さない)
+    if (bp.placed < (r.buildProgressPlaced ?? 0)) r.buildProgressPlaced = bp.placed;
+  }
+  if (bp.dim && bot.dimension.id !== bp.dim) {
+    // buildPlan次元ガード (cycle0821): 別次元では設置・材料消費・skip記録を一切せず保留する (mineLeg次元ガードと同型、危険判定より前)
+    if (r.buildDimSince == null) r.buildDimSince = Date.now();
+    else if (!r.buildDimNoted && Date.now() - r.buildDimSince > 60000) { r.buildDimNoted = true; try { say(owner, bot, "建築の場所は、別の次元です。戻ったら、続けます", true); } catch {} noteFail(bot, "place:build_dim_hold", new Error("build held by dimension mismatch")); }
+    r.target = { ...bot.location }; return true;
+  }
+  if (r.buildDimSince != null) { // 次元が戻った: 保留時間を stall 時計から差し引く (危険停止と同型)
+    if (r.buildStallSince) r.buildStallSince += Date.now() - r.buildDimSince;
+    r.buildDimSince = null; r.buildDimNoted = false;
+  }
+  if (ctx.danger.nearestDist < 5) {
+    // 基礎 R-1 (v0.4.81, cycle0417-a05): 危険停止は維持するが無言・無記録にしない。
+    // 連続60秒で1回だけ知らせる。停止時間は stall 時計から除外する (下の復帰分岐)。
+    if (r.buildDangerSince == null) r.buildDangerSince = Date.now();
+    else if (!r.buildDangerNoted && Date.now() - r.buildDangerSince > 60000) { r.buildDangerNoted = true; try { say(owner, bot, "危険が近くて、建築を止めています。離れたら、続けます", true); } catch {} noteFail(bot, "place:build_danger_hold", new Error("build held by danger over 60s")); }
+    r.target = { ...bot.location }; return true;
+  }
+  if (r.buildDangerSince != null) { // 危険が去った: 停止していた時間を stall 時計から差し引く (R-2 形B の解消)
+    if (r.buildStallSince) r.buildStallSince += Date.now() - r.buildDangerSince;
+    r.buildDangerSince = null; r.buildDangerNoted = false;
+  }
+  while (bp.idx < bp.cells.length) {
+    const cell = bp.cells[bp.idx];
+    if (cell.skipCount) { bp.idx++; continue; }
+    const item = cell.item || resolveMaterialItem(cell.material);
+    if (!item) { bp.idx++; continue; }
+    const pos = { x: bp.origin.x + (cell.dx ?? cell.x ?? 0), y: bp.origin.y + (cell.dy ?? cell.y ?? 0), z: bp.origin.z + (cell.dz ?? cell.z ?? 0) };
+    let cur = null; try { cur = bot.dimension.getBlock(pos); } catch {}
+    if (cur && cur.typeId === item) { bp.idx++; continue; }
+    // N1-A (Phase4 failAgg, 裁定(a)): build skip 4地点は原則2の唯一の例外として commit のみ通す (noteFail は足さない)。設計: cycle2153-a04 §4 / cycle2229-a18
+    // Phase2 PLACE build (v0.4.10): 未知セルは完了にも材料不足にもしない (三状態)
+    if (!cur) { try { r.lastPlace = { act: "PLACE", mode: "build", ok: false, reason: "CELL_UNKNOWN", item, at: Date.now() }; commitLastAction(r, r.lastPlace); } catch {} bp.skipped.push({ item, reason: "CELL_UNKNOWN", pos }); bp.idx++; continue; }
+    // Phase2 PLACE build: 非 air は上書きしない (L-15)
+    if (cur.typeId !== "minecraft:air") { try { r.lastPlace = { act: "PLACE", mode: "build", ok: false, reason: "CELL_OCCUPIED", item, at: Date.now() }; commitLastAction(r, r.lastPlace); } catch {} bp.skipped.push({ item, reason: "CELL_OCCUPIED", pos }); bp.idx++; continue; }
+    if (!hasItem(bot, item)) { try { r.lastPlace = { act: "PLACE", mode: "build", ok: false, reason: "NO_MATERIAL", item, at: Date.now() }; commitLastAction(r, r.lastPlace); } catch {} bp.skipped.push({ item, reason: "NO_MATERIAL", pos }); bp.idx++; continue; }
+    r.target = { x: pos.x + 0.5, y: pos.y, z: pos.z + 0.5 };
+    r.moveAct = "follow";
+    const cellDist = dist(bot.location, { x: pos.x + 0.5, y: pos.y, z: pos.z + 0.5 }); // BLD1621-03: r.target と同じ中心基準に揃える (角基準だと最大0.707ずれる)
+    if (cellDist > 3.4) {
+      // Phase2 PLACE build 停滞検出 (v0.4.12) + 基礎 R-2 (v0.4.81, cycle0417-a04):
+      // 見切りは「到達不能」にだけ使う。最良距離から 0.5 超の短縮がある間は
+      // 進捗として時計を延長する (判定順は key変更→進捗→経過の順が必須)。
+      // 真に近づけない場合は従来どおり 45 秒で skip する。
+      const skey = bp.idx + ":" + pos.x + "," + pos.y + "," + pos.z;
+      if (r.buildStallKey !== skey) { r.buildStallKey = skey; r.buildStallSince = Date.now(); r.buildStallBest = cellDist; }
+      else if (r.buildStallBest == null || cellDist < r.buildStallBest - 0.5) { r.buildStallBest = cellDist; r.buildStallSince = Date.now(); }
+      else if (Date.now() - (r.buildStallSince || 0) > 45000) { bp.skipped.push({ item, reason: "OUT_OF_RANGE", pos }); try { r.lastPlace = { act: "PLACE", mode: "build", ok: false, reason: "OUT_OF_RANGE", item, at: Date.now() }; commitLastAction(r, r.lastPlace); } catch {} noteFail(bot, "place:build_unreachable", new Error("build cell unreachable")); bp.idx++; r.buildStallKey = null; r.buildStallBest = null; }
+      return true;
+    }
+    r.buildStallKey = null; r.buildStallBest = null;
+    if (!takeFromInv(bot, item, 1)) { try { r.lastPlace = { act: "PLACE", mode: "build", ok: false, reason: "NO_MATERIAL", item, at: Date.now() }; commitLastAction(r, r.lastPlace); } catch {} bp.skipped.push({ item, reason: "NO_MATERIAL", pos }); bp.idx++; return true; }
+    try {
+      cur.setType(item);
+      let placed = false; try { const rb = bot.dimension.getBlock(pos); placed = !!rb && rb.typeId === item; } catch {}
+      if (placed) { bp.placed++; try { r.lastPlace = { act: "PLACE", mode: "build", ok: true, reason: null, item, at: Date.now() }; commitLastAction(r, r.lastPlace); } catch {} try { sfxPlace(bot.dimension, { x: pos.x + 0.5, y: pos.y + 0.5, z: pos.z + 0.5 }, item); } catch {} bp.idx++; return true; } // POLISH-SND-PLACE-01 (v0.4.90): 設置音
+      throw new Error("build verify failed");
+    } catch (err) {
+      // Phase2 PLACE build: station/torch と同型に、消費後の設置失敗で材料を消失させない (ロールバック)
+      try { const bc = invOf(bot); let rest = 1; if (bc) rest = addTo(bc, item, 1); if (rest > 0) bot.dimension.spawnItem(new ItemStack(item, rest), bot.location); } catch {}
+      try { r.lastPlace = { act: "PLACE", mode: "build", ok: false, reason: "SET_FAILED", item, at: Date.now() }; commitLastAction(r, r.lastPlace); } catch {}
+      noteFail(bot, "place:build_set_failed", err);
+      bp.skipped.push({ item, reason: "SET_FAILED", pos });
+      bp.idx++;
+      return true;
+    }
+  }
+  const noMat = bp.skipped.filter((x) => x?.reason === "NO_MATERIAL").length;
+  const otherSkip = bp.skipped.length - noMat;
+  say(owner, bot, `${bp.name}、建て終わりました。${bp.placed}箇所、置きました。${noMat ? `材料不足で${noMat}箇所、空いています` : ""}${otherSkip ? `置けなかった場所が${otherSkip}箇所あります` : ""}`, true);
+  r.buildPlan = null;
+  r.buildStallKey = null; r.buildStallSince = 0; r.buildStallBest = null; r.buildDangerSince = null; r.buildDangerNoted = false; r.buildDimSince = null; r.buildDimNoted = false; r.buildProgressAt = null; r.buildProgressIdx = null; r.buildProgressPlaced = null; // 基礎 R-3 (v0.4.81): 完了した建築の時計を残さない + BUILD-HOLD-NOEXIT (cycle1343)
+  return true;
+}
+// ---------- 工場設計の提示 ----------
+function tryFactoryRequest(p, bot, r, rawText) {
+  if (!/自動化|ラインを組|ライン化/.test(rawText)) return false;
+  let goalItem = null;
+  try { const o = parseOrder(rawText); if (o?.target?.item) goalItem = o.target.item; } catch {}
+  if (!goalItem) for (const [alias, id] of Object.entries(GOAL_ALIASES)) { if (rawText.includes(alias)) { goalItem = id; break; } }
+  if (!goalItem) { say(p, bot, "自動化の対象が分かりませんでした。対象の名前を入れて、もう一度どうぞ", true); return true; }
+  const design = designFactory({ item: goalItem });
+  if (!design) { say(p, bot, `${nameOfItem(goalItem)}の自動化は、レシピの記録がありません`, true); return true; }
+  const simDesign = { ...design, power: { ...design.power, generators: [{ type: design.power.generator, count: design.power.generatorCount }], supplySEPerSec: design.power.gen / 60 } };
+  const sim = simulate(simDesign);
+  const chainNames = design.chain.filter((s) => s.role !== "generate").map((s) => nameOfItem(s.produces)).join(" → ");
+  say(p, bot, `設計しました。工程は ${chainNames}。電力は消費 ${Math.round(design.power.use / 60)} SE/秒に対し発電 ${Math.round(design.power.gen / 60)} SE/秒。見込み生産は毎分 ${design.achievableRate} 個です`, true);
+  if (!sim.ok) { const b = sim.bottlenecks?.[0]; say(p, bot, `ただし、このままでは回りません。${b?.detail || "要確認の箇所があります"}`, true); return true; }
+  const built = layoutToBuild({ stages: design.chain.map((s) => ({ machine: s.block, count: s.count })), power: { generators: [{ type: design.power.generator, count: design.power.generatorCount }] }, storage: {} });
+  startBuild(bot, p, r, `${nameOfItem(goalItem)}の自動化ライン`, built.cells, p.location, true);
+  return true;
+}
+// ---------- 視線（第三レイヤーの最小実装: setRotation で対象を向く） ----------
+// POLISH-ANIM-INSPECT-01 (cycle1003): 依頼品の全量取得成功時に検分の見下ろしを開始する (表示層のみ・実機確認待ち)
+function noteInspectPickup(bot, r, ctx, typeId) {
+  try {
+    const ok = shouldInspect({ pickedTypeId: typeId, mission: r.mission ? { target: r.mission.order?.target } : null, longtask: r.longtask ? { target: r.longtask.target } : null, dangerCount: ctx?.danger?.count ?? null, dangerKnown: ctx?.x?.obs?.scan === "ok", lastFiredMs: r.inspectAnimLastAt ?? null, nowMs: Date.now() });
+    if (ok) { r.inspectAnimAt = Date.now(); r.inspectAnimLastAt = r.inspectAnimAt; }
+  } catch {}
+}
+// POLISH-ANIM-PORTALSTEADY-01 (cycle1640): 次元ID変化の辺 (2回連続観測で確定) でのみ発火を記録する (表示層のみ・実機確認待ち)
+// POLISH-ANIM-SURFACEBREATH-01 (cycle1703): inWater source is bot.isInWater (c.x.inWater is never assigned)
+function noteSurfacebreathTick(bot, r, c) {
+  try {
+    if (!bot || !r) return;
+    if (!r.surfacebreathState) r.surfacebreathState = createSurfacebreathState();
+    let inWater = false; try { inWater = !!bot.isInWater; } catch {}
+    let rising = false; try { rising = bot.getVelocity().y > 0.05; } catch {}
+    const prevFired = r.surfacebreathState.lastFiredAtMs;
+    stepSurfacebreath(r.surfacebreathState, { inWater, rising, danger: !!(c?.danger && c.danger.count > 0), falling: r.selfFalling === true, hasWorkTarget: !!r.work, summonScanActive: isSummonScanActive(r.summonScanAt, Date.now()) }, Date.now());
+    if (r.surfacebreathState.lastFiredAtMs !== prevFired && r.surfacebreathState.lastFiredAtMs !== null) r.lastSurfaceBreath = { at: r.surfacebreathState.lastFiredAtMs };
+  } catch {}
+}
+function notePortalsteadyTick(bot, dim, r, c) {
+  try {
+    if (!bot || !r) return;
+    if (!r.portalsteadyState) r.portalsteadyState = { confirmedDim: null, candidateDim: null, candidateCount: 0, startedAtMs: null, lastFiredAtMs: null };
+    let dimId = null; try { dimId = dim?.id || bot.dimension?.id || null; } catch {}
+    if (!dimId) return;
+    const prevDim = r.portalsteadyState.confirmedDim;
+    const fired = notePortalsteady(r.portalsteadyState, { dimId, nowMs: Date.now(), danger: !!(c?.danger && c.danger.count > 0), falling: r.selfFalling === true, inWater: !!c?.x?.inWater, hasWorkTarget: !!r.work });
+    if (fired) r.lastPortalSteady = { at: Date.now(), from: prevDim, to: dimId };
+  } catch {}
+}
+function applyGaze(bot, owner, ctx, scan) {
+  try { const bv = typeof bot.isValid === "function" ? bot.isValid() : bot.isValid; if (bot.isValid !== undefined && !bv) return; if (owner) { const ov = typeof owner.isValid === "function" ? owner.isValid() : owner.isValid; if (owner.isValid !== undefined && !ov) return; } } catch { return; }
+  let gz = null; try { gz = decideGaze(ctx); } catch {}
+  if (!gz) return;
+  const r = rt(bot);
+  let look = null;
+  if (gz.gaze === "danger" || gz.gaze === "danger_then_owner") look = scan?.nearestHostile?.location || owner.location;
+  else if (gz.gaze === "home") { const h = homeOf(bot); look = h ? { x: h.x, y: h.y, z: h.z } : owner.location; }
+  else if (gz.gaze === "work_target" && r.work) look = r.work.loc;
+  else if (gz.gaze === "nearest_item" && scan?.nearestItem) look = scan.nearestItem.location;
+  else look = owner.location; // owner_face / owner_hands / owner_feet / drift 等は主人方向を既定に
+  if (look) {
+    // POLISH-ANIM-LOOK-01 (cycle0821): ピッチも対象へ連動させる (従来は x:0 固定で上下の対象を見なかった)。表示層のみ・実機確認待ち
+    const cellTarget = gz.gaze === "work_target" || gz.gaze === "home";
+    const tp = { x: look.x, y: look.y + (cellTarget ? 0.5 : 1.4), z: look.z };
+    let rot = gazeRotation(bot.location, tp);
+    // POLISH-ANIM-INSPECT-01 (cycle1003): 検分中はピッチへ見下ろしオフセットを重畳する (消費点はここ1箇所)
+    if (rot && isInspectActive(r.inspectAnimAt, Date.now())) rot = { ...rot, x: applyInspectPitch(rot.x, Date.now() - r.inspectAnimAt) };
+    if (rot && isNodActive(r.nodAnimAt, Date.now())) rot = { ...rot, x: applyNodPitch(rot.x, Date.now() - r.nodAnimAt) };
+    if (rot && isFlinchActive(r.flinchAnimAt, Date.now())) rot = { ...rot, x: applyFlinchPitch(rot.x, Date.now() - r.flinchAnimAt) }; // POLISH-ANIM-FLINCH-01 (cycle1051)
+    if (rot && isSkyglanceActive(r.skyglanceAt, Date.now())) rot = { ...rot, x: applySkyglancePitch(rot.x, Date.now() - r.skyglanceAt) }; // POLISH-ANIM-SKYGLANCE-01 (cycle1133): 最下位優先で重畳
+    if (rot && isTossActive(r.tossAnimAt, Date.now())) rot = { ...rot, x: applyTossPitch(rot.x, Date.now() - r.tossAnimAt) }; // POLISH-ANIM-TOSS-01 (cycle1400): 視線連動のみ live、腕ピッチは r.lastToss 記録 (RP配線は実機確認待ち)
+    if (rot && isSummonScanActive(r.summonScanAt, Date.now())) rot = { ...rot, y: applySummonScanYaw(rot.y, Date.now() - r.summonScanAt) }; // POLISH-ANIM-SUMMONSCAN-01 (cycle1110): ヨー重畳は末尾1箇所のみ
+    if (rot && isLookbackActive(r.lookbackAnimAt, Date.now())) { const oyaw = Math.atan2(-(owner.location.x - bot.location.x), owner.location.z - bot.location.z) * 180 / Math.PI; rot = { ...rot, y: applyLookbackYaw(rot.y, oyaw, Date.now() - r.lookbackAnimAt) }; } // POLISH-ANIM-LOOKBACK-01 (cycle1153): ヨー重畳の末尾 (表示層のみ)
+    if (rot && isDryoffActive(r.dryoffAt, Date.now())) rot = { ...rot, y: applyDryoffYaw(rot.y, Date.now() - r.dryoffAt) }; // POLISH-ANIM-DRYOFF-01 (cycle1322): ヨー重畳の最下位 (表示層のみ)
+    if (rot && r.heedState) { const hs = sampleHeed(r.heedState, Date.now()); if (hs.active) rot = { ...rot, y: rot.y + hs.gazeYawOffsetDeg, x: rot.x + hs.gazePitchDeg }; } // POLISH-ANIM-HEED-01 (cycle1443): 重畳の最下位 (表示層のみ・実機確認待ち)
+    if (rot && r.thresholdState) { const ts = sampleThreshold(r.thresholdState, Date.now()); if (ts.active) rot = { ...rot, x: rot.x + ts.gazePitchDeg }; } // POLISH-ANIM-THRESHOLD-01 (cycle1503): ピッチ重畳 (表示層のみ・実機確認待ち)
+    if (rot && r.edgepeekState) { const es = sampleEdgepeek(r.edgepeekState, Date.now()); if (es.active) rot = { ...rot, x: rot.x + es.gazePitchDeg }; } // POLISH-ANIM-EDGEPEEK-01 (cycle1518): ピッチ重畳の最下位 (表示層のみ・実機確認待ち)
+    if (rot && r.icebalanceState) { const isb = sampleIcebalance(r.icebalanceState, Date.now()); if (isb.active) rot = { ...rot, x: rot.x + isb.gazePitchDeg }; }
+    if (rot && r.stepupState) { const sub = sampleStepup(r.stepupState, Date.now()); if (sub.active) rot = { ...rot, x: rot.x + sub.gazePitchDeg }; } if (rot && r.portalsteadyState && isPortalsteadyActive(r.portalsteadyState, Date.now())) { const po = portalsteadyOffsetsAt(r.portalsteadyState.startedAtMs, Date.now()); rot = { ...rot, x: rot.x + po.gazePitchDeg, y: rot.y + po.yawSwayDeg }; } if (rot && r.surfacebreathState) { const sb = sampleSurfacebreath(r.surfacebreathState, Date.now()); if (sb.active) rot = { ...rot, x: applySurfacebreathPitch(rot.x, Date.now() - r.surfacebreathState.startedAtMs) }; } // SURFACEBREATH overlay (clamped) // POLISH-ANIM-PORTALSTEADY-01 (cycle1640): 重畳の最下位 (表示層のみ・実機確認待ち) // POLISH-ANIM-STEPUP-01 (cycle1603): ピッチ重畳の最下位 (icebalance の後ろ。表示層のみ・実機確認待ち) // POLISH-ANIM-ICEBALANCE-01 (cycle1543): ピッチ重畳の最下位 (edgepeek の後ろ。表示層のみ・実機確認待ち)
+    if (rot) { try { bot.setRotation(rot); } catch {} }
+  }
+  if (gz.say && Math.random() < 0.4) sayAmbient(owner, bot, gz.say);
+}
+
+// 名札の状態表示: 「今何をしているか／何をしようとしているか」を頭上に1行で出す（TANAKA指示）
+const GOAL_TAG = {
+  rest_recover: "休憩中", guard_owner: "警戒中", pickup_drops: "回収に向かっています",
+  deposit_at_home: "入庫に向かっています", deliver_to_owner: "お届けに向かっています",
+  return_home: "帰還中", place_torch_dark: "松明を置いています", farm_crops: "収穫に向かっています",
+  mine_ore: "採掘に向かっています", gather_wood: "伐採に向かっています", gather_stone: "採石に向かっています",
+  follow_owner: "追従中", explore_nearby: "周囲を確認中", idle_near_owner: "そばにいます",
+};
+function statusTagOf(bot, r, effAct) {
+  if (r.longtask) {
+    const lt = r.longtask;
+    if (lt.phase === "deliver") return `${lt.name}をお届け中`;
+    const leg = lt.legs[lt.legIdx];
+    return `自律作業中：${lt.name}（${leg ? legLabel(leg, lname) : "仕上げ中"}）`;
+  }
+  if (r.mission) {
+    const s = missionSummary(r.mission);
+    if (s) {
+      if (s.status === "suspended") return `指示を保留中：${nameOfItem(s.target)}`;
+      const cs = s.currentStep;
+      if (cs) {
+        if (cs.type === "gather_block") return `${nameOfItem(cs.target || s.target)}を集めています ${cs.have}/${cs.need}`;
+        if (cs.type === "hunt_entity") return `${nameOfItem(cs.target || s.target)}を狩っています ${cs.have}/${cs.need}`;
+        if (cs.type === "side_collect") return `寄り道中：${nameOfItem(cs.target || s.target)} ${cs.have}/${cs.need}`;
+        if (cs.type === "goto_area") return `${nameOfItem(s.target)}を探しに向かっています`;
+        if (cs.type === "return") return "戻っています";
+        if (cs.type === "deliver") return `${nameOfItem(s.target)}をお届け中`;
+        if (cs.type === "report") return "報告の準備中";
+      }
+      return `指示対応中：${nameOfItem(s.target)}（${s.stepsDone}/${s.stepsTotal}段階）`;
+    }
+  }
+  if (r.buildPlan) return r.buildPlan.stage === "gather" ? `建築の材料集め中：${r.buildPlan.name}` : `建築中：${r.buildPlan.name}（${r.buildPlan.placed || 0}箇所）`;
+  if (r.work) {
+    const t = r.work.typeId || "";
+    return CROP_DROPS[t] ? "収穫中" : (t.includes("_log") || t.includes("_wood") || t.includes("_stem")) ? "伐採中" : "採掘中";
+  }
+  const actLabel = effAct ? (ACT_LABEL[effAct] || "") : "";
+  const passive = !actLabel || effAct === "follow" || effAct === "follow_close" || effAct === "follow_high" || effAct === "idle_hover" || effAct === "stay_anchor";
+  if (passive && r.goal && GOAL_TAG[r.goal]) return GOAL_TAG[r.goal]; // 受動時はプランナーの狙い（考えていること）を見せる
+  if (actLabel) return actLabel;
+  if (r.goal && GOAL_TAG[r.goal]) return GOAL_TAG[r.goal];
+  return "";
+}
+function setTag(bot, r, text) {
+  const tag = text ? `リゼ §7${text}` : "リゼ";
+  if (r.lastTag === tag) return;
+  r.lastTag = tag;
+  try { bot.nameTag = tag; } catch {}
+}
+
+// 脳（ループは10tick間隔、偶奇で半分ずつ処理するため各Botの思考は実効20tick=1秒ごと。v0.4.56 コメント是正）
+system.runInterval(() => {
+  let idx = 0;
+  for (const p of world.getAllPlayers()) {
+    if (bodies.isBody(p)) continue; // v0.4.70: リゼの体 (模擬プレイヤー) は持ち主ではない
+    const bot = findBotEntity(p.id); if (!bot) continue;
+    if ((tick + idx++ * 3) % 2 !== 0) continue;
+    const r = rt(bot);
+    const { ctx, scan } = buildContext(bot, p);
+    r.lastCtx = ctx;
+    const { move, speech } = decide(ctx);
+    if (speech) {
+      const cat = ACT_LINE_CATEGORY[speech.act];
+      const isEvent = (speech.p >= 600 && speech.act !== "celebrate") || speech.act === "use_heal_item";
+      if (speech.say) { if (isEvent) say(p, bot, speech.say); else sayAmbient(p, bot, speech.say); }
+      else if (cat) { if (isEvent) sayFromCategory(p, bot, cat); else sayFromCategoryAmbient(p, bot, cat); }
+    }
+    const mode = dp(bot, "cb_mode", "follow");
+    // 仲裁（挙動ベンチのドライバと同一仕様）:
+    // ミッション中は directive が基本行動。安全割り込みは生命危機系（flee/rest_at_home・p>=900）のみ。
+    // hostiles='ignore' の間は guard/zap/flee を selfHp>=0.25 の範囲で抑止する。
+    let consumed = false;
+    // RR-05 (cycle1303): 通常ミッション (longtask 無し) の cannot_recover suspended にも再開の担い手を持たせる
+    if (!r.longtask && r.mission && r.mission.status === "suspended" && r.mission.suspendReason === "cannot_recover") {
+      const sres = tickSuspendedResume(bot, r);
+      if (sres === "waiting") consumed = true;
+      else if (sres === "expired") { foldGatherBuildPlan(bot, p, r, "suspend_expired", r.mission); say(p, bot, `体力が回復しなかったため、指示を中断しました`, true); r.mission = null; clearPlanRecords(r); persistMission(bot, r, true); consumed = true; }
+    }
+    // キュー0副次 R1 (cycle1421): 単発ミッションの toolNeed は昇格接続が消費の入口になる (実装は tickLongTask 内の1か所のまま)
+    if (!consumed && !r.longtask && r.toolNeed && tickToolPrepPromote(bot, p, r)) consumed = true;
+    if (r.longtask && tickLongTask(bot, p, r, ctx)) consumed = true;
+    if (r.mission && r.mission.status === "active") {
+      const hm = r.mission.order.constraints.hostiles;
+      const suppressed = hm === "ignore" && move && ["guard", "zap", "flee"].includes(move.act) && ctx.self.hpPct >= 0.25;
+      const interrupt = move && (move.p || 0) >= 900 && LIFE_CRITICAL_ACTS.has(move.act) && !suppressed;
+      if (!interrupt) consumed = tickMission(bot, p, ctx, scan);
+    }
+    if (!consumed && r.buildPlan && r.buildPlan.stage === "build") consumed = tickBuild(bot, p, r, ctx);
+    if (!consumed) {
+      const effRaw = move || { act: mode === "stay" ? "stay_anchor" : "follow", id: "default" };
+      const eff0 = mode === "stay" && effRaw.act === "idle_hover" ? { ...effRaw, act: "stay_anchor", id: "stay_anchor_override" } : effRaw; // stay時は気分アイドルよりアンカー維持を優先
+      // ヒステリシス（非ミッション分岐のみ）: 前回行動を最低2サイクル保持し閾値振動を断つ。生命危機への切替は即時
+      let eff = eff0;
+      const h = r.hyst;
+      const criticalSwitch = LIFE_CRITICAL_ACTS.has(eff0.act) && ctx.self.hpPct < 0.25;
+      if (h && eff0.act !== h.act && h.held < 2 && !criticalSwitch && h.rule) { eff = h.rule; r.hyst = { act: h.act, held: h.held + 1, rule: h.rule }; }
+      else r.hyst = { act: eff0.act, held: h && h.act === eff0.act ? h.held + 1 : 1, rule: eff0 };
+      r.moveAct = eff.act;
+      // Phase4 cb_trace act配線 (v0.4.65): 仲裁後の実効行動だけを記録する (分岐・実行は不変、読み手は表示専用)。
+      // 器は act を畳まないため plan 前例の seen キーで同一エピソードを1件に抑え、成功時のみ前進させる
+      try {
+        const aev = mapInterruptAct({ act: eff.act, p: eff.p, goal: null, x: { hp: ctx.self?.hpPct ?? null, dg: ctx.danger?.count ?? null, scan: ctx.x?.obs?.scan ?? null, inv: ctx.x?.obs?.inv ?? null } });
+        if (aev) { if (r.traceActSeen !== aev.a && r.trace?.record(aev)) r.traceActSeen = aev.a; }
+        else if (!shouldRecordAct(eff.p)) r.traceActSeen = null;
+      } catch {}
+      r.ownerPosCache = { x: p.location.x, y: p.location.y, z: p.location.z };
+      r.target = execTarget(bot, p, eff, ctx, scan);
+      setTag(bot, r, statusTagOf(bot, r, eff.act));
+      execArrive(bot, p, eff, ctx, scan);
+      tickAutonomy(bot, p, ctx, eff);
+    } else {
+      r.hyst = null;
+      try { r.traceActSeen = null; } catch {} // Phase4 act配線 (v0.4.65): 消費 tick は割込みエピソードの切れ目
+      setTag(bot, r, statusTagOf(bot, r, null));
+    }
+    exitTunnelIfNeeded(bot, r);
+    syncFlyGoal(bot, r);
+    syncNavGoal(bot, r);
+    applyGaze(bot, p, ctx, scan);
+    if (ctx.x?.firstToday && ctx.danger.count === 0) { r.greetedDay = world.getDay(); sayFromCategory(p, bot, world.getTimeOfDay() < 12000 ? "greet_morning" : "greet_night"); }
+  }
+}, 10);
+
+// オフラインの持ち主のBotはその場で待機
+system.runInterval(() => {
+  for (const d of DIMS) { try { for (const e of world.getDimension(d).getEntities({ type: BOT_ID })) { const oid = dp(e, "cb_owner", ""); if (oid && !getPlayer(oid)) { const r = rt(e); r.target = e.location; } } } catch {} }
+}, 40);
+
+// 世界記憶の定期保存（30秒ごと・dirty のときだけ）
+system.runInterval(() => {
+  for (const [id, r] of bots) { try { if (r.wmem && r.wmem.dirty) r.wmem.save(); } catch {} try { if (r.trace && r.trace.dirty) r.trace.flush(); } catch {} try { const b = world.getEntity(id); if (b) flushFailAgg(b, r); } catch {} try { const b = world.getEntity(id); if (b) flushExp(b, r); } catch {} /* 6-ML: 周期 flush 相乗り */ }
+}, 600);
+world.afterEvents.entityHurt.subscribe((ev) => {
+  try {
+    const e = ev.hurtEntity;
+    if (e.typeId === BOT_ID) {
+      const wm = wmemOf(e); if (wm) wm.recordDanger(e.location, e.dimension.id, "damage", 1);
+      // 防具軽減（script 方式）: 軽減分だけ体力を戻して実効ダメージを下げる
+      const rr = rt(e); const core = equipCoreOf(e, rr);
+      if (core && ev.damage > 0) {
+        try {
+          const m = core.mitigateDamage(ev.damage);
+          if (m.blocked > 0) { const h = e.getComponent("minecraft:health"); if (h) h.setCurrentValue(Math.min(h.effectiveMax, h.currentValue + m.blocked)); }
+        } catch {}
+      }
+    }
+    else if (e.typeId === "minecraft:player") { const b = findBotEntity(e.id); if (b) { const wm = wmemOf(b); if (wm) wm.recordDanger(e.location, e.dimension.id, "owner_hurt", 1); } }
+  } catch {}
+});
+
+// ---------- イベント ----------
+world.afterEvents.itemUse.subscribe((ev) => {
+  if (ev.itemStack?.typeId !== REMOTE_ID) return;
+  const p = ev.source;
+  system.run(() => {
+    const exist = findBotEntity(p.id, true); // 二重召喚の防止をキャッシュ鮮度に依存させないため必ず実走査
+    if (exist) {
+      let moved = false;
+      try { const want = { x: p.location.x + 1, y: p.location.y, z: p.location.z + 1 }; moved = teleportNearOwnerGuarded(exist, rt(exist), p.dimension, want, p.location) === true; } catch {} // queue3 step2: place ゲート経由
+      if (moved) noteSummonScan(rt(exist)); // POLISH-ANIM-SUMMONSCAN-01 (cycle1110): 再召喚が実際に移動したときだけ
+      if (moved) { try { resetPlaceState(exist, rt(exist)); } catch {} say(p, exist, "ただいま。定位置は、あなたの隣です", true); } // v0.4.69: 呼ばれた場所から作業をやり直す (元の場所へ戻ろうとしない)
+      else say(p, exist, "そちらへは、今は移れませんでした。作業は、今の場所で続けます", true); // cycle1400 a20 S-2: 移動失敗で作業状態を壊さない (resetPlaceState は成功時のみ)
+      return;
+    }
+    const spawnDest = placeSpawnDest(p.dimension, p.location, { x: p.location.x + 1, y: p.location.y, z: p.location.z }); // queue3 step2: 生成前に place ゲートで行き先を決める
+    if (!spawnDest) { try { p.sendMessage("§b<リゼ>§r 今は安全に立てる場所がありません。少し開けた場所で、もう一度お願いします"); } catch {} return; } // cycle0922 FC-13: 全候補 hold は spawn 見送り (bot 未生成のため say は使えない)
+    const bot = p.dimension.spawnEntity(BOT_ID, spawnDest);
+    noteSummonScan(rt(bot)); // POLISH-ANIM-SUMMONSCAN-01 (cycle1110): 新規スポーン成功直後のみ (生成分岐はここ1件)
+    dps(bot, "cb_owner", p.id); dps(bot, "cb_mode", "follow"); dps(bot, "cb_bond", 30); dps(bot, "cb_trust", 30);
+    botByOwner.set(p.id, { bot, at: Date.now() });
+    try { dps(bot, "cb_firstday", world.getDay()); } catch {}
+    try { bot.nameTag = "リゼ"; } catch {}
+    // 回収されていた所持品を復元
+    try {
+      const saved = JSON.parse(wdp(`cb_savedinv:${p.id}`, "[]"));
+      const cont = invOf(bot);
+      if (cont && saved.length) { for (const s of saved) { try { cont.addItem(new ItemStack(s.t, s.a)); } catch {} } wdps(`cb_savedinv:${p.id}`, "[]"); }
+    } catch {}
+    // 装備の復元: 退避しておいた装備状態を新個体の cb_equip へ渡し、初回の equipCoreOf で restore() させる
+    try {
+      const se = wdp(`cb_saved_equip:${p.id}`, "");
+      if (se) { dps(bot, "cb_equip", se); wdps(`cb_saved_equip:${p.id}`, ""); }
+    } catch {}
+    say(p, bot, "作業補助機、LIZE-07です。……リゼ、と呼んでください。そのほうが、返事をしやすいので", true);
+  });
+});
+
+// v0.4.69: 場所に結びついた作業状態を捨てる。リモコンで呼ばれて瞬間移動した後に、元の場所の対象・探索の中心・
+// トンネルの帰り道へ飛んで戻ろうとしていた (探索の中心は指示と一緒に保存されるので、最初に指示した場所へ引き戻されていた)
+function resetPlaceState(bot, r) {
+  r.mTargetLoc = null; r.mTargetKey = ""; r.mTargetEntity = null; r.mTargetSince = Date.now(); r.mBanKey = null;
+  r.tunnel = null; r.tunnelPath = []; r.tunnelExiting = false; r.work = null; r.clearDig = null; r.exploreRegion = null;
+  r.wander = null; r.stuckSec = 0; r.lastPos = null; r.watchHist = []; r.mScanMap = {}; r.percTargets = {};
+  try { if (dp(bot, "cb_mode", "") === "stay") setAnchor(bot, r, { ...bot.location }, bot.dimension.id); else setAnchor(bot, r, null); } catch {} // BH-04/BH-06 (cycle1215): リモコンで呼ばれた先が stay の定位置になる (DP 同期)。stay 以外では旧定位置を残さない
+  r.target = { x: bot.location.x, y: bot.location.y, z: bot.location.z };
+  try { if (r.fly) flyClearGoal(r.fly); } catch {} try { if (r.nav) navClearGoal(r.nav); } catch {}
+  const m = r.mission;
+  if (m && Array.isArray(m.steps)) { for (const s of m.steps) { s.searchCenter = null; s.searchWp = 0; s.wpObs = 0; s.unknownObs = 0; s.searchStage = 0; s.searchObs = 0; s.seen = false; } persistMission(bot, r, true); }
+  if (r.mineLeg) r.mineDir = null;
+  // 調査結果も、新しい場所の周り (隣の区画まで) 以外は忘れる。残っていると、元の場所の木や鉱石を選び直して飛んで戻ってしまう
+  try { const rg = regionOf(bot.location.x, bot.location.z); for (const [k, sv] of surveys) if (sv.dim === bot.dimension.id && (Math.abs(sv.rx - rg.rx) > 1 || Math.abs(sv.rz - rg.rz) > 1)) surveys.delete(k); } catch {}
+}
+function serializeInv(bot) {
+  const cont = invOf(bot); const out = [];
+  if (cont) for (let i = 0; i < cont.size; i++) { const it = cont.getItem(i); if (it) out.push({ t: it.typeId, a: it.amount }); }
+  return out;
+}
+
+// 右クリックの受け付け: バニラのコンテナUIが先に開くとフォームを出せなくなるため、
+// beforeEvents で通常クリックをキャンセルしてメニューを開く。しゃがみ中はキャンセルせず、
+// バニラのコンテナを直接開けるようにする（物の受け渡し用）。
+const menuGuard = new Map();
+try {
+  world.beforeEvents.playerInteractWithEntity.subscribe((ev) => {
+    if (ev.target?.typeId !== BOT_ID) return;
+    const p = ev.player; const bot = ev.target;
+    if (p.isSneaking) return; // しゃがみ＝コンテナを直接開く
+    ev.cancel = true;
+    menuGuard.set(p.id + ":" + bot.id, Date.now());
+    if (dp(bot, "cb_owner", "") !== p.id) { system.run(() => say(p, bot, "……持ち主は、あなたではありません", true)); return; }
+    system.run(() => openMenu(p, bot));
+  });
+} catch {}
+world.afterEvents.playerInteractWithEntity.subscribe((ev) => {
+  if (ev.target?.typeId !== BOT_ID) return;
+  const p = ev.player; const bot = ev.target;
+  if (Date.now() - (menuGuard.get(p.id + ":" + bot.id) || 0) < 1000) return; // before側で処理済み
+  if (dp(bot, "cb_owner", "") !== p.id) { say(p, bot, "……持ち主は、あなたではありません", true); return; }
+  system.run(() => openMenu(p, bot));
+});
+
+function openMenu(p, bot) {
+  const mode = dp(bot, "cb_mode", "follow");
+  const home = homeOf(bot); const st = stats(bot);
+  const r0 = rt(bot);
+  let misLine = "";
+  if (r0.mission) { const s = missionSummary(r0.mission); if (s) misLine = `\n指示: ${nameOfItem(s.target)} ${s.currentStep ? `${s.currentStep.have}/${s.currentStep.need}` : ""}（${s.status}）`; }
+  else if (r0.buildPlan) misLine = `\n建築: ${r0.buildPlan.name}（${r0.buildPlan.stage === "gather" ? "材料集め中" : "設置中"}）`;
+  const form = new ActionFormData();
+  form.title("リゼ (LIZE-07)");
+  form.body(`モード: ${mode} / 回収累計: ${st.pickup || 0} / 拠点: ${home ? "登録済み" : "未登録"}${misLine}\n「次の作業まで、三分空いています」\n（しゃがみ＋右クリックで、中身を直接開けます）`);
+  form.button("ついてくる", "textures/items/lize_remote");
+  form.button("ここで待機", "textures/items/lize_remote");
+  form.button("拠点で作業", "textures/items/lize_remote");
+  form.button("おまかせ", "textures/items/lize_remote");
+  form.button("ここを拠点に登録", "textures/items/lize_remote");
+  form.button("中身を全部受け取る", "textures/items/lize_remote");
+  form.button("状態を見る", "textures/items/lize_remote");
+  form.button("回収する（中身は保持）", "textures/items/lize_remote");
+  form.button("指示を出す", "textures/items/lize_remote");
+  form.button("建築を頼む", "textures/items/lize_remote");
+  form.button("指示の確認・中止", "textures/items/lize_remote");
+  form.button("装備と荷物", "textures/items/lize_remote");
+  form.button("文字で指示する", "textures/items/lize_remote");
+  form.show(p).then((res) => {
+    if (res.canceled) return;
+    const r = rt(bot);
+    if (res.selection === 0) { dps(bot, "cb_mode", "follow"); say(p, bot, pick(ALL_LINES.start_follow || ["ついていきます"]), true); }
+    if (res.selection === 1) { dps(bot, "cb_mode", "stay"); try { const bl = bot.location; setAnchor(bot, r, { x: bl.x, y: groundY(bot.dimension, bl.x, bl.z, bl.y, bl.y), z: bl.z }, bot.dimension.id); } catch { setAnchor(bot, r, { ...bot.location }, bot.dimension.id); } say(p, bot, pick(ALL_LINES.start_stay || ["ここで待っています"]), true); } // BH-04/BH-11: 定位置は DP へ保存し、y はホバー高度でなく地面へ寄せる
+    if (res.selection === 2) { dps(bot, "cb_mode", "work"); say(p, bot, pick(ALL_LINES.start_work || ["働きます"]), true); }
+    if (res.selection === 3) { dps(bot, "cb_mode", "free"); say(p, bot, "おまかせ、了解です。状況は私が見ます", true); }
+    if (res.selection === 4) {
+      let loc = null;
+      try { const vb = p.getBlockFromViewDirection({ maxDistance: 10 }); if (vb && isContainerBlock(vb.block.typeId)) loc = vb.block.location; } catch {}
+      if (!loc) { try { for (const e of []) {} } catch {} }
+      if (!loc) { // 周囲4ブロックからコンテナ探索
+        outer: for (let x = -4; x <= 4; x++) for (let y = -2; y <= 2; y++) for (let z = -4; z <= 4; z++) {
+          try { const b = p.dimension.getBlock({ x: Math.floor(p.location.x) + x, y: Math.floor(p.location.y) + y, z: Math.floor(p.location.z) + z }); if (b && isContainerBlock(b.typeId)) { loc = b.location; break outer; } } catch {}
+        }
+      }
+      if (loc) { dps(bot, "cb_home", JSON.stringify({ x: loc.x, y: loc.y, z: loc.z, dim: p.dimension.id })); say(p, bot, "帰る場所、登録されました。……ありがとうございます", true); }
+      else say(p, bot, "近くにコンテナが見つかりません。チェストを見ながら、もう一度どうぞ", true);
+    }
+    if (res.selection === 5) { const oc = invOf(p); if (oc) { const res2 = transferFiltered(bot, oc, null); say(p, bot, res2.moved > 0 ? `${res2.moved}個、お渡ししました` : "渡せるものは、今はありません", true); } }
+    if (res.selection === 6) {
+      const cont = invOf(bot); let used = 0; if (cont) for (let i = 0; i < cont.size; i++) if (cont.getItem(i)) used++;
+      let misTxt = "";
+      if (r.mission) { const s = missionSummary(r.mission); if (s) misTxt = ` / 指示: ${nameOfItem(s.target)} ${s.currentStep ? `${s.currentStep.have}/${s.currentStep.need}` : ""}（${s.status}）`; }
+      p.sendMessage(`§b<リゼ>§r 状態: モード ${mode} / 所持 ${used}/27 / 回収${st.pickup || 0}・お届け${st.deliver || 0}・入庫${st.deposit || 0} / 好感度 ${dp(bot, "cb_bond", 30)} / 脳ルール ${RULE_COUNT}件 稼働中${misTxt}`);
+      if (r.failCount > 0) { const recent = (r.failLog || []).slice(-3).map((f) => f.where).join("、"); p.sendMessage(`§7（記録：失敗 ${r.failCount}件記録あり。直近：${recent}）§r`); }
+      try { const tLines = formatTraceSummaryLines(r.trace?.summarize?.()); for (const tl of tLines) p.sendMessage(tl); } catch {} // Phase4 表示 U1 (cycle2239): 直近の判断（記録）を最大2行だけ表示。表示のみで判断には使わない
+      try { const fLines = formatFailSummaryLines(r.failAgg); for (const fl of fLines) p.sendMessage(fl); } catch {} // Phase4 S3a: 失敗傾向の表示。読み手はこの表示経路のみで、判断には使わない
+    }
+    if (res.selection === 7) { wdps(`cb_savedinv:${p.id}`, JSON.stringify(serializeInv(bot))); const ec = equipCoreOf(bot, r); if (ec) { try { wdps(`cb_saved_equip:${p.id}`, ec.serialize()); } catch {} } try { flushFailAgg(bot, r); } catch {} try { flushExp(bot, r); } catch {} try { bodies.release(r); } catch {} /* 6-ML: 消滅前 flush 相乗り */ try { bot.remove(); } catch {} bots.delete(bot.id); } // S3b: 消滅前に failAgg を flush (実体がある selection 7 が実効箇所。メインループの不在検出箇所は entity が無く flush 不能)
+    if (res.selection === 8) {
+      if (r.mission && r.mission.status === "active") {
+        const cf = new ActionFormData();
+        cf.title("指示の受け直し");
+        cf.body("今の指示の途中です。やめて、新しい指示を受けますか");
+        cf.button("やめて受け直す", "textures/items/lize_remote");
+        cf.button("今のまま", "textures/items/lize_remote");
+        cf.show(p).then((c2) => { if (!c2.canceled && c2.selection === 0) { foldGatherBuildPlan(bot, p, r, "order_replaced", r.mission); r.mission = null; clearPlanRecords(r); persistMission(bot, r, true); dps(bot, "cb_order", ""); openOrderForm(p, bot); } }).catch(() => {});
+      } else openOrderForm(p, bot);
+    }
+    if (res.selection === 9) openBuildMenu(p, bot);
+    if (res.selection === 10) openMissionStatus(p, bot);
+    if (res.selection === 11) {
+      const core = equipCoreOf(bot, r);
+      if (core) {
+        const api = createEquipmentApi(p, bot, core, { invOf, hpOf, say, nameOfItem, onEquipEvent: (kind, fromOwner) => { r.equipChanged = kind; r.equipChangedAt = Date.now(); r.equipFromOwner = !!fromOwner; } });
+        openEquipUI(p, { forms: { ActionFormData, ModalFormData }, api }).catch(() => {});
+      }
+    }
+    if (res.selection === 12) {
+      // v0.4.57: チャットイベントが使えない環境向けの文字入力。処理はチャットと同一 (handleChatMessage)。
+      const mf = new ModalFormData();
+      mf.title("リゼへの指示・会話");
+      mf.textField("チャットと同じ言葉で入力してください（例：鉄を10個集めて／ついてきて）", "ここに入力");
+      mf.show(p).then((mres) => {
+        if (mres.canceled) return;
+        const text = (mres.formValues && mres.formValues[0]) ? String(mres.formValues[0]).trim() : "";
+        if (text) system.run(() => handleChatMessage(p, text));
+      }).catch(() => {});
+    }
+  }).catch(() => {});
+}
+
+// 指示フォーム（order_ui_spec.md §2）: 素材は sourcing の名前解決で検証する
+function openOrderForm(p, bot) {
+  const r = rt(bot);
+  const form = new ModalFormData();
+  form.title("指示を出す");
+  form.textField("素材（例: 鉄 / ダイヤモンド / 原木）", "素材名");
+  form.textField("個数（1〜10000）", "例: 100", { defaultValue: "16" });
+  form.dropdown("敵への対応", ["任せる", "無視して進む", "倒しながら行く", "避けて通る"], { defaultValueIndex: 0 });
+  form.toggle("寄り道も頼む", { defaultValue: false });
+  form.textField("寄り道の素材（任意）", "素材名");
+  form.textField("寄り道の個数（1〜10000）", "例: 32", { defaultValue: "8" });
+  form.dropdown("行き先", ["近場で探す", "洞窟方面", "集めたら拠点へ入庫"], { defaultValueIndex: 0 });
+  form.show(p).then((res) => {
+    if (res.canceled) return;
+    const [matText, countText, hostileIdx, detourOn, detourText, detourCountText, destIdx] = res.formValues;
+    const parseCount = (v, def) => { const n = parseInt(String(v ?? "").replace(/[^0-9]/g, ""), 10); return Number.isFinite(n) && n > 0 ? Math.min(10000, n) : def; };
+    const count = parseCount(countText, 16);
+    const detourCount = parseCount(detourCountText, 8);
+    const entry = findSources(String(matText || "").trim());
+    if (!entry) { say(p, bot, `『${matText}』は分かりませんでした。素材の名前を変えて、もう一度どうぞ`, true); return; }
+    const hostiles = ["avoid", "ignore", "fight", "avoid"][hostileIdx] || "avoid";
+    const sideTasks = [];
+    if (detourOn && detourText) { const de = findSources(String(detourText).trim()); if (de) sideTasks.push({ kind: "gather", target: de.item, amount: detourCount }); }
+    // dest=洞窟方面は地下優先探索が未対応のため、最小実装では近場探索と同じ扱い（申し送り参照）
+    startMission(bot, p, r, { kind: "gather", target: entry.item, amount: count, constraints: { hostiles }, sideTasks, returnTo: destIdx === 2 ? "home" : "owner" });
+  }).catch(() => {});
+}
+
+// 建築フロー（order_ui_spec.md §3）: 図面選択 → 材料リスト → 集めてから/ある分で
+function openBuildMenu(p, bot) {
+  const r = rt(bot);
+  const form = new ActionFormData();
+  form.title("建築を頼む");
+  form.body("建てるものを選んでください。場所は、あなたの今の位置が原点です");
+  for (const bp of BLUEPRINTS) form.button(bp.name, "textures/items/lize_remote");
+  form.button("やめる", "textures/items/lize_remote");
+  form.show(p).then((res) => {
+    if (res.canceled || res.selection >= BLUEPRINTS.length) return;
+    const bp = BLUEPRINTS[res.selection];
+    const summary = materialsSummaryOf(bp.blocks);
+    const invB = countInv(bot), invO = countInv(p);
+    const lines = Object.entries(summary).map(([item, n]) => { const have = (invB[item] || 0) + (invO[item] || 0); return `${nameOfItem(item)}: 必要${n} / あと${Math.max(0, n - have)}`; });
+    const f2 = new ActionFormData();
+    f2.title(bp.name);
+    f2.body(`材料リスト（リゼとあなたの所持品で計算）\n${lines.join("\n")}`);
+    f2.button("集めてから建てる", "textures/items/lize_remote");
+    f2.button("ある分で建てる", "textures/items/lize_remote");
+    f2.button("やめる", "textures/items/lize_remote");
+    f2.show(p).then((res2) => {
+      if (res2.canceled || res2.selection === 2) return;
+      startBuild(bot, p, r, bp.name, buildOrderOf(bp.blocks), p.location, res2.selection === 0);
+    }).catch(() => {});
+  }).catch(() => {});
+}
+
+// 指示の確認・中止（order_ui_spec.md §4）
+function openMissionStatus(p, bot) {
+  const r = rt(bot);
+  const lines = [];
+  if (r.mission) { const s = missionSummary(r.mission); if (s) lines.push(`指示: ${nameOfItem(s.target)} ${s.currentStep ? `${s.currentStep.have}/${s.currentStep.need}` : ""}（${s.status}、段階 ${s.stepsDone}/${s.stepsTotal}）`); }
+  if (r.buildPlan) lines.push(`建築: ${r.buildPlan.name}（${r.buildPlan.stage === "gather" ? "材料集め中" : `設置 ${r.buildPlan.placed} 箇所`}）`);
+  if (!lines.length) { say(p, bot, "受けている指示は、今はありません", true); return; }
+  const form = new ActionFormData();
+  form.title("指示の確認");
+  form.body(lines.join("\n"));
+  form.button("このまま続ける", "textures/items/lize_remote");
+  form.button("指示をやめる", "textures/items/lize_remote");
+  form.show(p).then((res) => { if (!res.canceled && res.selection === 1) cancelMission(bot, p, r); }).catch(() => {});
+}
+
+world.afterEvents.entityDie.subscribe((ev) => {
+  const dead = ev.deadEntity;
+  if (dead.typeId === "minecraft:player") wdps(`cb_death:${dead.id}`, JSON.stringify({ dim: dead.dimension.id, x: dead.location.x, y: dead.location.y, z: dead.location.z, t: Date.now() }));
+  // ミッション討伐数の近似カウント: 敵対モブが死に、Bot が近傍（7以内）にいればその Bot の討伐として数える
+  if (dead.typeId !== "minecraft:player" && dead.typeId !== BOT_ID) {
+    let hostile = GVC_HOSTILE_SET.has(dead.typeId);
+    if (!hostile) { try { hostile = !!dead.getComponent("minecraft:type_family")?.hasTypeFamily("monster"); } catch {} }
+    if (hostile) for (const [bid, rr] of bots) { let b = null; try { b = world.getEntity(bid); } catch {} if (b && b.dimension.id === dead.dimension.id && dist(b.location, dead.location) < 7) rr.missionKills = (rr.missionKills || 0) + 1; }
+  }
+  if (dead.typeId === BOT_ID) {
+    const oid = dp(dead, "cb_owner", "");
+    if (oid) { wdps(`cb_savedinv:${oid}`, JSON.stringify(serializeInv(dead))); const rr = bots.get(dead.id); if (rr?.equipCore) { try { wdps(`cb_saved_equip:${oid}`, rr.equipCore.serialize()); } catch {} } const p = getPlayer(oid); if (p) say(p, dead, "……少し、休みます。リモコンで呼んでください。中身は保持しています", true); }
+    try { const rr2 = bots.get(dead.id); if (rr2) bodies.release(rr2); } catch {}
+    bots.delete(dead.id);
+  }
+});
+world.afterEvents.playerSpawn.subscribe((ev) => { const ort = ownerRt.get(ev.player.id) || {}; ort.spawnAt = Date.now(); ort.lastMoveAt = Date.now(); ownerRt.set(ev.player.id, ort); });
+world.afterEvents.playerBreakBlock.subscribe((ev) => { const ort = ownerRt.get(ev.player.id) || {}; ort.breakAt = Date.now(); ownerRt.set(ev.player.id, ort); });
+world.afterEvents.playerPlaceBlock.subscribe((ev) => { const ort = ownerRt.get(ev.player.id) || {}; ort.placeAt = Date.now(); ownerRt.set(ev.player.id, ort); });
+system.runInterval(() => { for (const p of world.getAllPlayers()) { const ort = ownerRt.get(p.id) || {}; try { const v = p.getVelocity(); if (Math.abs(v.x) + Math.abs(v.z) > 0.05) ort.lastMoveAt = Date.now(); } catch {} ownerRt.set(p.id, ort); } }, 20);
+
+// チャット反応（v0.3.0）: 入力正規化 → 提案収集（指示/QA/ツール/知識/ロア/雑談）→ chat_arbiter 調停 → 応答
+// 勝者が無ければ composer のフォールバック（成功応答で streak リセット）。
+function convOf(r) {
+  if (!r.conv) { try { r.conv = createConversation(); } catch { r.conv = null; } }
+  return r.conv || { hear() {}, noteBot() {}, resolveReference: () => null, matchesPrev: () => false, getContext: () => ({}) };
+}
+function matchCat(cats, msg, needPrev, r, conv) {
+  for (const cat of cats) {
+    if (needPrev) {
+      let ok = false; try { ok = !!conv.matchesPrev(cat.prev || []); } catch {}
+      if (!ok) ok = !!(r.lastTopic && Date.now() - r.lastTopicAt < 90000 && (cat.prev || []).includes(r.lastTopic));
+      if (!ok) continue;
+    }
+    let keyLen = 0;
+    for (const k of (cat.keys || [])) { const kk = String(k).toLowerCase(); if (kk && msg.includes(kk)) keyLen = Math.max(keyLen, kk.length); }
+    if (keyLen > 0) return { cat, keyLen };
+  }
+  return null;
+}
+function applyChatAct(p, bot, r, act) {
+  if (act === "follow") dps(bot, "cb_mode", "follow");
+  if (act === "stay_anchor") { dps(bot, "cb_mode", "stay"); try { const bl = bot.location; setAnchor(bot, r, { x: bl.x, y: groundY(bot.dimension, bl.x, bl.z, bl.y, bl.y), z: bl.z }, bot.dimension.id); } catch { setAnchor(bot, r, { ...bot.location }, bot.dimension.id); } } // BH-04/BH-11: メニュー経路と同形に DP 保存＋地面寄せ
+  if (act === "patrol_home") dps(bot, "cb_mode", "work");
+  if (act === "return_home") { const h = homeOf(bot); if (h) r.target = { ...h }; }
+  if (act === "go_owner") { try { const want = { x: p.location.x + 1, y: p.location.y, z: p.location.z }; teleportNearOwnerGuarded(bot, r, p.dimension, want, p.location); } catch {} } // queue3 step2: place ゲート経由
+}
+function parserOrderToMission(o) {
+  const t = o.target || {};
+  const hostiles = o.constraints?.hostiles === "engage" ? "fight" : o.constraints?.hostiles === "ignore" ? "ignore" : "avoid";
+  const sideTasks = (o.sideTasks || []).map((s) => { const st = s.target || {}; const id = typeof st === "string" ? st : (st.item || st.block || st.entity); return id ? { kind: s.kind === "hunt" ? "hunt" : "gather", target: id, amount: s.amount ?? 8 } : null; }).filter(Boolean);
+  const forbiddenTargets = [...new Set((o.negations || []).map((n) => n?.target?.item || n?.target?.block || n?.target?.entity).filter(Boolean))].filter((id) => id !== (t.item || t.block || t.entity));
+  return { kind: o.kind === "hunt" ? "hunt" : "gather", target: t.item || t.block || t.entity || null, amount: o.amount ?? 32, constraints: { hostiles, forbiddenTargets }, sideTasks, returnTo: o.returnTo === "home" ? "home" : "owner", name: t.name || null };
+}
+
+// Phase5 否定配線 (NEGW): 禁止・聞き返しは mission を作らない。記録と復唱/聞き返しのみ。
+const FORBID_VERB_JP = { gather: "集めません", build: "作りません", hunt: "倒しません", deliver: "持ってきません" };
+function recordSessionForbids(r, o) {
+  if (!Array.isArray(r.sessionForbids)) r.sessionForbids = [];
+  for (const n of o?.negations || []) {
+    const id = n?.target?.item || n?.target?.block || n?.target?.entity || null;
+    if (!id) continue;
+    if (!r.sessionForbids.some((f) => f.target === id && f.verb === (n.verb ?? null))) r.sessionForbids.push({ target: id, verb: n.verb ?? null, at: Date.now() });
+  }
+  if (r.sessionForbids.length > 32) r.sessionForbids = r.sessionForbids.slice(-32);
+}
+function forbidTargetName(n) { return n?.target?.name || nameOfItem(n?.target?.item || n?.target?.block || n?.target?.entity || ""); }
+function startOrderFromParser(p, bot, r, o) {
+  // Phase5 否定配線: build/gather の mission 実行中ガードより前に置くこと
+  if (o.kind === "forbid") {
+    recordSessionForbids(r, o);
+    const list = (o.negations || []).filter((n) => n?.target);
+    if (list.length === 0) { say(p, bot, "分かりました。その件はしません", true); return; }
+    const parts = list.map((n) => `${forbidTargetName(n)}は${n.verb ? (FORBID_VERB_JP[n.verb] || "しません") : "対象にしません"}`);
+    say(p, bot, `分かりました。${parts.join("。")}。`, true);
+    const m = r.mission;
+    if (m && m.status === "active" && !r.ltLegActive) {
+      const hit = list.find((n) => (n.target?.item || n.target?.block || n.target?.entity) === m.order?.target && (n.verb == null || n.verb === m.order?.kind || (n.verb === "deliver" && m.order?.kind === "gather")));
+      if (hit) { cancelMission(bot, p, r, true); say(p, bot, `今の指示も止めました。${forbidTargetName(hit)}が対象でした`, true); }
+    }
+    return;
+  }
+  if (o.kind === "clarify") {
+    const reason = o.unresolved?.[0]?.reason || "";
+    // Phase5 clarify保持: 聞き返した内容を会話状態へ1件だけ保持し、次の短い回答で再開できるようにする
+    try {
+      const cands = (o.retainedCandidates || []).slice(0, 2);
+      const _cc = convOf(r); if (_cc?.setPendingClarify) _cc.setPendingClarify({
+        slot: o.unresolved?.[0]?.slot || "target",
+        reason,
+        unresolvedAll: o.unresolved || [],
+        negations: o.negations || [],
+        retainedCandidates: cands,
+        candidates: cands.map((c) => { const tg = c?.target || {}; return { id: tg.item || tg.block || tg.entity || null, label: tg.name || "", kind: tg.entity ? "entity" : "item" }; }),
+        known: { constraints: o.constraints || null, returnTo: o.returnTo || "owner", raw: o.raw || null },
+        lastClarifyText: null,
+      });
+    } catch {}
+    const nm = (o.negations || []).find((n) => n?.target);
+    if (reason === "excluded_only") say(p, bot, `分かりました。${nm ? forbidTargetName(nm) + "は対象にしません" : "その対象は外します"}。では、何を対象にしましょうか`, true);
+    else if (reason === "correction_without_base") say(p, bot, `${nm ? forbidTargetName(nm) + "ではない、ですね" : "訂正ですね"}。${o.retainedCandidates?.[0]?.name ? `${o.retainedCandidates[0].name}でよろしいですか` : "正しい対象を教えてください"}`, true);
+    else say(p, bot, "何を指しているか分かりませんでした。名前で教えてください", true);
+    return;
+  }
+
+  if (o.kind === "free") { dps(bot, "cb_mode", "free"); say(p, bot, "おまかせ、了解です。状況は私が見ます", true); return; }
+  if (o.kind === "escort") { dps(bot, "cb_mode", "follow"); say(p, bot, "分かりました。そばを離れません", true); return; }
+  if (o.kind === "build") {
+    const nm = o.target?.name || "";
+    const bp = BLUEPRINTS.find((b) => nm && (b.name.includes(nm) || nm.includes(b.name) || b.id === nm));
+    if (!bp) {
+      // v0.4.67: 図面が無くても、クラフトで作れる物 (道具・かまど・インゴット等) なら長期タスクとして作る
+      const mo0 = parserOrderToMission(o);
+      let craftable = false;
+      if (mo0.target) {
+        mo0.amount = o.amount ?? 1;
+        for (const t of [mo0.target, String(mo0.target).includes(":") ? null : "minecraft:" + mo0.target]) { if (!t || craftable) continue; try { const pl = planLongTask({ ...mo0, target: t }, countInv(bot)); if (pl && pl.feasible) { craftable = true; mo0.target = t; } } catch {} }
+      }
+      if (!craftable) { say(p, bot, "その建物は、まだ図面がありません。……小屋なら建てられます", true); return; }
+      if (r.mission && r.mission.status === "active") { say(p, bot, "今の指示の途中です。やめるなら「やめて」と言ってください", true); return; }
+      startMission(bot, p, r, mo0);
+      return;
+    }
+    if (r.mission && r.mission.status === "active") { say(p, bot, "今の指示の途中です。やめるなら「やめて」と言ってください", true); return; }
+    startBuild(bot, p, r, bp.name, buildOrderOf(bp.blocks), p.location, true);
+    return;
+  }
+  const mo = parserOrderToMission(o);
+  if (!mo.target) { say(p, bot, "対象が分かりませんでした。素材の名前を入れて、もう一度どうぞ", true); return; }
+  if (r.mission && r.mission.status === "active") { say(p, bot, "今の指示の途中です。やめるなら「やめて」と言ってください", true); return; }
+  startMission(bot, p, r, mo);
+}
+
+function handleChatMessage(p, rawIn) {
+  const raw = rawIn || "";
+  const bot = findBotEntity(p.id); if (!bot) return;
+  const r = rt(bot); const now = Date.now();
+  r.lastChatAt = now;
+  // POLISH-ANIM-HEED-01 (cycle1443): 主人の発言の辺で1回だけ聞き取り視線を記録する (表示層のみ・発話内容には触らない・実機確認待ち)
+  try {
+    if (!r.heedState) r.heedState = createHeedState();
+    const bp = bot.location, op = p.location;
+    const dist = bp && op ? Math.hypot(op.x - bp.x, op.y - bp.y, op.z - bp.z) : null;
+    let relYaw = null;
+    try { const cur = bot.getRotation?.().y; const want = Math.atan2(-(op.x - bp.x), op.z - bp.z) * 180 / Math.PI; if (typeof cur === "number" && Number.isFinite(cur)) relYaw = want - cur; } catch {}
+    const fired = noteHeedState(r.heedState, { isOwner: true, addressed: true, distance: dist, relYawDeg: relYaw, sameDimension: bot.dimension?.id === p.dimension?.id, nowMs: now, hasWorkTarget: !!r.work, falling: r.selfFalling === true, flinchActive: isFlinchActive(r.flinchAnimAt, now) });
+    if (fired) r.lastHeed = { at: now, relYawDeg: r.heedState.relYawDeg };
+  } catch {}
+  const msg = raw.toLowerCase();
+  const conv = convOf(r);
+  let und = null; try { und = understand(raw); } catch {}
+  if (und?.features?.praise) r.lastPraiseAt = now;
+  const ctx = r.lastCtx || buildContext(bot, p).ctx;
+
+  // ① ミッション操作コマンド（調停より優先）
+  if (r.mission && r.mission.status === "active") {
+    if (/やめて|中止|キャンセル|止めて/.test(raw)) { system.run(() => { cancelMission(bot, p, r); try { conv.hear(raw, "mission_cancel"); } catch {} }); return; }
+    if (/進捗|どうなってる|状況は/.test(raw)) {
+      const s = missionSummary(r.mission); const cs = s?.currentStep;
+      system.run(() => { say(p, bot, `進捗です。${nameOfItem(s.target)}${cs ? ` ${cs.have}/${cs.need}` : ""}。段階は ${s.stepsDone}/${s.stepsTotal} まで進んでいます`, true); try { conv.hear(raw, "mission_status"); } catch {} });
+      return;
+    }
+  }
+  // ①.5 Phase5 clarify 再開フック: 保持中の聞き返しへの回答を、提案収集より前に解釈する（深さ1）
+  try {
+    const pc = conv && conv.getPendingClarify ? conv.getPendingClarify() : null;
+    if (pc) {
+      const res = resumeClarifyOrder(pc, und?.normalized || raw);
+      if (res.action === "cancelled") {
+        conv.clearPendingClarify("cancelled");
+        system.run(() => { say(p, bot, "分かりました。なかったことにします", true); try { conv.hear(raw, "clarify_cancel"); } catch {} });
+        return;
+      }
+      if (res.action === "order" && res.order && res.order.kind !== "clarify") {
+        conv.clearPendingClarify(res.reason || "answered");
+        const ord = res.order;
+        system.run(() => { startOrderFromParser(p, bot, r, ord); try { conv.hear(raw, "clarify_resume"); } catch {} });
+        return;
+      }
+      // cycle1640: 限定破棄。質問・社交・長文などの挟み言葉では保持を残し (strikes はリセット)、回答試行の外れが2回連続した時だけ破棄する (TTL 90秒が出口)
+      const cls = classifyClarifyUnmatched(pc, und?.normalized || raw, und, pc.unmatchedStrikes || 0);
+      if (cls === "discard") conv.clearPendingClarify("unmatched_answer");
+      else if (cls === "strike") { try { pc.unmatchedStrikes = (pc.unmatchedStrikes || 0) + 1; } catch {} }
+      else { try { pc.unmatchedStrikes = 0; } catch {} }
+    }
+  } catch {}
+
+  // ② 工場自動化リクエスト
+  if (tryFactoryRequest(p, bot, r, raw)) { try { conv.hear(raw, "factory"); } catch {} return; }
+
+  // ③ 提案収集
+  const proposals = [];
+  let parsed = null; try { parsed = parseOrder(und?.normalized || raw); } catch {}
+  const ordProp = adaptOrder(parsed); if (ordProp) proposals.push(ordProp);
+  let latest = null; try { latest = detectLatestTopic(raw); } catch {}
+  if (latest) {
+    let line = null; try { line = pickHonestyLine(latest, r.usedHonesty || []); } catch {}
+    if (line) { r.usedHonesty = [...(r.usedHonesty || []), line].slice(-8); proposals.push({ source: "qa", text: line, confidence: 0.85, category: "latest_topic" }); }
+  }
+  let qaAns = null; try { qaAns = answerQuestion(raw, ctx); } catch {}
+  const qaProp = adaptQA(qaAns); if (qaProp) proposals.push(qaProp);
+  let toolRes = null; try { toolRes = tryTool(raw, ctx); } catch {}
+  const toolProp = adaptTool(toolRes); if (toolProp) proposals.push(toolProp);
+  let mathRes = null; try { mathRes = tryMath(raw); } catch {}
+  if (mathRes?.text) proposals.push({ source: "tool", text: mathRes.text, confidence: 0.9, category: mathRes.category || "math" });
+  let know = null; try { know = lookupAll(raw); } catch {}
+  const knowProp = adaptKnowledge(know?.entry, raw); if (knowProp) proposals.push(knowProp);
+  try { const ref = conv.resolveReference(raw); if (ref && ref.kind === "count" && ref.target) proposals.push({ source: "followup", text: `${ref.target.name}は、今${ref.target.count}個目です`, confidence: 0.8, category: "ref_count" }); } catch {}
+  const fu = matchCat(FOLLOWUPS, msg, true, r, conv);
+  if (fu) { const prop = adaptFollowup(fu.cat, { text: pick(fu.cat.replies || []), keyLen: fu.keyLen }); if (prop) proposals.push(prop); }
+  const lore = matchCat(CHAT_LORE, msg, false, r, conv);
+  if (lore) {
+    const bond = dp(bot, "cb_bond", 30);
+    const replies = bond >= (lore.cat.deepMinBond ?? LORE_DEEP_MIN_BOND) ? (lore.cat.deep || lore.cat.replies) : (lore.cat.shallow || lore.cat.replies);
+    const prop = adaptChat(lore.cat, { text: pick(replies || []), keyLen: lore.keyLen }); if (prop) proposals.push(prop);
+  }
+  const chat = matchCat(CHAT_ALL, msg, false, r, conv);
+  if (chat) { const prop = adaptChat(chat.cat, { text: pick(chat.cat.replies || []), keyLen: chat.keyLen }); if (prop) proposals.push(prop); }
+
+  let winner = null; try { winner = arbitrate(proposals.filter(Boolean), conv.getContext()); } catch {}
+  system.run(() => {
+    if (!winner) {
+      r.fallbackStreak = (r.fallbackStreak || 0) + 1;
+      let fb = null;
+      try { fb = composeFallback({ danger: ctx.danger, mode: dp(bot, "cb_mode", "follow"), mission: !!(r.mission && r.mission.status === "active"), env: ctx.env?.isNight ? "night" : undefined, flags: ctx.flags, openQuestion: /[？?]/.test(raw), history: [] }, r.fallbackStreak - 1); } catch {}
+      if (fb) say(p, bot, fb, true);
+      try { conv.hear(raw, null); } catch {}
+      return;
+    }
+    r.fallbackStreak = 0;
+    if (winner.source === "order" && winner.order) {
+      startOrderFromParser(p, bot, r, winner.order);
+      try { conv.hear(raw, winner.category); conv.noteBot(winner.category); } catch {}
+      r.lastTopic = winner.category; r.lastTopicAt = Date.now();
+      return;
+    }
+    if (winner.text) say(p, bot, winner.text, true);
+    applyChatAct(p, bot, r, winner.act);
+    try { conv.hear(raw, winner.category); conv.noteBot(winner.category, winner.category); } catch {}
+    r.lastTopic = winner.category; r.lastTopicAt = Date.now();
+  });
+}
+// v0.4.57: chatSend は正式版 API 2.x で undefined の可能性が v0.4.44 の実機ログで示された
+// (TypeError: cannot read property 'subscribe' of undefined)。存在する時だけ購読し、起動時に型を
+// コンテンツログへ1行出す (これで白黒がつく)。無い環境ではメニューの「文字で指示する」が受け口になる。
+console.warn(`[LIZE] chatSend after: ${typeof world.afterEvents.chatSend} / before: ${typeof world.beforeEvents?.chatSend}`);
+try { if (world.afterEvents.chatSend) world.afterEvents.chatSend.subscribe((ev) => { handleChatMessage(ev.sender, ev.message || ""); }); } catch (err) { console.warn(`[LIZE] chatSend subscribe failed: ${err}`); }
+// v0.4.58: 実機確定 (2026-11-24 TANAKA のログ): chatSend は after/before ともに正式版では undefined (Beta 専用)。
+// 正式版で使える文字入力としてカスタムコマンド /lize を startup で登録する (成否はコンテンツログで確定させる)。
+// 文字列パラメータは1トークンずつしか取れないため、任意パラメータを連結して文章にする。
+try {
+  const CPL = mcServer.CommandPermissionLevel, CPT = mcServer.CustomCommandParamType, CCS = mcServer.CustomCommandStatus;
+  if (!CPL || !CPT || !CCS || !system.beforeEvents?.startup) {
+    console.warn("[LIZE] custom command API unavailable in this environment");
+  } else {
+    system.beforeEvents.startup.subscribe((ev) => {
+      try {
+        const opt = []; for (let i = 2; i <= 8; i++) opt.push({ name: `text${i}`, type: CPT.String }); // 引数は合計 8 個まで (必須 1 + 任意 7)。超えると登録エラー
+        ev.customCommandRegistry.registerCommand({
+          name: "companion_bot:lize", // 名前空間が必須 (無いと NamespaceNameError)。他と重ならなければ /lize でも呼べる
+          description: "リゼに文字で指示・会話する (例: /lize 鉄を 10個 集めて)",
+          permissionLevel: CPL.Any,
+          mandatoryParameters: [{ name: "text1", type: CPT.String }],
+          optionalParameters: opt,
+        }, (origin, ...args) => {
+          const src = origin?.sourceEntity;
+          if (!src || src.typeId !== "minecraft:player") return { status: CCS.Failure, message: "プレイヤーからのみ使えます" };
+          const text = args.filter((a) => typeof a === "string").join(" ").trim();
+          if (text) system.run(() => handleChatMessage(src, text));
+          return { status: CCS.Success };
+        });
+        console.warn("[LIZE] custom command /lize registered");
+      } catch (err) { console.warn(`[LIZE] custom command register failed: ${err}`); }
+    });
+  }
+} catch (err) { console.warn(`[LIZE] startup subscribe failed: ${err}`); }

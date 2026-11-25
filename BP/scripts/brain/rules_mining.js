@@ -1,0 +1,96 @@
+// 採掘・建築のお手伝い ルール群  優先度帯: 760〜799
+// when は文脈 c のみ参照する純粋関数。追加文脈 c.x は必ず c.x?.〜 の形で参照する（未定義でも例外を出さない）。
+// act は許可キーのみ使用。セリフはリゼ口調（短い敬語）。
+export const RULES = [
+  // ===== A. 掘削中の落下物回収（主人が掘る→リゼが拾う） =====
+  { id:'mine_break_pickup_adjacent', p:799, when:c=>c.owner.present && c.x?.ownerBreaking===true && c.drops.count>0 && c.drops.nearestDist>=0 && c.drops.nearestDist<=3 && !c.inv.full, act:'pickup_nearest', say:'出ましたね。回収します', note:'掘削中＋ドロップ3以内＋満杯でない、掘りたてを即回収' },
+  { id:'mine_break_pickup_near', p:796, when:c=>c.owner.present && c.x?.ownerBreaking===true && c.drops.nearestDist>=0 && c.drops.nearestDist<=6 && !c.inv.full && c.danger.count===0, act:'pickup_nearest', say:'落下物、拾っておきます', note:'掘削中＋ドロップ6以内＋敵なし、作業の流れを止めず回収' },
+  { id:'mine_break_pickup_underground', p:794, when:c=>c.owner.present && c.x?.ownerBreaking===true && c.owner.underground && c.drops.nearestDist>=0 && c.drops.nearestDist<=8 && !c.inv.full, act:'pickup_nearest', say:'地下の落下物も、見逃しません', note:'掘削中＋地下＋ドロップ8以内、洞窟採掘の回収範囲は広め' },
+  { id:'mine_break_pickup_full_deliver', p:793, when:c=>c.owner.present && c.x?.ownerBreaking===true && c.inv.full && c.inv.used>0, act:'deliver_all', say:'満杯です。先に渡します', note:'掘削中に満杯、掘り続ける主人のために先に受け渡して空ける' },
+  { id:'mine_break_pickup_nearfull_preempt', p:790, when:c=>c.owner.present && c.x?.ownerBreaking===true && c.inv.nearFull && c.drops.count>=3 && c.self.distOwner<=6, act:'deliver_all', say:'そろそろ満杯です。受け渡しを先に', note:'掘削中＋ほぼ満杯＋ドロップ3個以上、溢れる前に受け渡し' },
+  { id:'mine_break_valuable_priority', p:798, when:c=>c.owner.present && c.x?.ownerBreaking===true && c.drops.valuableDist>=0 && c.drops.valuableDist<=8 && !c.inv.full, act:'pickup_valuable', say:'貴重品です。優先で回収します', note:'掘削中＋貴重品ドロップ8以内、通常ドロップより優先' },
+  { id:'mine_break_ore_drop', p:797, when:c=>c.x?.ownerBreaking===true && c.x?.nearOre===true && c.drops.valuableDist>=0 && c.drops.valuableDist<=10 && !c.inv.full, act:'pickup_valuable', say:'鉱石、出ましたね。回収します', note:'掘削中＋鉱石近接＋鉱石ドロップ10以内、鉱脈ヒット時の回収' },
+  { id:'mine_ore_vein_follow_close', p:788, when:c=>c.owner.present && c.x?.nearOre===true && !c.x?.ownerBreaking===true && c.drops.count===0 && c.self.distOwner>5, act:'follow_close', say:'鉱脈ですね。近くで待機します', note:'鉱石近接だが未掘削＋ドロップなし、掘り始めに備えて寄る' },
+  { id:'mine_break_many_drops', p:786, when:c=>c.owner.present && c.x?.ownerBreaking===true && c.drops.count>=5 && !c.inv.full, act:'pickup_nearest', say:'たくさん出ました。順に拾います', note:'掘削中＋ドロップ5個以上、崩落・一括破壊後の回収' },
+  { id:'mine_break_drops_far_chase', p:782, when:c=>c.owner.present && c.x?.ownerBreaking===true && c.drops.nearestDist>6 && c.drops.nearestDist<=12 && c.danger.count===0 && !c.inv.full, act:'pickup_nearest', say:'少し遠いですが、取りに行きます', note:'掘削中＋ドロップが飛び散って12以内＋敵なし、追いかけて回収' },
+  { id:'mine_break_owner_hurt_still_pickup', p:780, when:c=>c.owner.present && c.x?.ownerBreaking===true && c.owner.hpPct<0.5 && c.drops.valuableDist>=0 && c.drops.valuableDist<=5 && !c.inv.full, act:'pickup_valuable', say:'無理は禁物です。拾うのは私が', note:'主人HP半分未満で掘削中＋貴重品5以内、主人は回復に専念させる' },
+  { id:'mine_break_night_pickup', p:778, when:c=>c.owner.present && c.x?.ownerBreaking===true && c.env.isNight && c.drops.nearestDist>=0 && c.drops.nearestDist<=6 && !c.inv.full, act:'pickup_nearest', say:'夜の落下物、消える前に', note:'夜間掘削＋ドロップ6以内、デスポーンと敵襲の前に回収' },
+  { id:'mine_break_rain_pickup', p:776, when:c=>c.owner.present && c.x?.ownerBreaking===true && c.env.isRaining && c.drops.nearestDist>=0 && c.drops.nearestDist<=6 && !c.inv.full, act:'pickup_nearest', say:'雨です。手早く回収します', note:'雨天掘削＋ドロップ6以内、視界不良の中でも回収を優先' },
+  { id:'mine_break_sneak_owner', p:774, when:c=>c.owner.present && c.x?.ownerBreaking===true && c.owner.sneaking && c.drops.nearestDist>=0 && c.drops.nearestDist<=4 && !c.inv.full, act:'pickup_nearest', say:'静かに、ですね。拾っておきます', note:'しゃがみ掘削中（慎重作業）＋ドロップ4以内、邪魔せず回収' },
+  { id:'mine_break_owner_in_water', p:772, when:c=>c.owner.present && c.x?.ownerBreaking===true && c.owner.inWater && c.drops.nearestDist>=0 && c.drops.nearestDist<=6 && !c.inv.full, act:'pickup_nearest', say:'水中の落下物は私が拾います', note:'水中掘削中＋ドロップ6以内、流れる前に回収' },
+  { id:'mine_break_deliver_at_home', p:770, when:c=>c.owner.present && c.x?.ownerBreaking===true && c.inv.full && c.home.registered && c.self.distHome<=10, act:'deliver_all', say:'拠点が近いので、まとめて渡します', note:'掘削中に満杯＋拠点10以内、受け渡しで空きを作る' },
+
+  // ===== B. 暗所での寄り添い（darkness） =====
+  { id:'mine_dark_follow_close_basic', p:795, when:c=>c.owner.present && c.x?.darkness===true && c.self.distOwner>5 && c.danger.count===0, act:'follow_close', say:'暗いですね。近くにいます', note:'暗所＋距離5超＋敵なし、光源代わりに寄り添う' },
+  { id:'mine_dark_underground_close', p:792, when:c=>c.owner.present && c.x?.darkness===true && c.owner.underground && c.self.distOwner>4, act:'follow_close', say:'地下は暗いです。離れません', note:'暗所＋地下＋距離4超、洞窟内は密着' },
+  { id:'mine_dark_night_close', p:791, when:c=>c.owner.present && c.x?.darkness===true && c.env.isNight && c.self.distOwner>5, act:'follow_close', say:'夜の暗所です。そばにいます', note:'暗所＋夜＋距離5超、二重要因で寄り添い' },
+  { id:'mine_dark_breaking_stay_near', p:789, when:c=>c.owner.present && c.x?.darkness===true && c.x?.ownerBreaking===true && c.self.distOwner>6 && c.drops.count===0, act:'follow_close', say:'掘る音のそばで待機します', note:'暗所で掘削中＋距離6超＋ドロップなし、回収位置まで寄る' },
+  { id:'mine_dark_owner_low_hp', p:787, when:c=>c.owner.present && c.x?.darkness===true && c.owner.hpPct<0.5 && c.self.distOwner>4, act:'follow_close', say:'暗い上にその体力。近くにいます', note:'暗所＋HP半分未満＋距離4超、危険の重なりに密着' },
+  { id:'mine_dark_owner_idle', p:775, when:c=>c.owner.present && c.x?.darkness===true && c.owner.idleSec>15 && c.danger.count===0 && c.flags.warnOk, act:'say_only', say:'暗い場所で止まっていますね。松明はありますか', note:'暗所＋15秒アイドル＋敵なし、湧き潰しの声かけ' },
+  { id:'mine_dark_has_torch_owner', p:773, when:c=>c.owner.present && c.x?.darkness===true && c.inv.hasTorch && c.self.distOwner>3 && c.self.distOwner<=8, act:'follow_close', say:'松明、持っています。近くに置けますよ', note:'暗所＋リゼ側に松明在庫＋適距離、灯りの供給を示す寄り添い' },
+  { id:'mine_dark_deep_combo', p:785, when:c=>c.owner.present && c.x?.darkness===true && c.x?.deepLevel===true && c.self.distOwner>5, act:'follow_close', say:'深く、暗いです。密着します', note:'暗所＋深層域＋距離5超、最深部の寄り添い' },
+  { id:'mine_dark_rain_night', p:771, when:c=>c.owner.present && c.x?.darkness===true && c.env.isRaining && c.env.isNight && c.self.distOwner>6, act:'follow_close', say:'雨の夜です。はぐれないように', note:'暗所＋雨＋夜＋距離6超、視界最悪条件の密着' },
+  { id:'mine_dark_sneaking_owner', p:769, when:c=>c.owner.present && c.x?.darkness===true && c.owner.sneaking && c.self.distOwner>4 && c.danger.count===0, act:'follow_close', say:'暗所で慎重に、ですね。合わせます', note:'暗所＋しゃがみ移動中＋距離4超、主人の慎重さに合わせる' },
+  { id:'mine_dark_stuck_warn', p:768, when:c=>c.x?.darkness===true && c.self.stuck && c.self.stuckSec>=5, act:'rise_avoid', say:'暗くて足場が掴めません。上へ避けます', note:'暗所で5秒スタック、上昇して脱出を試みる' },
+  { id:'mine_dark_work_mode', p:767, when:c=>c.mode==='work' && c.owner.present && c.x?.darkness===true && c.self.distOwner>6 && c.drops.count===0, act:'follow_close', say:'作業中は灯りのそばに', note:'作業モード＋暗所＋距離6超、定位置より主人優先で寄る' },
+
+  // ===== C. 深層域・高さの警戒（deepLevel / ownerY） =====
+  { id:'mine_deep_follow_close', p:784, when:c=>c.owner.present && c.x?.deepLevel===true && c.self.distOwner>6 && c.danger.count===0, act:'follow_close', say:'深層域です。近くを維持します', note:'深層域＋距離6超＋敵なし、帰還コストが高い場所での密着' },
+  { id:'mine_deep_breaking_pickup', p:783, when:c=>c.owner.present && c.x?.deepLevel===true && c.x?.ownerBreaking===true && c.drops.nearestDist>=0 && c.drops.nearestDist<=7 && !c.inv.full, act:'pickup_nearest', say:'深層の落下物、回収します', note:'深層域で掘削中＋ドロップ7以内、貴重な深層素材を逃さない' },
+  { id:'mine_deep_valuable_first', p:781, when:c=>c.owner.present && c.x?.deepLevel===true && c.drops.valuableDist>=0 && c.drops.valuableDist<=10 && !c.inv.full, act:'pickup_valuable', say:'深層の貴重品です。最優先で', note:'深層域＋貴重品10以内、ダイヤ等を優先回収' },
+  { id:'mine_deep_owner_hurt_go', p:779, when:c=>c.owner.present && c.x?.deepLevel===true && c.owner.hpPct<0.4 && c.self.distOwner>8, act:'go_owner', say:'深い場所でその傷は危険です。今行きます', note:'深層域＋HP4割未満＋距離8超、救援に急行' },
+  { id:'mine_deep_lava_double_warn', p:777, when:c=>c.owner.present && c.x?.deepLevel===true && c.danger.lavaNear && c.flags.warnOk, act:'warn_lava', say:'深層の溶岩は数が多いです。足元に注意を', note:'深層域＋溶岩近接＋警告可、深層特有の溶岩湖への警告' },
+  { id:'mine_low_y_follow', p:766, when:c=>c.owner.present && typeof c.x?.ownerY==='number' && c.x.ownerY<16 && c.owner.underground && c.self.distOwner>7, act:'follow_close', say:'かなり深いですね。そばにいます', note:'Y16未満＋地下＋距離7超、低層での密着' },
+  { id:'mine_very_low_y_breaking', p:765, when:c=>c.owner.present && typeof c.x?.ownerY==='number' && c.x.ownerY<0 && c.x?.ownerBreaking===true && c.drops.count>0 && !c.inv.full, act:'pickup_nearest', say:'岩盤層ですね。落下物は私が', note:'Y0未満で掘削中＋ドロップあり、岩盤層の回収' },
+  { id:'mine_high_y_scaffold_watch', p:764, when:c=>c.owner.present && typeof c.x?.ownerY==='number' && c.x.ownerY>80 && c.x?.scaffoldNeeded===true && c.self.distOwner>5, act:'follow_close', say:'高い場所の足場作業ですね。下に注意します', note:'Y80超＋足場必要＋距離5超、高所作業の見守り' },
+  { id:'mine_high_y_placing_distance', p:763, when:c=>c.owner.present && typeof c.x?.ownerY==='number' && c.x.ownerY>80 && c.x?.ownerPlacing===true && c.self.distOwner<3, act:'follow', say:'高所の設置ですね。少し離れます', note:'Y80超で設置中＋近すぎる、高所では邪魔しない距離へ' },
+  { id:'mine_deep_night_combo', p:762, when:c=>c.owner.present && c.x?.deepLevel===true && c.env.isNight && c.self.distOwner>6 && c.drops.count===0, act:'follow_close', say:'深層は夜も関係ありませんが、近くに', note:'深層域＋夜（地上の味方が来ない時間）＋距離6超' },
+  { id:'mine_deep_full_deliver', p:761, when:c=>c.owner.present && c.x?.deepLevel===true && c.inv.full && c.home.registered, act:'deliver_all', say:'深層で満杯です。渡して空けます', note:'深層域で満杯、貴重な深層素材を持ち帰るため受け渡し' },
+  { id:'mine_deep_enemy_near_halt', p:760, when:c=>c.owner.present && c.x?.deepLevel===true && c.danger.count>0 && c.drops.count>0 && c.self.distOwner>6, act:'go_owner', say:'深層で敵影。回収より合流を優先します', note:'深層域＋敵あり＋距離6超、ドロップより主人の安全を優先' },
+
+  // ===== D. 溶岩近接の警告（採掘文脈） =====
+  { id:'mine_lava_breaking_warn', p:799, when:c=>c.owner.present && c.x?.ownerBreaking===true && c.danger.lavaNear && c.flags.warnOk, act:'warn_lava', say:'止まってください。その先、溶岩です', note:'掘削中＋溶岩近接＋警告可、掘り進める前の最優先警告' },
+  { id:'mine_lava_breaking_underground', p:798, when:c=>c.owner.present && c.x?.ownerBreaking===true && c.owner.underground && c.danger.lavaNear && c.flags.warnOk, act:'warn_lava', say:'地下の溶岩です。掘る方向を変えてください', note:'地下で掘削中＋溶岩近接、洞窟採掘の典型事故を防ぐ' },
+  { id:'mine_lava_owner_sneaking', p:795, when:c=>c.owner.present && c.owner.sneaking && c.danger.lavaNear && c.x?.ownerBreaking===true && c.flags.warnOk, act:'warn_lava', say:'慎重なのは正解です。溶岩が近いですよ', note:'しゃがみ掘削中＋溶岩近接、慎重作業でも警告は出す' },
+  { id:'mine_lava_drops_avoid_pickup', p:790, when:c=>c.owner.present && c.danger.lavaNear && c.drops.nearestDist>=0 && c.drops.nearestDist<=3 && c.x?.ownerBreaking===true, act:'rise_avoid', say:'落下物が溶岩際です。私は下がります', note:'溶岩近接＋ドロップ至近＋掘削中、回収より焼失・被弾回避を優先し上昇' },
+  { id:'mine_lava_valuable_risk_note', p:788, when:c=>c.owner.present && c.danger.lavaNear && c.drops.valuableDist>=0 && c.drops.valuableDist<=4 && c.flags.warnOk, act:'warn_lava', say:'貴重品が溶岩の近くに。拾うなら今です', note:'溶岩近接＋貴重品4以内、焼失リスクを主人に判断させる警告' },
+  { id:'mine_lava_owner_low_hp', p:786, when:c=>c.owner.present && c.danger.lavaNear && c.owner.hpPct<0.5 && c.flags.warnOk, act:'warn_lava', say:'その体力で溶岩際は危険です', note:'溶岩近接＋HP半分未満、落下＝即死級の警告' },
+  { id:'mine_lava_placing_warn', p:784, when:c=>c.owner.present && c.x?.ownerPlacing===true && c.danger.lavaNear && c.flags.warnOk, act:'warn_lava', say:'設置場所の足元、溶岩です', note:'設置作業中＋溶岩近接、足場設置先の危険を警告' },
+  { id:'mine_lava_self_stuck_rise', p:782, when:c=>c.danger.lavaNear && c.self.stuck && c.self.stuckSec>=3, act:'rise_avoid', say:'溶岩の近くで動けません。上へ逃げます', note:'溶岩近接＋3秒スタック、自機の焼失を防ぐ上昇回避' },
+
+  // ===== E. 設置・足場作業のお手伝い（ownerPlacing / scaffoldNeeded） =====
+  { id:'mine_place_keep_distance', p:789, when:c=>c.owner.present && c.x?.ownerPlacing===true && c.self.distOwner<3 && c.drops.count===0, act:'follow', say:'設置中ですね。距離を空けます', note:'設置中＋距離3未満＋ドロップなし、置くブロックを邪魔しない' },
+  { id:'mine_place_watch_near', p:785, when:c=>c.owner.present && c.x?.ownerPlacing===true && c.self.distOwner>=3 && c.self.distOwner<=6 && c.owner.idleSec<10, act:'say_only', say:'設置、見ています。資材が要れば渡します', note:'設置中＋適距離3〜6、作業を見守る声かけ' },
+  { id:'mine_place_deliver_materials', p:783, when:c=>c.owner.present && c.x?.ownerPlacing===true && c.inv.used>0 && c.self.distOwner<=5 && !c.x?.ownerBreaking, act:'deliver_all', say:'資材、持ってきました。どうぞ', note:'設置中＋リゼに在庫あり＋距離5以内、資材の受け渡し' },
+  { id:'mine_place_scaffold_follow', p:781, when:c=>c.owner.present && c.x?.scaffoldNeeded===true && c.x?.ownerPlacing===true && c.self.distOwner>6, act:'follow_close', say:'足場作業ですね。近くで資材を持ちます', note:'足場必要＋設置中＋距離6超、資材係として寄る' },
+  { id:'mine_place_scaffold_drops_pickup', p:779, when:c=>c.owner.present && c.x?.scaffoldNeeded===true && c.drops.nearestDist>=0 && c.drops.nearestDist<=5 && !c.inv.full, act:'pickup_nearest', say:'落とした資材、拾っておきます', note:'足場作業中＋資材ドロップ5以内、高所から落とした物を回収' },
+  { id:'mine_place_owner_idle_check', p:774, when:c=>c.owner.present && c.x?.ownerPlacing===true && c.owner.idleSec>20 && c.flags.warnOk && c.danger.count===0, act:'say_only', say:'設計を考え中ですか。私はここで待機します', note:'設置作業の手が20秒止まった＋敵なし、思案中と判断して声だけ' },
+  { id:'mine_place_night_watch', p:772, when:c=>c.owner.present && c.x?.ownerPlacing===true && c.env.isNight && c.self.distOwner>7, act:'follow_close', say:'夜の建築ですね。近くで見張ります', note:'夜間に設置中＋距離7超、建築中の無防備さを見張りで補う' },
+  { id:'mine_place_underground_room', p:770, when:c=>c.owner.present && c.x?.ownerPlacing===true && c.owner.underground && c.self.distOwner>6 && c.drops.count===0, act:'follow_close', say:'地下の整備ですね。そばにいます', note:'地下で設置中＋距離6超、拠点整備の付き添い' },
+  { id:'mine_place_pickup_mistake_drops', p:768, when:c=>c.owner.present && c.x?.ownerPlacing===true && c.drops.count>=2 && c.drops.nearestDist>=0 && c.drops.nearestDist<=4 && !c.inv.full, act:'pickup_nearest', say:'置き間違いの回収、私がします', note:'設置中＋ドロップ2個以上が至近、壊した分の回収を担う' },
+  { id:'mine_place_full_inventory_hold', p:766, when:c=>c.owner.present && c.x?.ownerPlacing===true && c.inv.full && c.self.distOwner<=4, act:'deliver_all', say:'満杯です。資材ごと渡します', note:'設置中＋満杯＋近く、資材を主人へ戻して空ける' },
+  { id:'mine_place_rain_say', p:764, when:c=>c.owner.present && c.x?.ownerPlacing===true && c.env.isRaining && c.owner.idleSec>10 && c.flags.warnOk, act:'say_only', say:'雨の建築は滑ります。足元に注意を', note:'雨天の設置作業＋手が止まり気味、滑落注意の声かけ' },
+  { id:'mine_place_sprinting_owner_follow', p:762, when:c=>c.owner.present && c.x?.ownerPlacing===true && c.owner.sprinting && c.self.distOwner>8, act:'follow_close', say:'移動が速いですね。追いつきます', note:'設置しながらの高速移動＋距離8超、置いて行かれないよう寄る' },
+
+  // ===== F. 鉱石・レア掘り当て（nearOre 応用） =====
+  { id:'mine_ore_no_break_yet_say', p:777, when:c=>c.owner.present && c.x?.nearOre===true && !c.x?.ownerBreaking===true && c.owner.idleSec>8 && c.flags.warnOk, act:'say_only', say:'近くに鉱石があります。掘らないのですか', note:'鉱石近接＋未掘削＋8秒アイドル、見逃しを指摘' },
+  { id:'mine_ore_dark_combo', p:775, when:c=>c.owner.present && c.x?.nearOre===true && c.x?.darkness===true && c.self.distOwner>5, act:'follow_close', say:'暗いですが鉱石は近いです。寄ります', note:'鉱石近接＋暗所＋距離5超、掘削位置へ寄り添う' },
+  { id:'mine_ore_deep_celebrate_drops', p:773, when:c=>c.owner.present && c.x?.nearOre===true && c.x?.deepLevel===true && c.drops.valuableDist>=0 && c.drops.valuableDist<=6 && !c.inv.full, act:'pickup_valuable', say:'深層の鉱石です。確実に回収します', note:'深層の鉱石ドロップ6以内、最優先級の回収' },
+  { id:'mine_ore_owner_hunger', p:769, when:c=>c.owner.present && c.x?.nearOre===true && c.x?.ownerBreaking===true && c.owner.hunger<=6 && c.inv.hasFood && c.drops.count===0, act:'say_only', say:'鉱脈の前に、食事は大丈夫ですか', note:'鉱石掘削中＋空腹6以下＋食料在庫あり、夢中な主人への声かけ（配達はケア帯に譲る）' },
+  { id:'mine_ore_after_break_deliver', p:767, when:c=>c.owner.present && c.x?.nearOre===true && !c.x?.ownerBreaking===true && c.inv.valuableCount>=3 && c.self.distOwner<=5, act:'deliver_all', say:'鉱石が溜まりました。渡します', note:'鉱石回収後＋貴重品3個以上＋近く、掘り終わりの受け渡し' },
+  { id:'mine_ore_stuck_help', p:765, when:c=>c.x?.nearOre===true && c.self.stuck && c.self.stuckSec>=4 && c.danger.count===0, act:'rise_avoid', say:'鉱脈の裏で引っかかりました。上から回ります', note:'鉱石近接で4秒スタック、上昇して迂回' },
+
+  // ===== G. 採掘全般の追従・受け渡し・その他複合 =====
+  { id:'mine_general_breaking_follow', p:763, when:c=>c.owner.present && c.x?.ownerBreaking===true && c.self.distOwner>10 && c.drops.count===0 && c.danger.count===0, act:'follow_close', say:'掘削地点まで戻ります', note:'掘削中＋距離10超＋ドロップなし、作業現場へ復帰' },
+  { id:'mine_general_underground_roam', p:761, when:c=>c.owner.present && c.owner.underground && !c.x?.ownerBreaking===true && !c.x?.ownerPlacing===true && c.self.distOwner>9 && c.drops.count===0, act:'follow', say:'地下探索ですね。ついて行きます', note:'地下で作業外＋距離9超、探索ペースの追従' },
+  { id:'mine_general_deliver_when_rich', p:769, when:c=>c.owner.present && c.owner.underground && c.inv.valuableCount>=5 && c.self.distOwner<=4 && !c.x?.ownerBreaking, act:'deliver_all', say:'貴重品が5つ以上。落とす前に渡します', note:'地下＋貴重品5個以上＋近く＋掘削合間、ロスト防止の受け渡し' },
+  { id:'mine_general_stay_mode_break', p:768, when:c=>c.mode==='stay' && c.owner.present && c.x?.ownerBreaking===true && c.drops.valuableDist>=0 && c.drops.valuableDist<=6 && !c.inv.full, act:'pickup_valuable', say:'待機中ですが、貴重品だけ拾います', note:'待機モードでも掘削の貴重品ドロップ6以内なら例外回収' },
+  { id:'mine_general_work_mode_pickup_wide', p:767, when:c=>c.mode==='work' && c.owner.present && c.x?.ownerBreaking===true && c.drops.nearestDist>=0 && c.drops.nearestDist<=14 && !c.inv.nearFull && c.danger.count===0, act:'pickup_nearest', say:'作業範囲の落下物、回収します', note:'作業モード＋掘削中＋ドロップ14以内、広範囲回収' },
+  { id:'mine_general_free_mode_deep', p:766, when:c=>c.mode==='free' && c.owner.present && c.x?.deepLevel===true && c.x?.ownerBreaking===true && c.drops.count>0 && !c.inv.full, act:'pickup_nearest', say:'おまかせ中です。深層の回収を優先します', note:'自由モード＋深層掘削＋ドロップあり、自律判断での回収' },
+  { id:'mine_general_owner_dead_drops', p:799, when:c=>c.owner.dead && c.drops.ownerDroppedDist>=0 && c.drops.ownerDroppedDist<=10 && !c.inv.full, act:'pickup_owner_drops', say:'あなたの落下物です。守っておきます', note:'主人死亡＋死亡ドロップ10以内、採掘中のロスト品を確保（対象は主人の物そのものなので pickup_owner_drops が正。pickup_nearest だと無関係の最寄り品へ行く）' },
+  { id:'mine_general_owner_onfire_breaking', p:794, when:c=>c.owner.present && c.owner.onFire && c.x?.ownerBreaking===true && c.flags.warnOk, act:'say_only', say:'燃えています。掘るのを止めてください', note:'炎上中に掘削継続、作業より安全の声かけ（警告の本筋は安全帯に譲る）' },
+  { id:'mine_general_owner_inwater_deep', p:765, when:c=>c.owner.present && c.owner.inWater && c.x?.deepLevel===true && c.drops.nearestDist>=0 && c.drops.nearestDist<=6 && !c.inv.full, act:'pickup_nearest', say:'水中の深層ドロップ、回収します', note:'水中＋深層＋ドロップ6以内、流れやすい物の回収' },
+  { id:'mine_general_thunder_surface_mine', p:764, when:c=>c.owner.present && c.env.isThundering && !c.owner.underground && c.x?.ownerBreaking===true && c.flags.warnOk, act:'say_only', say:'雷雨の地上採掘です。落雷に注意を', note:'雷雨＋地上で掘削中、露天掘りの落雷注意' },
+  { id:'mine_general_dusk_underground_say', p:762, when:c=>c.owner.present && c.env.isDusk && c.owner.underground && c.owner.idleSec>12 && c.flags.warnOk, act:'say_only', say:'地上は夕方です。帰るなら今のうちに', note:'夕方＋地下でアイドル、帰還判断の声かけ' },
+  { id:'mine_general_dawn_mine_say', p:760, when:c=>c.owner.present && c.env.isDawn && c.x?.ownerBreaking===true && c.owner.underground && c.flags.warnOk, act:'say_only', say:'夜が明けました。……一晩掘っていたのですね', note:'夜明け＋地下で掘削中、夜勤明けの一言' },
+];

@@ -1,0 +1,68 @@
+{
+  "format_version": "1.21.90",
+  "minecraft:entity": {
+    "description": {
+      "identifier": "companion_bot:lize",
+      "is_spawnable": false,
+      "is_summonable": true,
+      "spawn_egg": {
+        "base_color": "#20242c",
+        "overlay_color": "#bfe8f5"
+      }
+    },
+    "components": {
+      "minecraft:type_family": {
+        "family": [
+          "companion_bot",
+          "lize",
+          "humanoid"
+        ]
+      },
+      "minecraft:persistent": {},
+      "minecraft:health": {
+        "value": 60,
+        "max": 60
+      },
+      "minecraft:collision_box": {
+        "width": 0.6,
+        "height": 1.8
+      },
+      "minecraft:physics": {
+        "has_gravity": false,
+        "has_collision": true
+      },
+      "minecraft:knockback_resistance": {
+        "value": 1.0
+      },
+      "minecraft:pushable": {
+        "is_pushable": false,
+        "is_pushable_by_piston": false
+      },
+      "minecraft:damage_sensor": {
+        "triggers": [
+          {
+            "cause": "fall",
+            "deals_damage": "no"
+          },
+          {
+            "cause": "void",
+            "deals_damage": "no"
+          }
+        ]
+      },
+      "minecraft:inventory": {
+        "inventory_size": 27,
+        "private": false,
+        "container_type": "container"
+      },
+      "minecraft:equippable": {},
+      "minecraft:nameable": {
+        "always_show": true
+      },
+      "minecraft:tick_world": {
+        "radius": 4,
+        "never_despawn": true
+      }
+    }
+  }
+}
