@@ -553,6 +553,14 @@ function buildContext(bot, owner) {
     const dark = (c.owner.underground || c.env.isNight) && !r.perc.nearFurnace;
     c.x.lightLevel = c.owner.underground ? 5 : c.env.isNight ? 7 : 13;
     c.x.darkness = dark && c.x.lightLevel <= 7;
+    // cycle2117 torchfix: 設置可能性を三状態で供給 (読めない tick は未設定=UNKNOWN のまま)
+    try {
+      const fx = Math.floor(bot.location.x), fy = Math.floor(bot.location.y), fz = Math.floor(bot.location.z);
+      const feetB = bot.dimension.getBlock({ x: fx, y: fy, z: fz });
+      const belowB = bot.dimension.getBlock({ x: fx, y: fy - 1, z: fz });
+      if (feetB && belowB) c.x.torchPlaceable = feetB.typeId === "minecraft:air" && belowB.typeId !== "minecraft:air" && !belowB.isLiquid;
+    } catch {}
+    try { if (r.torchDone && Date.now() - r.torchDone.at < 10 * 60 * 1000 && r.torchDone.dim === bot.dimension.id) { c.x.torchDoneAt = r.torchDone.at; c.x.torchDoneCell = r.torchDone.cell; } } catch {}
   }
   try { c.x.ownerFlying = !!owner.isFlying; c.x.ownerRiding = !!owner.getComponent("minecraft:riding"); } catch {}
   c.x.fastMove = c.owner.sprinting || c.x.ownerFlying;
@@ -1033,18 +1041,24 @@ function wanderTo(r, bot, owner) {
   r.target = r.wander;
 }
 function placeTorch(bot, r, ctx) {
-  if (!((ctx.x?.lightLevel ?? 15) <= 7) || !((ctx.x?.torchCount || 0) > 0)) return;
+  // cycle2117 torchfix: silent return を廃止し全不成立を理由つきで記録する (同一理由は5秒間引きで連発を防ぐ)
+  const fail = (reason, err) => {
+    try { if (!(r.lastPlace && r.lastPlace.reason === reason && Date.now() - (r.lastPlace.at || 0) < 5000)) { r.lastPlace = { act: "PLACE", mode: "torch", ok: false, reason, item: "minecraft:torch", at: Date.now() }; commitLastAction(r, r.lastPlace); if (err) noteFail(bot, "place:torch_" + reason.toLowerCase(), err); } } catch {}
+    return false;
+  };
+  if (!((ctx.x?.lightLevel ?? 15) <= 7)) return fail("NOT_DARK");
+  if (!((ctx.x?.torchCount || 0) > 0)) return fail("NO_MATERIAL");
   let feet = null, below = null;
   try {
     feet = bot.dimension.getBlock({ x: Math.floor(bot.location.x), y: Math.floor(bot.location.y), z: Math.floor(bot.location.z) });
     below = bot.dimension.getBlock({ x: Math.floor(bot.location.x), y: Math.floor(bot.location.y) - 1, z: Math.floor(bot.location.z) });
-  } catch { return; }
-  if (!(feet && feet.typeId === "minecraft:air" && below && below.typeId !== "minecraft:air" && !below.isLiquid)) return;
-  if (!takeFromInv(bot, "minecraft:torch", 1)) return;
+  } catch (e) { return fail("API_ERROR", e); }
+  if (!(feet && feet.typeId === "minecraft:air" && below && below.typeId !== "minecraft:air" && !below.isLiquid)) return fail("NO_SUPPORT");
+  if (!takeFromInv(bot, "minecraft:torch", 1)) return fail("NO_MATERIAL");
   try {
     feet.setType("minecraft:torch");
     let placed = false; try { const rb = bot.dimension.getBlock({ x: Math.floor(bot.location.x), y: Math.floor(bot.location.y), z: Math.floor(bot.location.z) }); placed = !!rb && rb.typeId === "minecraft:torch"; } catch {}
-    if (placed) { try { r.lastPlace = { act: "PLACE", mode: "torch", ok: true, reason: null, item: "minecraft:torch", at: Date.now() }; commitLastAction(r, r.lastPlace); } catch {} try { sfxPlace(bot.dimension, { x: Math.floor(bot.location.x) + 0.5, y: Math.floor(bot.location.y) + 0.5, z: Math.floor(bot.location.z) + 0.5 }, "minecraft:torch"); } catch {} return; } // 作り込み POLISH-SND-PLACE-01 (v0.4.90): 設置音の実配線 (表示層のみ)
+    if (placed) { try { r.torchDone = { cell: `${Math.floor(bot.location.x)},${Math.floor(bot.location.y)},${Math.floor(bot.location.z)}`, dim: bot.dimension.id, at: Date.now() }; } catch {} try { r.lastPlace = { act: "PLACE", mode: "torch", ok: true, reason: null, item: "minecraft:torch", at: Date.now() }; commitLastAction(r, r.lastPlace); } catch {} try { sfxPlace(bot.dimension, { x: Math.floor(bot.location.x) + 0.5, y: Math.floor(bot.location.y) + 0.5, z: Math.floor(bot.location.z) + 0.5 }, "minecraft:torch"); } catch {} return true; } // 作り込み POLISH-SND-PLACE-01 (v0.4.90): 設置音の実配線 (表示層のみ)
     throw new Error("torch verify failed");
   } catch (err) {
     // Phase2 PLACE統一 (v0.4.9): station と同型に、消費後の設置失敗で松明を消失させない (ロールバック)
@@ -1072,7 +1086,9 @@ function tickAutonomy(bot, owner, ctx, effMove) {
   if (g.goal !== r.goal) { r.goal = g.goal; r.goalAt = Date.now(); if (mode === "free" && g.reason) say(owner, bot, g.reason); try { const gev = mapGoalEvent({ goal: g.goal, utility: g.utility, scores: Array.isArray(g.scores) ? g.scores.map((s) => [s?.goal, s?.utility]) : undefined, x: { hp: ctx.self?.hpPct ?? null, dg: ctx.danger?.count ?? null, scan: ctx.x?.obs?.scan ?? null, inv: ctx.x?.obs?.inv ?? null } }); if (gev) r.trace?.record(gev); } catch {} }
   switch (g.goal) {
     case "gather_wood": case "mine_ore": case "farm_crops": case "gather_stone": if (!startWork(bot, r, r.percTargets?.[GATHER_TARGETS[g.goal]])) wanderTo(r, bot, owner); break;
-    case "place_torch_dark": placeTorch(bot, r, ctx); break;
+    case "place_torch_dark": { // cycle2117 torchfix: 足元へ降りる目標を張り syncFlyGoal の interact 降下に載せる (張るだけでは消費しない)
+      try { r.target = { x: Math.floor(bot.location.x) + 0.5, y: Math.floor(bot.location.y), z: Math.floor(bot.location.z) + 0.5 }; r.moveAct = "place_torch"; } catch {}
+      placeTorch(bot, r, ctx); break; }
     case "deposit_at_home": { const h = homeOf(bot); if (h) { r.target = { x: h.x + 0.5, y: h.y + 1, z: h.z + 0.5 }; execArrive(bot, owner, { act: "deposit" }, ctx, null); } break; }
     case "deliver_to_owner": { // cycle1807 U1: 距離・次元ゲート無しの即時転送を是正 (DELIVER_RANGE が単一の正、範囲外は主人へ接近目標を張る)
       let inRange = false; try { inRange = owner.dimension.id === bot.dimension.id && dist(bot.location, owner.location) <= DELIVER_RANGE; } catch {}
@@ -1140,7 +1156,7 @@ function syncFlyGoal(bot, r) {
     const fly = flyOf(bot, r);
     if (!FLY_ENABLE || !r.target) { flyClearGoal(fly); return; }
     const act = r.moveAct || "";
-    const interact = INTERACT_ACTS.has(act) || act.startsWith("pickup_") || act.startsWith("deliver") || !!r.work || (r.mission && (r.mission.status === "active" || r.mission.status === "suspended")) || (r.buildPlan && r.buildPlan.stage === "build"); // BLD1621-03 (cycle1640): 建築中も干渉プロファイルにする // queue1 fix1 (basics-digdown-dec): 保留中は branchmine の降下目標が出るため interact に含める。含めないと fly 非interact経路が目標を地面+1.2へクランプし潜行が永遠に始まらない (実測: 3000tick掘削0→81tick完走)
+    const interact = INTERACT_ACTS.has(act) || act === "place_torch" || act.startsWith("pickup_") || act.startsWith("deliver") || !!r.work || (r.mission && (r.mission.status === "active" || r.mission.status === "suspended")) || (r.buildPlan && r.buildPlan.stage === "build"); // BLD1621-03 (cycle1640): 建築中も干渉プロファイルにする // queue1 fix1 (basics-digdown-dec): 保留中は branchmine の降下目標が出るため interact に含める。含めないと fly 非interact経路が目標を地面+1.2へクランプし潜行が永遠に始まらない (実測: 3000tick掘削0→81tick完走)
     flySetGoal(fly, r.target, { interact });
   } catch {}
 }
@@ -2131,7 +2147,7 @@ function foldGatherBuildPlan(bot, owner, r, reason, dyingMission) {
   try { say(owner, bot, `建築を中断しました。${bp.name}の材料、${miss ? nameOfItem(miss.item) : "材料"}が集めきれませんでした`, true); } catch {}
   try { noteFail(bot, "place:build_gather_folded", new Error(`build gather folded: reason=${reason} missingIdx=${bp.missingIdx}/${bp.missing?.length ?? 0} item=${miss?.item ?? "?"}`)); } catch {}
   r.buildPlan = null;
-  r.buildStallKey = null; r.buildStallSince = 0; r.buildStallBest = null; r.buildDangerSince = null; r.buildDangerNoted = false; r.buildDimSince = null; r.buildDimNoted = false; r.buildProgressAt = null; r.buildProgressIdx = null; r.buildProgressPlaced = null;
+  r.buildStallKey = null; r.buildStallSince = 0; r.buildStallBest = null; r.buildDangerSince = null; r.buildDangerNoted = false; r.buildDimSince = null; r.buildDimNoted = false; r.buildProgressAt = null; r.buildProgressIdx = null; r.buildProgressPlaced = null; r.buildUnknownSince = null; r.buildUnknownNoted = false;
   return true;
 }
 
@@ -3056,7 +3072,7 @@ function tickBuild(bot, owner, r, ctx) {
       const hold = r.buildDimSince != null ? "dim" : (r.buildDangerSince != null ? "danger" : "none");
       try { say(owner, bot, `建築を中断しました。${bp.name}は、5分間進みませんでした。置いた${bp.placed}箇所は、そのまま残します`, true); } catch {}
       noteFail(bot, "place:build_no_progress_timeout", new Error(`build no progress 300s: hold=${hold} idx=${bp.idx}/${bp.cells.length} placed=${bp.placed}`));
-      r.buildPlan = null; r.buildStallKey = null; r.buildStallSince = 0; r.buildStallBest = null; r.buildDangerSince = null; r.buildDangerNoted = false; r.buildDimSince = null; r.buildDimNoted = false; r.buildProgressAt = null; r.buildProgressIdx = null; r.buildProgressPlaced = null;
+      r.buildPlan = null; r.buildStallKey = null; r.buildStallSince = 0; r.buildStallBest = null; r.buildDangerSince = null; r.buildDangerNoted = false; r.buildDimSince = null; r.buildDimNoted = false; r.buildProgressAt = null; r.buildProgressIdx = null; r.buildProgressPlaced = null; r.buildUnknownSince = null; r.buildUnknownNoted = false;
       return true;
     }
     if (bp.idx < (r.buildProgressIdx ?? 0)) r.buildProgressIdx = bp.idx; // 減った場合はスナップショットだけ追随 (時刻は戻さない)
@@ -3093,7 +3109,11 @@ function tickBuild(bot, owner, r, ctx) {
     if (cur && cur.typeId === item) { bp.idx++; continue; }
     // N1-A (Phase4 failAgg, 裁定(a)): build skip 4地点は原則2の唯一の例外として commit のみ通す (noteFail は足さない)。設計: cycle2153-a04 §4 / cycle2229-a18
     // Phase2 PLACE build (v0.4.10): 未知セルは完了にも材料不足にもしない (三状態)
-    if (!cur) { try { r.lastPlace = { act: "PLACE", mode: "build", ok: false, reason: "CELL_UNKNOWN", item, at: Date.now() }; commitLastAction(r, r.lastPlace); } catch {} bp.skipped.push({ item, reason: "CELL_UNKNOWN", pos }); bp.idx++; continue; }
+    if (!cur) { // cycle2117 CELL_UNKNOWN hold化: UNKNOWN を恒久 skip せず次元・危険保留と同型に保持する (idx/skipped/材料は進めない。出口は既存の無進捗300秒終端)
+      if (r.buildUnknownSince == null) { r.buildUnknownSince = Date.now(); r.buildUnknownNoted = false; try { r.lastPlace = { act: "PLACE", mode: "build", ok: false, reason: "CELL_UNKNOWN", item, at: Date.now() }; commitLastAction(r, r.lastPlace); } catch {} }
+      else if (!r.buildUnknownNoted && Date.now() - r.buildUnknownSince > 60000) { r.buildUnknownNoted = true; try { say(owner, bot, "セルの状態が分からず、建築を止めています。読み込めたら、続けます", true); } catch {} }
+      r.target = { ...bot.location }; return true; }
+    if (r.buildUnknownSince != null) { if (r.buildStallSince) r.buildStallSince += Date.now() - r.buildUnknownSince; r.buildUnknownSince = null; r.buildUnknownNoted = false; }
     // Phase2 PLACE build: 非 air は上書きしない (L-15)
     if (cur.typeId !== "minecraft:air") { try { r.lastPlace = { act: "PLACE", mode: "build", ok: false, reason: "CELL_OCCUPIED", item, at: Date.now() }; commitLastAction(r, r.lastPlace); } catch {} bp.skipped.push({ item, reason: "CELL_OCCUPIED", pos }); bp.idx++; continue; }
     if (!hasItem(bot, item)) { try { r.lastPlace = { act: "PLACE", mode: "build", ok: false, reason: "NO_MATERIAL", item, at: Date.now() }; commitLastAction(r, r.lastPlace); } catch {} bp.skipped.push({ item, reason: "NO_MATERIAL", pos }); bp.idx++; continue; }

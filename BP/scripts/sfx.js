@@ -155,6 +155,7 @@ export function materialOfTypeId(typeId) {
   if (id === "ice" || id === "packed_ice" || id === "blue_ice" || id === "frosted_ice") return "ice"; // 11b (cycle1322): 完全一致集合のみ (includes("ice") は将来の無関係 ID を巻き込むため不採用)
   if (id.includes("vines")) return "vines";                               // 11c (cycle1322): 複数形のみ。単数 vine は grass のまま (PLANT 側に "vines" を含む ID は無い)
   if (id.includes("coral")) return "coral";                               // 11d (cycle1322): 生死・形状の全数形を拾う (copper の後・既定の前)
+  if (id === "deepslate_copper_ore") return "deepslate"; // cycle2117: 母岩優先 (深層岩鉱石は母岩が正、copper includes より前)
   if (id.includes("copper") || id.includes("lightning_rod")) return "copper"; // 11 (+a11 避雷針は銅)
   if (id.includes("deepslate")) return "deepslate";                       // 12: 深層岩鉱石は母岩優先
   if (id === "nether_quartz_ore" || id === "ancient_debris") return "netherrack"; // 12b (cycle1543): 母岩原則 (深層岩鉱石の母岩優先と同型)

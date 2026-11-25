@@ -199,6 +199,17 @@ function uPlaceTorchDark(c) {
   return u;
 }
 
+// cycle2117 torchfix: place_torch_dark の実行可能性 (restViable と同型: 確定した不能だけを降ろし UNKNOWN は不可と読まない)
+function torchViable(c) {
+  if (per(c, "torchPlaceable", undefined) === false) return false;
+  const doneAt = num(per(c, "torchDoneAt", -1), -1);
+  if (doneAt >= 0) {
+    const cell = per(c, "torchDoneCell", null), pos = per(c, "selfPos", null);
+    if (cell && pos && cell === `${Math.floor(pos.x)},${Math.floor(pos.y)},${Math.floor(pos.z)}`) return false;
+  }
+  return true;
+}
+
 function uIdleNearOwner(c) {
   // 最後の受け皿。chooseGoal が null を返さないための常時候補。
   let u = 0.22;
@@ -216,7 +227,7 @@ export const GOALS = [
   { id: "deposit_at_home", score: uDepositAtHome, reason: () => "荷物がいっぱいです。拠点へ預けてきます" },
   { id: "deliver_to_owner", score: uDeliverToOwner, reason: (c) => c.inv?.hasFood && num(c.owner?.hunger, 20) < 14 ? "食料をお持ちしました。……ちゃんと食べてください" : "お渡ししたい物があります" },
   { id: "return_home", score: uReturnHome, reason: () => "拠点へ戻ります。帰る場所は、登録済みですから" },
-  { id: "place_torch_dark", score: uPlaceTorchDark, reason: () => "暗いですね。松明を置いておきます" },
+  { id: "place_torch_dark", score: uPlaceTorchDark, viable: torchViable, reason: () => "暗いですね。松明を置いておきます" },
   { id: "farm_crops", score: uFarmCrops, reason: () => "作物が育っています。収穫しておきますね" },
   { id: "mine_ore", score: uMineOre, reason: () => "鉱石を見つけました。掘ってきます" },
   { id: "gather_wood", score: uGatherWood, reason: () => "木が近いので、少し切ってきます" },

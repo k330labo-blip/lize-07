@@ -266,13 +266,11 @@ export function fuelUnitsNeeded(lackOps, burn) {
 // ct が存在するのに有限数でない場合は t へ落とさず不採用 (破損の隠蔽を止める)。
 // 未来スタンプ (age<0) は clock skew として stale と同格。ct 欠落時の t フォールバックは後方互換として残す (全廃は第2段)。
 function freshStamp(rec, now, freshMs) {
-  let stamp;
-  if (rec?.ct !== undefined) { if (!isNum(rec.ct)) return null; stamp = rec.ct; }
-  else stamp = rec?.t;
-  if (!isNum(stamp)) return null;
-  const age = now - stamp;
+  // cycle2117 鮮度ゲート第2段: ct 欠落時の t フォールバックを全廃 (ct 欠落・型不正は全て stale)。
+  if (!isNum(rec?.ct)) return null;
+  const age = now - rec.ct;
   if (age < 0 || age > freshMs) return null;
-  return stamp;
+  return rec.ct;
 }
 export function aggregateChestCounts(containers, opts = {}) {
   const now = isNum(opts?.now) ? opts.now : Date.now();
