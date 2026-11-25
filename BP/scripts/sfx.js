@@ -35,6 +35,7 @@ export const SFX_TABLE = Object.freeze({
   ice:            { hit: null,         break: "random.glass",       step: "step.stone" },        // POLISH-SND-TIER3-ICE (cycle1322): glass へ寄せると足音が消えるため専用行 (break/step 分離)
   vines:          { hit: "hit.grass",  break: "dig.vines",          step: "step.grass" },        // POLISH-SND-TIER3-VINES (cycle1322): hit/step は grass 代用
   coral:          { hit: "hit.stone",  break: "dig.coral",          step: "step.stone" },        // POLISH-SND-TIER3-CORAL (cycle1322): hit/step は stone 代用
+  amethyst:       { hit: "hit.amethyst_block", break: "dig.amethyst_block", step: "step.amethyst_block" }, // POLISH-SND-AMETHYST-01 (cycle0606, a10監査で専用ID確認済み): アメジスト系が stone へ落ちていた誤分類の是正
 });
 
 // §1.2 で実在確認済みの ID (この表が参照する分 + 汎用分)
@@ -44,6 +45,7 @@ export const CONFIRMED_IDS = new Set([
   "dig.cloth", "dig.wood", "dig.stem", "dig.stone", "dig.deepslate",
   "dig.copper", "dig.netherite", "step.netherite", "dig.netherrack", "dig.nether_brick", "dig.nether_gold_ore",
   "dig.nylium", "dig.soul_sand", "dig.soul_soil", "dig.vines", "dig.coral",
+  "hit.amethyst_block", "dig.amethyst_block", "step.amethyst_block", // cycle0606 a10: 専用ID確認済み
   "step.grass", "step.sand", "step.gravel", "step.cloth", "step.wood",
   "step.nether_wood", "step.stone", "step.netherrack", "step.nether_brick",
   "step.nether_gold_ore", "step.nylium", "step.iron",
@@ -107,6 +109,8 @@ const METAL_IDS = new Set([
 ]);
 // Tier2: ガラス音グループだが "glass" を含まない発光系 (sea_lantern は Tier1 とセット)
 const GLASSLIKE_IDS = new Set(["glowstone", "redstone_lamp", "lit_redstone_lamp", "sea_lantern", "beacon"]); // cycle1543: beacon を追加 / cycle0252: lit_redstone_lamp は基礎形と同素材
+// POLISH-SND-AMETHYST-01 (cycle0606): アメジスト系は専用カテゴリ (完全一致のみ、将来IDを巻き込まない)
+const AMETHYST_IDS = new Set(["amethyst_block", "budding_amethyst", "amethyst_cluster", "large_amethyst_bud", "medium_amethyst_bud", "small_amethyst_bud"]);
 
 // cycle0922 (a05): 植物集合。作物茎・コケ絨毯もここで grass に確定させ、_stem/_carpet の先取り誤分類を解消する
 const PLANT_IDS = new Set([
@@ -132,6 +136,7 @@ const WOODWORK_IDS = new Set([
   "cartography_table", "fletching_table", "loom", "lectern", "note_block", "jukebox",
   "composter", "ladder", "campfire", "soul_campfire", "beehive", "bee_nest", "scaffolding", "creaking_heart",
   "sign", "wall_sign", "hanging_sign", "wall_hanging_sign", "wooden_button", "wooden_pressure_plate", "shelf", "wooden_slab", // cycle0522 (a13): 無樹種・旧式形の wood 是正
+  "torch", "wall_torch", "soul_torch", "soul_wall_torch", "redstone_torch", "redstone_wall_torch", // cycle0606 (a10): 松明系が stone へ落ちていた誤分類を wood へ是正
   "armor_stand", "item_frame", "glow_item_frame", "smithing_table", "jack_o_lantern",
 ]);
 // cycle0922 (a05): 樹種×部品の直積 (素朴なサフィックス追加は stone_stairs を巻き込むため直積必須)
@@ -162,6 +167,7 @@ export function materialOfTypeId(typeId) {
   if (id === "ice" || id === "packed_ice" || id === "blue_ice" || id === "frosted_ice") return "ice"; // 11b (cycle1322): 完全一致集合のみ (includes("ice") は将来の無関係 ID を巻き込むため不採用)
   if (id.includes("vines")) return "vines";                               // 11c (cycle1322): 複数形のみ。単数 vine は grass のまま (PLANT 側に "vines" を含む ID は無い)
   if (id.includes("coral")) return "coral";                               // 11d (cycle1322): 生死・形状の全数形を拾う (copper の後・既定の前)
+  if (AMETHYST_IDS.has(id)) return "amethyst"; // cycle0606: 専用カテゴリ (stone 既定より前)
   if (id === "deepslate_copper_ore") return "deepslate"; // cycle2117: 母岩優先 (深層岩鉱石は母岩が正、copper includes より前)
   if (id.includes("copper") || id.includes("lightning_rod")) return "copper"; // 11 (+a11 避雷針は銅)
   if (id.includes("deepslate")) return "deepslate";                       // 12: 深層岩鉱石は母岩優先

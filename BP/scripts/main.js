@@ -194,6 +194,8 @@ function hpOf(e) { try { const h = e.getComponent("minecraft:health"); return { 
 // RR-05 (cycle1303): 実測できた HP だけを返す。再開判定は未実測 (UNKNOWN) を満タンと読まない
 function hpOfMeasured(e) { try { const h = e.getComponent("minecraft:health"); if (!h) return null; const cur = h.currentValue, max = h.effectiveMax || h.maxValue || 20; if (!Number.isFinite(cur) || !Number.isFinite(max) || max <= 0) return null; return { cur, max }; } catch { return null; } }
 const SUSPEND_RESUME_WAIT_MS = 180000;
+const PLAIN_SUSPEND_WAIT_MS = 600000; // cycle0606: 単発 suspended 6理由の期限 (10分)。再開でなく終了掃除への出口
+const PLAIN_SUSPEND_REASONS = new Set(["hostile_stuck", "cannot_return", "no_progress", "cannot_reach_area", "target_not_found", "unknown_step"]);
 const F1_NO_PROGRESS_RESUME_LIMIT = 3; // cycle0033 F1: progress-less resume cutoff
 const F1_SUSPEND_TOTAL_BACKSTOP = 30; // cycle0033 F1: backstop via persisted suspendCount // RR-05: cannot_recover の回復待ち上限 (出口のない恒久 suspended を作らない)
 // RR-05 (cycle1303): cannot_recover で suspended な mission の再開/待ち/期限切れを集約する唯一の担い手。
@@ -209,6 +211,17 @@ function tickSuspendedResume(bot, r) {
   const h = hpOfMeasured(bot);
   if (h && (h.cur / h.max) >= 0.5) { m.blocked = null; m.recoverObs = 0; m.status = "active"; m.suspendReason = null; m.suspendWaitSince = null; persistMission(bot, r, true); return "resumed"; }
   if (Date.now() - m.suspendWaitSince > SUSPEND_RESUME_WAIT_MS) return "expired";
+  return "waiting";
+}
+// cycle0606 PLAIN-SUSPEND-NOEXIT 是正: 単発 (longtask 無し・legsOnly でない) mission が通常理由で
+// suspended になった場合の期限型の出口。tickSuspendedResume のスコープは広げない別担い手。
+// 戻り値: null=対象外 / "waiting"=期限内 (初回は suspendWaitSince を打刻し強制保存) / "expired"=期限超過 (終了掃除は呼び出し側)
+// 再開はしない (停滞カウンタ掃除なしの再開は即再suspendループになるため、終了のみが出口)。
+function tickPlainSuspendExpiry(bot, r) {
+  const m = r && r.mission; if (!m || m.status !== "suspended" || !PLAIN_SUSPEND_REASONS.has(m.suspendReason)) return null;
+  if (m.order && m.order.legsOnly) return null; // legsOnly (建築材料集め) は gather 側の担い手がいるため対象外
+  if (!m.suspendWaitSince || !Number.isFinite(m.suspendWaitSince) || m.suspendWaitSince <= 0 || m.suspendWaitSince > Date.now()) { m.suspendWaitSince = Date.now(); persistMission(bot, r, true); }
+  if (Date.now() - m.suspendWaitSince > PLAIN_SUSPEND_WAIT_MS) return "expired";
   return "waiting";
 }
 function f1ProgressSnap(bot, r) {
@@ -2933,7 +2946,7 @@ function cancelMission(bot, owner, r, silent = false) {
   r.buildStallKey = null; r.buildStallSince = 0; r.buildStallBest = null; r.buildDangerSince = null; r.buildDangerNoted = false; r.buildProgressAt = null; r.buildProgressIdx = null; r.buildProgressPlaced = null; // 基礎 R-3 (v0.4.81, cycle0417-a04): 中止した建築の stall/危険時計を残さない + BUILD-HOLD-NOEXIT (cycle1343)
   if (!silent) say(owner, bot, "指示、中止しました。……今の作業はここまでです", true);
 }
-const SUSPEND_JP = { target_not_found: "対象が見つかりませんでした", no_progress: "進捗が止まってしまいました", cannot_reach_area: "指定の場所へ辿り着けませんでした", cannot_return: "帰還できませんでした", cannot_recover: "体力が回復しませんでした", unknown_step: "手順が読み取れませんでした", inv_unreadable: "持ち物が読み取れませんでした" }; // cannot_recover は cycle0731
+const SUSPEND_JP = { target_not_found: "対象が見つかりませんでした", no_progress: "進捗が止まってしまいました", cannot_reach_area: "指定の場所へ辿り着けませんでした", cannot_return: "帰還できませんでした", cannot_recover: "体力が回復しませんでした", unknown_step: "手順が読み取れませんでした", inv_unreadable: "持ち物が読み取れませんでした", hostile_stuck: "敵に阻まれて進めなくなりました" }; // cannot_recover は cycle0731 / hostile_stuck は cycle0606 で追加 (欠落していた表示漏れ)
 function handleMissionSay(bot, owner, r, d) {
   const m = r.mission; if (!m) return;
   if (d.reason === "step_complete") { if (!m.order.legsOnly) say(owner, bot, `${nameOfItem(m.order.target)}、必要数は揃いました。……悪くない進みです`); return; }
@@ -3902,6 +3915,12 @@ system.runInterval(() => {
       const sres = tickSuspendedResume(bot, r);
       if (sres === "waiting") consumed = true;
       else if (sres === "expired") { foldGatherBuildPlan(bot, p, r, "suspend_expired", r.mission); say(p, bot, `体力が回復しなかったため、指示を中断しました`, true); r.mission = null; clearPlanRecords(r); persistMission(bot, r, true); consumed = true; }
+    }
+    // cycle0606 PLAIN-SUSPEND-NOEXIT: 単発 suspended 6理由の期限型出口 (別担い手 tickPlainSuspendExpiry、10分で終了掃除)
+    if (!consumed && !r.longtask && r.mission && r.mission.status === "suspended") {
+      const pres = tickPlainSuspendExpiry(bot, r);
+      // waiting は消費しない (保留中も通常行動を妨げない。従来の suspended 単発の振る舞いを維持)
+      if (pres === "expired") { const rsn = r.mission.suspendReason; say(p, bot, `保留が長引いたため、指示を中断しました。${SUSPEND_JP[rsn] || "進めなくなりました"}`, true); noteFail(bot, "mission:plain_suspend_expired", new Error(rsn || "")); r.mission = null; clearPlanRecords(r); persistMission(bot, r, true); consumed = true; }
     }
     // キュー0副次 R1 (cycle1421): 単発ミッションの toolNeed は昇格接続が消費の入口になる (実装は tickLongTask 内の1か所のまま)
     if (!consumed && !r.longtask && r.toolNeed && tickToolPrepPromote(bot, p, r)) consumed = true;
