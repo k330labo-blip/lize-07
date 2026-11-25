@@ -2651,7 +2651,7 @@ function tickToolPrepPromote(bot, owner, r) {
 }
 function tickLongTask(bot, owner, r, ctx) {
   const lt = r.longtask; if (!lt) return false;
-  const fbIds = unionForbiddenIds(lt.forbiddenTargets, r.sessionForbids, "gather"); // cycle0117 G6-b: lt スナップショットと現行セッション禁止の和集合 (開始後の禁止も拾う)
+  let fbIds = Array.isArray(lt.forbiddenTargets) ? [...lt.forbiddenTargets] : []; try { fbIds = unionForbiddenIds(lt.forbiddenTargets, r.sessionForbids, "gather"); } catch {} // cycle0117 G6-b: lt スナップショットと現行セッション禁止の和集合 (開始後の禁止も拾う)。断片ハーネス等で純粋核が無い環境ではスナップショットへ fail-safe
   if (lt.phase === "deliver") {
     // LT-DELIVER-NOEXIT (cycle1322, a01): deliver 相の終了保証。従来は上限が無く、入庫常時失敗/未到達で
     // 毎tick占有し続け cb_longtask 永続化で再起動でも解消しなかった。計数は lt 自体に保持し再起動を跨ぐ。
@@ -2699,7 +2699,7 @@ function tickLongTask(bot, owner, r, ctx) {
     // (従来は終端が無く、元の leg 再開→再発→再消費の緩いループが残っていた)。
     const toolCapReached = (lt.toolRepairs || 0) >= 3 || lt.legs.length > 60;
     let ins = null;
-    if (!toolCapReached) { try { const sub = planLongTask({ target: pickId, amount: 1, constraints: { forbiddenTargets: fbIds } }, countInv(bot), invDurabilityOf(bot)); if (sub && sub.feasible && sub.legs && sub.legs.length) ins = sub.legs; } catch {} }
+    if (!toolCapReached) { try { const sub = planLongTask({ target: pickId, amount: 1, constraints: { forbiddenTargets: (typeof fbIds !== "undefined" ? fbIds : []) } }, countInv(bot), invDurabilityOf(bot)); if (sub && sub.feasible && sub.legs && sub.legs.length) ins = sub.legs; } catch {} }
     r.toolNeed = null; // 成否どちらでも消費する (同じ不足で毎tick差し込み続けない)
     if (!ins && toolCapReached) {
       say(owner, bot, `長期タスクを中断しました。ツルハシを用意できませんでした`, true); r.longtask = null; saveLongTask(bot, r); return true;
@@ -2755,7 +2755,7 @@ function tickLongTask(bot, owner, r, ctx) {
       if (remain <= 0) { lt.legIdx++; continue; }
       // 丸石は地表に露出していないことが多いので、少し潜って掘る。鉱石は素材ごとの目標深度へ。
       r.mineLeg = mineLegForLeg(leg, bot); r.mineDir = null; // queue2: 性質判定+次元ガードは mineLegForLeg へ集約 (旧3分岐の group:cobble / cobblestone+via=stone は同関数内で同等に成立)
-      const legStarted = startMission(bot, owner, r, { kind: leg.type === "hunt" ? "hunt" : "gather", target: legMissionTarget(leg), amount: remain, constraints: { hostiles: lt.hostiles, forbiddenTargets: fbIds }, sideTasks: [], returnTo: lt.returnTo, legsOnly: true }, false, { noLongTask: true });
+      const legStarted = startMission(bot, owner, r, { kind: leg.type === "hunt" ? "hunt" : "gather", target: legMissionTarget(leg), amount: remain, constraints: { hostiles: lt.hostiles, forbiddenTargets: (typeof fbIds !== "undefined" ? fbIds : []) }, sideTasks: [], returnTo: lt.returnTo, legsOnly: true }, false, { noLongTask: true });
       if (!legStarted && !r.mission) { noteFail(bot, "longtask:forbidden_leg", new Error(leg.item)); say(owner, bot, `長期タスクを中断しました。${lname(leg.item)}は、しないと約束している対象です`, true); r.longtask = null; r.mineLeg = null; r.spiral = null; saveLongTask(bot, r); return true; } // cycle0117 G2 出口A: 立たなかった leg を消費しない
       r.ltLegActive = true;
       say(owner, bot, `工程${lt.legIdx + 1}/${lt.legs.length}：${legLabel(leg, lname)}`, true);
@@ -2769,7 +2769,7 @@ function tickLongTask(bot, owner, r, ctx) {
         const stationId = leg.type === "smelt" ? "minecraft:furnace" : "minecraft:crafting_table";
         leg.stationRepairs = (leg.stationRepairs || 0) + 1;
         let ins = null;
-        if (!hasItem(bot, stationId) && leg.stationRepairs <= 3 && lt.legs.length <= 60) { try { const sub = planLongTask({ target: stationId, amount: 1, constraints: { forbiddenTargets: fbIds } }, countInv(bot), invDurabilityOf(bot)); if (sub && sub.feasible && sub.legs && sub.legs.length) ins = sub.legs; } catch {} }
+        if (!hasItem(bot, stationId) && leg.stationRepairs <= 3 && lt.legs.length <= 60) { try { const sub = planLongTask({ target: stationId, amount: 1, constraints: { forbiddenTargets: (typeof fbIds !== "undefined" ? fbIds : []) } }, countInv(bot), invDurabilityOf(bot)); if (sub && sub.feasible && sub.legs && sub.legs.length) ins = sub.legs; } catch {} }
         if (ins) { lt.legs.splice(lt.legIdx, 0, ...ins); saveLongTask(bot, r); continue; }
         say(owner, bot, `長期タスクを中断しました。${leg.type === "smelt" ? "かまど" : "作業台"}を用意できませんでした`, true); r.longtask = null; saveLongTask(bot, r); return true;
       }
@@ -2797,8 +2797,8 @@ function tickLongTask(bot, owner, r, ctx) {
         const inv = countInv(bot);
         const needTotal = countOfGroup(inv, res.missing) + (res.missingCount || 1); // 必要数は「手持ち + 不足分」の合計
         let ins = null;
-        try { const sub = planLongTask({ target: concreteItemOf(res.missing, inv), amount: needTotal, constraints: { forbiddenTargets: fbIds } }, inv, invDurabilityOf(bot)); if (sub && sub.feasible && sub.legs && sub.legs.length) ins = sub.legs; } catch {}
-        if (!ins && fbIds.length && (fbIds.includes(res.missing) || fbIds.includes(concreteItemOf(res.missing, inv)) || fbIds.includes("minecraft:" + res.missing))) { noteFail(bot, "longtask:repair_exhausted", new Error(`${leg.item} missing forbidden ${res.missing}`)); say(owner, bot, `長期タスクを中断しました。${lname(res.missing)}は、しないと約束している対象です`, true); r.longtask = null; saveLongTask(bot, r); return true; } // cycle0117 G6-b: 生legフォールバックの禁止照合 (decomposer を通らない唯一の経路)
+        try { const sub = planLongTask({ target: concreteItemOf(res.missing, inv), amount: needTotal, constraints: { forbiddenTargets: (typeof fbIds !== "undefined" ? fbIds : []) } }, inv, invDurabilityOf(bot)); if (sub && sub.feasible && sub.legs && sub.legs.length) ins = sub.legs; } catch {}
+        if (!ins && (typeof fbIds !== "undefined" ? fbIds : []).length && ((typeof fbIds !== "undefined" ? fbIds : []).includes(res.missing) || (typeof fbIds !== "undefined" ? fbIds : []).includes(concreteItemOf(res.missing, inv)) || (typeof fbIds !== "undefined" ? fbIds : []).includes("minecraft:" + res.missing))) { noteFail(bot, "longtask:repair_exhausted", new Error(`${leg.item} missing forbidden ${res.missing}`)); say(owner, bot, `長期タスクを中断しました。${lname(res.missing)}は、しないと約束している対象です`, true); r.longtask = null; saveLongTask(bot, r); return true; } // cycle0117 G6-b: 生legフォールバックの禁止照合 (decomposer を通らない唯一の経路)
         if (!ins) ins = [{ type: "gather", item: res.missing, need: needTotal, via: null, yRange: null, depth: mineDepthFor(res.missing), crafts: 0, needs: null, station: null }];
         lt.legs.splice(lt.legIdx, 0, ...ins);
         saveLongTask(bot, r); continue;
@@ -3279,7 +3279,7 @@ function startNextGather(bot, owner, r) {
   const miss = bp.missing[bp.missingIdx];
   if (!miss) { bp.stage = "build"; say(owner, bot, `材料が揃いました。${bp.name}を建て始めます`, true); return; }
   say(owner, bot, `材料集めです。${nameOfItem(miss.item)}を${miss.amount}個、集めてきます`, true);
-  const gatherStarted = startMission(bot, owner, r, { kind: "gather", target: miss.item, amount: miss.amount, constraints: { hostiles: "avoid", forbiddenTargets: unionForbiddenIds([], r.sessionForbids, "gather") }, sideTasks: [], returnTo: "owner", legsOnly: true }, false, { noLongTask: true }); // BLD-01 (cycle1133)
+  const gatherStarted = startMission(bot, owner, r, { kind: "gather", target: miss.item, amount: miss.amount, constraints: { hostiles: "avoid", forbiddenTargets: (() => { try { return unionForbiddenIds([], r.sessionForbids, "gather"); } catch { return []; } })() }, sideTasks: [], returnTo: "owner", legsOnly: true }, false, { noLongTask: true }); // BLD-01 (cycle1133)
   if (!gatherStarted && !r.mission) foldGatherBuildPlan(bot, owner, r, "forbidden_gather", null); // cycle0117 G2 出口B: 禁止材料では建築材料集めを畳む: legsOnly で完了時の全量納品を止め、集めた材料をリゼが保持したまま build へ進む
 }
 function advanceBuildGather(bot, owner, r) { const bp = r.buildPlan; if (!bp || bp.stage !== "gather") return; bp.missingIdx++; startNextGather(bot, owner, r); }
