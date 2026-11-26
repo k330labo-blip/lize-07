@@ -54,6 +54,7 @@ export const SFX_TABLE = Object.freeze({
   calcite:        { hit: "hit.calcite", break: "break.calcite",      step: "step.calcite" },       // POLISH-SND-CLASS-CALCITE-01 (cyc2232): 3軸とも専用ID確認済み (Bedrock Wiki 1.21.70)。dig.calcite は実在しないため break.* 命名
   dripstone_block:   { hit: "hit.dripstone_block",   break: "break.dripstone_block",   step: "step.dripstone_block" },   // POLISH-SND-CLASS-DRIPSTONE-01 (cyc2248): 3軸とも専用ID確認済み (Bedrock Wiki 1.21.70)。dig.* は実在しないため break.* 命名
   pointed_dripstone: { hit: "hit.pointed_dripstone", break: "break.pointed_dripstone", step: "step.pointed_dripstone" }, // POLISH-SND-CLASS-DRIPSTONE-01 (cyc2248): pointed は別ID群のため dripstone_block と分ける
+  mud:            { hit: "hit.mud",   break: "dig.mud",           step: "step.mud" },          // POLISH-SND-CLASS-MUD-01 (cyc2313): 3軸とも専用ID (Bedrock の mud 音群)。従来は GRASS_IDS 経由で grass 落ち。完全一致 mud のみ、packed_mud/muddy_mangrove_roots は巻き込まない
 });
 
 // §1.2 で実在確認済みの ID (この表が参照する分 + 汎用分)
@@ -77,6 +78,7 @@ export const CONFIRMED_IDS = new Set([
   "hit.tuff", "break.tuff", "step.tuff", // cyc2221 A18: 専用ID確認済み (dig.tuff は実在しない)
   "hit.calcite", "break.calcite", "step.calcite", // cyc2232 A06: 専用ID確認済み (dig.calcite は実在しない)
   "hit.dripstone_block", "break.dripstone_block", "step.dripstone_block", "hit.pointed_dripstone", "break.pointed_dripstone", "step.pointed_dripstone", // cyc2248 A17: 専用ID確認済み (dig.* は実在しない)
+  "hit.mud", "dig.mud", "step.mud", // cyc2313 MUD-01: 専用ID (mud 音群、実機確認待ち)
   "break.froglight", "step.froglight", // cycle1215 a14: 専用ID確認済み (break/step。dig.froglight/hit.froglight は実在しない)
   "dig.deepslate_bricks", // cycle1256 a16: 専用ID確認済み (break のみ)
   "step.grass", "step.sand", "step.gravel", "step.cloth", "step.wood",
@@ -118,7 +120,7 @@ function bare(typeId) {
 
 const GRASS_IDS = new Set([
   "grass_block", "dirt", "coarse_dirt", "rooted_dirt", "dirt_with_roots", "podzol", "mycelium", // cycle0659 (a09): dirt_with_roots alias
-  "dirt_path", "farmland", "mud", "muddy_mangrove_roots", "clay", "packed_mud",
+  "dirt_path", "farmland", "muddy_mangrove_roots", "clay", "packed_mud", // cyc2313: "mud" は専用カテゴリ mud へ分離 (GRASS_IDS から除外)
   "hay_block", "dried_kelp_block", "sponge", "wet_sponge",
   "target", "melon", "pumpkin", "carved_pumpkin", // cycle1543: 草系の実体 (干し草標的・瓜類)
   "grass_path", "melon_block", // cycle0505 (a16): 別名スペル (dirt_path / melon の別表記) が stone へ落ちていた非対称の是正
@@ -219,6 +221,7 @@ export function materialOfTypeId(typeId) {
   if (id === "calcite") return "calcite"; // cyc2232 CALCITE-01: 完全一致のみ
   if (id === "dripstone_block") return "dripstone_block"; // cyc2248 DRIPSTONE-01: 完全一致のみ
   if (id === "pointed_dripstone") return "pointed_dripstone"; // cyc2248 DRIPSTONE-01: 完全一致のみ
+  if (id === "mud") return "mud"; // cyc2313 MUD-01: 完全一致のみ (GRASS_IDS の mud より前に抜く。packed_mud/muddy_mangrove_roots は grass のまま)
   if (id === "basalt" || id === "smooth_basalt") return "basalt"; // cycle1514 BASALT-01: 完全一致2形のみ (polished_basalt は裏取り未実施のため stone のまま)
   if (id === "deepslate_bricks" || id === "cracked_deepslate_bricks" || id === "deepslate_tiles" || id === "cracked_deepslate_tiles") return "deepslate_bricks"; // cycle1256 bricks 2 forms + cycle1455 POLISH-SND-CLASS-DEEPSLATE-TILES-01: tiles 2 forms verified against Bedrock sounds (tiles use the deepslate_bricks sound set); derived slab/stairs/wall forms stay excluded
   if (id === "deepslate_copper_ore") return "deepslate"; // cycle2117: 母岩優先 (深層岩鉱石は母岩が正、copper includes より前)
