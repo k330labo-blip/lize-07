@@ -316,7 +316,7 @@ function n5GapOk(text, hit, idx) { try { const gap = text.slice(hit.end, idx); i
 // 詳細は hit.amountDetail に保持し、候補・注文へ amountMeta として運ぶ。
 // cyc1743 0-C5 R-1/R-3: 項の繰り返し (3項以上)・第2項以降のスタック/半スタック・小数スタックを許可し、値解釈は核 amount_parse へ委ねる
 const QTY_TERM_SRC = String.raw`(?:(?:半|はん)スタック|(?:\d+(?:\.\d+)?|[一二三四五六七八九十]+|ゼロ|零)\s*(?:スタック|個|本|枚|つ|体|匹|組|セット|箱))`;
-const QTY_PHRASE_RE = new RegExp(`(${QTY_TERM_SRC}(?:\\s*と\\s*${QTY_TERM_SRC})*(?:ずつ\\s*(?:\\d+|[一二三四五六七八九十]+)\\s*回)?)`);
+const QTY_PHRASE_RE = new RegExp(`(${QTY_TERM_SRC}(?:\\s*と\\s*${QTY_TERM_SRC})*(?:ずつ\\s*(?:\\d+|[一二三四五六七八九十]+)\\s*回|を\\s*(?:\\d+|[一二三四五六七八九十]+)\\s*回)?)`);
 function amountNear(text, hit) {
   let itemId = null;
   try { const t = targetOf(hit); itemId = t?.item ?? t?.block ?? null; } catch { itemId = null; }
@@ -330,6 +330,10 @@ function amountNear(text, hit) {
   const after = text.slice(hit.end, hit.end + 18);
   const am = after.match(new RegExp(`^[のがをもは]?(?:だけ)?\\s*(あと)?\\s*${QTY_PHRASE_RE.source}`));
   if (am) { const v = parsePhrase((am[1] || "") + am[2]); if (v != null) return v; }
+  // 0-C5 R-4 (v0.5.86): 反復前置（「丸石を2回、3個ずつ」）。裸数字フォールバックが
+  // 「2回」の 2 を数量として先に拾うため、その前に前置反復つきフレーズを核へ渡す。
+  const pm = after.match(new RegExp(`^[のがをもは]?\\s*(?:\\d+|[一二三四五六七八九十]+)\\s*回\\s*(?:分|繰り返して|繰り返し|、|,)?\\s*${QTY_PHRASE_RE.source}`));
+  if (pm) { const v = parsePhrase(pm[0].replace(/^[のがをもは]/, "")); if (v != null) return v; }
   let m = after.match(/^[のがをもは]?(\d+)/); // 単位なしの裸の数字（「ダイヤ10掘って」）
   if (m) return parseInt(m[1], 10);
   const before = text.slice(Math.max(0, hit.start - 18), hit.start);
@@ -1107,7 +1111,10 @@ export function parseOrder(input) {
     // cyc1743 0-C5 R-2: 訂正マーカーは「いや」「やっぱり」。同一句内の訂正も、
     // その句に別対象の候補が無い場合に限り主数量へ反映する (対象訂正とは混ぜない)。
     let corrIdx = -1, corrLen = 0;
-    for (const mk of ["やっぱり", "いや"]) { const ix = text.lastIndexOf(mk); if (ix > corrIdx) { corrIdx = ix; corrLen = mk.length; } }
+    // cyc-next R-4(a01): 訂正辞は amount_math の CORRECTION_RE と単一の正に揃える。
+    // 従来は ["やっぱり","いや"] の2種だけで、「訂正して3個」「まちがえた3個」が
+    // 読点の有無によらず脱落し、「訂正0個」は 0個ガードにも届かなかった。
+    for (const mk of ["やっぱり", "いや", "じゃなくて", "ではなく", "じゃなしに", "まちがえた", "訂正して", "訂正"]) { const ix = text.lastIndexOf(mk); if (ix > corrIdx) { corrIdx = ix; corrLen = mk.length; } }
     if (corrIdx >= 0) {
       const corrClause = splitClauses(text.slice(0, corrIdx)).length - 1;
       const mainId = main.target?.item ?? main.target?.block ?? main.target?.entity ?? null;
@@ -1118,6 +1125,21 @@ export function parseOrder(input) {
       }
     }
   } catch { /* 訂正の反映失敗は従来数量のまま */ }
+
+  // 0-C5 R-4 (v0.5.86): 反復前置の横断パス。句分割で「2回、」が数量句と別句に
+  // 割れるため amountNear では拾えず、裸数字が「2」を数量化していた。全文で
+  // 「NUM回 (分/繰り返し)? 、? QTYずつ」が主対象の句並びに現れ、後置反復が
+  // 無い場合だけ、核 amount_parse の解釈 (前置反復) で主数量を組み直す。
+  try {
+    if (!(amountMeta && amountMeta.repeats != null)) {
+      const preRe = new RegExp(`(?:\\d+|[一二三四五六七八九十]+)\\s*回\\s*(?:分|繰り返して|繰り返し)?\\s*[、,]?\\s*${QTY_TERM_SRC}\\s*ずつ`);
+      const xm = text.match(preRe);
+      if (xm) {
+        const parsed = amount_parse(xm[0], { itemId: main.target?.item ?? main.target?.block ?? null });
+        if (parsed && parsed.ok && parsed.repeats != null) { main.amount = parsed.total; amountMeta = parsed; }
+      }
+    }
+  } catch { /* 前置反復の反映失敗は従来数量のまま */ }
 
   // 0-C5 (cycle1256): 0個の指示は開始処理へ渡さない (聞き返しへ倒す)。
   if (main.amount === 0) {

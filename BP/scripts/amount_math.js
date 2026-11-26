@@ -136,7 +136,9 @@ export function amount_parse(segment, ctx = {}) {
     let repeats = null;
 
     // 数量の開始位置を探す（メンション等の前置語は読み飛ばす）
-    const startRe = new RegExp(`(あと\\s*)?((半|はん)スタック|${NUM}\\s*(スタック|${UNIT}))`);
+    // cyc-next R-4: 「あと、3個」「あともう3個」でも相対指定が落ちないよう、
+    // 読点と「もう」を「あと」の後ろに許す。
+    const startRe = new RegExp(`(あと\\s*[、,]?\\s*(?:もう\\s*)?)?((半|はん)スタック|${NUM}\\s*(スタック|${UNIT}))`);
     const sm = s.match(startRe);
     if (!sm) return { ...emptyResult(sizeInfo), corrected };
     if (sm[1]) relative = true;
@@ -167,6 +169,36 @@ export function amount_parse(segment, ctx = {}) {
     // 反復（ずつ M 回）は数量の直後で読む
     const rep = cur.match(new RegExp(`^ずつ\\s*${NUM}\\s*回`));
     let perRun = total;
+    // cyc-next R-4: 反復前置（「2回、3個ずつ」「2回分3個ずつ」「2回繰り返して3個ずつ」）と
+    // 「3個を2回」形。従来は数量直後の「ずつM回」しか読めず、前置の回数は黙って落ち、
+    // 「0回、3個ずつ」は 0回ガードを素通りして開始可能になっていた。
+    // 前置は数量の開始位置より前に現れる最後の「NUM回」を採用する。ただし反復として
+    // 読むのは、数量項が「ずつ」を伴う（1回量の明示）か、前置自体が「分／繰り返し」を
+    // 伴う場合に限る（単なる回数メンションの誤読を避ける）。
+    if (!rep) {
+      const woRep = cur.match(new RegExp(`^を\\s*${NUM}\\s*回`));
+      if (woRep) {
+        const m2 = parseNumberToken(woRep[1]);
+        if (m2 != null && m2 >= 0) { repeats = m2; total = perRun * repeats; consumedLen += woRep[0].length; }
+      } else if (/^ずつ/.test(cur)) {
+        const prefix = s.slice(0, sm.index + (sm[1] ? sm[1].length : 0));
+        let preM = null;
+        for (const mm of prefix.matchAll(new RegExp(`${NUM}\\s*回\\s*(分|繰り返して|繰り返し|、|,)?`, "g"))) preM = mm;
+        if (preM) {
+          const m2 = parseNumberToken(preM[1]);
+          if (m2 != null && m2 >= 0) { repeats = m2; total = perRun * repeats; }
+        }
+      } else {
+        // 「ずつ」が無くても「2回分、3個」「2回繰り返して3個」は前置反復として読む
+        const prefix = s.slice(0, sm.index + (sm[1] ? sm[1].length : 0));
+        let preM = null;
+        for (const mm of prefix.matchAll(new RegExp(`${NUM}\\s*回\\s*(分|繰り返して|繰り返し)`, "g"))) preM = mm;
+        if (preM) {
+          const m2 = parseNumberToken(preM[1]);
+          if (m2 != null && m2 >= 0) { repeats = m2; total = perRun * repeats; }
+        }
+      }
+    }
     if (rep) {
       const m2 = parseNumberToken(rep[1]);
       // 0-C5 U4 (v0.5.80): 反復0回は「反復なし」ではなく総量0として返す。
