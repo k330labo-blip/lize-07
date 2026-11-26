@@ -18,6 +18,7 @@
 //       targetItem: itemId,            // 任意。採取対象（必要ツルハシ等級の判定に使う）
 //       amount: number,                // 任意。目標個数（ツールの消費＝耐久見積もりに使う）
 //       targetTier: 'wood'|'stone'|'iron'|'diamond',  // 任意。最低でもこのティアまで上げる指定
+//       investTier: 'wood'|'stone'|'iron'|'diamond'|null,  // 任意・速度投資専用 (0-J)。requiredLevel には混ぜない。null=必須でない道具は作らない
 //       tools: ['pickaxe','axe',...],  // 任意。必要ツールの明示指定（最優先）
 //     },
 //     opts: { tablePlaced: boolean }   // 任意。作業台が既に設置済みなら true（所持していなくても使える）
@@ -105,7 +106,7 @@ export function requiredLevelFor(targetItem) {
 }
 
 // 作業種別 → 主に使うツール
-const ACTIVITY_MAIN_TOOL = { chop: "axe", mine: "pickaxe", dig: "shovel", combat: "sword" };
+export const ACTIVITY_MAIN_TOOL = { chop: "axe", mine: "pickaxe", dig: "shovel", combat: "sword" };
 
 // 精錬の燃料価値: 個別燃料は recipes.js の FUEL_TABLE を単一の正として参照する。
 // グループ燃料（板材/原木）は FUEL_TABLE の1.5を切り捨て側に倒し1として数える（従来の保守的見積もりを維持）
@@ -249,6 +250,10 @@ export function planBootstrap(input) {
   );
   let desiredTier = TIERS.find((t) => TIER_LEVEL[t] >= requiredLevel) || null;
   if (requiredLevel === 0 && goal.targetTier) desiredTier = goal.targetTier;
+  // 0-J investTier (cyc2363): 速度投資専用。requiredLevel へは絶対に混ぜない (targetTier の汚染の再発防止)
+  const investTier = goal.investTier === null ? null
+    : (TIERS.includes(goal.investTier) ? goal.investTier : undefined);
+  if (typeof investTier === "string" && (!desiredTier || (TIER_LEVEL[investTier] || 0) > (TIER_LEVEL[desiredTier] || 0))) desiredTier = investTier;
 
   let kinds = [];
   if (Array.isArray(goal.tools) && goal.tools.length) kinds = goal.tools.filter((k) => TOOL_KINDS[k]);
@@ -258,6 +263,11 @@ export function planBootstrap(input) {
 
   if (requiredLevel > 0 && !kinds.includes("pickaxe")) kinds = ["pickaxe", ...kinds];
   if (!desiredTier && kinds.length) desiredTier = "wood"; // ツールが要るが等級指定なし → まず木から
+  // investTier===null = 「作らない」の明示: 収穫レベル必須の pickaxe 以外 (速度専用 kind) を落とす。targetTier 指定時はそちらを優先し落とさない
+  if (investTier === null && !goal.targetTier) {
+    kinds = kinds.filter((k) => requiredLevel > 0 && k === "pickaxe");
+    if (!kinds.length) desiredTier = null;
+  }
   const mainKind = ACTIVITY_MAIN_TOOL[goal.activity] || kinds[0] || null;
 
   const toolsNeeded = kinds.map((kind) => ({

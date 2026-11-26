@@ -154,7 +154,7 @@ export function adaptOrder(order) {
   let confidence = 0.7;
   const t = order.target || {};
   const hasTarget = !!(t.item || t.block || t.entity);
-  if (order.kind === "free" || order.kind === "escort" || order.kind === "forbid" || order.kind === "clarify") confidence = 0.95;
+  if (order.kind === "free" || order.kind === "escort" || order.kind === "watch" || order.kind === "forbid" || order.kind === "clarify") confidence = 0.95;
   else if (order.kind === "build" && hasTarget) confidence = 0.85;
   else if (hasTarget && typeof order.amount === "number") confidence = 0.9;
   else if (hasTarget && t.generic) confidence = 0.75;

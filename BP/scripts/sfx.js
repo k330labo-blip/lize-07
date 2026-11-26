@@ -57,6 +57,7 @@ export const SFX_TABLE = Object.freeze({
   mud:            { hit: "hit.mud",   break: "dig.mud",           step: "step.mud" },          // POLISH-SND-CLASS-MUD-01 (cyc2313): 3軸とも専用ID (Bedrock の mud 音群)。従来は GRASS_IDS 経由で grass 落ち。完全一致 mud のみ、packed_mud/muddy_mangrove_roots は巻き込まない
   sculk_catalyst: { hit: "hit.sculk_catalyst", break: "break.sculk_catalyst", step: "step.sculk_catalyst" }, // POLISH-SND-CLASS-SCULK-CATALYST-01 (cyc2330): 3軸とも専用ID確認済み (Bedrock Wiki 1.21.70)。dig.sculk_catalyst は実在しないため break.* 命名 (sculk 本体と同型)
   nether_wart:    { hit: "hit.grass", break: "dig.nether_wart", step: "step.nether_wart" }, // POLISH-SND-CLASS-NETHERWART-01 (cyc2347): break/step 専用ID確認済み (DESIGN §1.2)、hit は専用ID未確認のため grass 流用
+  roots:          { hit: "hit.grass", break: "dig.roots", step: "step.grass" }, // POLISH-SND-CLASS-ROOTS-01 (cyc2363): break のみ専用ID確認済み、hit/step は専用ID未確認のため grass 流用
 });
 
 // §1.2 で実在確認済みの ID (この表が参照する分 + 汎用分)
@@ -83,6 +84,7 @@ export const CONFIRMED_IDS = new Set([
   "hit.mud", "dig.mud", "step.mud", // cyc2313 MUD-01: 専用ID (mud 音群、実機確認待ち)
   "hit.sculk_catalyst", "break.sculk_catalyst", "step.sculk_catalyst", // cyc2330 SCULK-CATALYST-01: 専用ID確認済み (dig.sculk_catalyst は実在しない)
   "dig.nether_wart", "step.nether_wart", // cyc2347 NETHERWART-01: 専用ID確認済み (break/step。hit.nether_wart は実在しない)
+  "dig.roots", // cyc2363 ROOTS-01: 専用ID確認済み (break のみ。hit.roots/step.roots/break.roots は実在しない)
   "break.froglight", "step.froglight", // cycle1215 a14: 専用ID確認済み (break/step。dig.froglight/hit.froglight は実在しない)
   "dig.deepslate_bricks", // cycle1256 a16: 専用ID確認済み (break のみ)
   "step.grass", "step.sand", "step.gravel", "step.cloth", "step.wood",
@@ -184,6 +186,8 @@ const WOOD_SPECIES = ["oak", "spruce", "birch", "jungle", "acacia", "dark_oak", 
 const NETHER_SPECIES = ["crimson", "warped"];
 const WOOD_PARTS = ["_stairs", "_slab", "_double_slab", "_sign", "_standing_sign", "_hanging_sign", "_wall_sign", "_wall_hanging_sign", "_button", "_pressure_plate", "_fence_gate", "_door", "_trapdoor", "_fence", "_shelf"]; // cycle0522 (a13): *_standing_sign / *_double_slab の直積漏れ是正 (petrified_oak_slab は stone のまま=負ガード) // POLISH-SND-CLASS-SHELF-01 (cycle0224): 木製棚 *_shelf を wood へ (crimson/warped は stem 判定が先行)
 const speciesPart = (species, id) => species.some((s) => WOOD_PARTS.some((p) => id === s + p));
+// cyc2363 ROOTS-01: 根系は完全一致3形のみ (includes/endsWith は mangrove_roots/rooted_dirt を巻き込むため不採用)
+const ROOTS_IDS = new Set(["crimson_roots", "warped_roots", "hanging_roots"]);
 
 export function materialOfTypeId(typeId) {
   const id = bare(typeId);
@@ -201,6 +205,7 @@ export function materialOfTypeId(typeId) {
   if (id === "moss_block" || id === "moss_carpet") return "moss"; // cycle1058 R2: PLANT_IDS (5b) より前に完全一致で抜く (pale_moss 系は巻き込まない)
   if (id === "nether_sprouts") return "nether_sprouts"; // cycle1434: PLANT_IDS (5b) より前に完全一致で抜く (warped_roots 等は grass のまま)
   if (id === "nether_wart") return "nether_wart"; // cyc2347 NETHERWART-01: 完全一致のみ (nether_wart_block 等の wart 族は stem のまま巻き込まない)
+  if (ROOTS_IDS.has(id)) return "roots"; // cyc2363 ROOTS-01: PLANT_IDS (5b) より前に完全一致で抜く (mangrove 系は巻き込まない)
   // 5b (cycle0922): 植物は grass。flower_pot は土器なので _flower の対象外に明示する
   if (id !== "flower_pot" && (PLANT_IDS.has(id) || id === "sapling" || id === "flower" || id === "tallgrass" || id === "mushroom" || id.endsWith("_sapling") || id.endsWith("_flower") || id.endsWith("_mushroom"))) return "grass"; // cycle0832 a11 A1: レガシー素形 sapling/flower/tallgrass/mushroom
   if (id === "sand" || id === "red_sand" || id === "suspicious_sand"

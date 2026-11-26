@@ -51,6 +51,11 @@ export function detectUnsupportedIntent(text, opts = {}) {
     if (GUIDE_RE.test(t) && GUIDE_DEST_RE.test(t)) {
       return { kind: "guide_to", missing: "目的地への案内", reply: "それはまだできません。目的地への案内は未対応です。ついてくることはできます" };
     }
+    // 案内 (目的地なし, 0-C7 cyc2363 A04): 「案内して」単独・「連れて行って」単独を escort 追随として
+    // 誤受理せず未対応を明示する。定義・否定・仮定形は 0-C1 の領分としてゲート対象にしない。
+    if (GUIDE_RE.test(t) && !/(しないで|するな|って何|とは|教えて)/.test(t) && !/^(もし|仮に)/.test(t)) {
+      return { kind: "guide_to", missing: "目的地への案内", reply: "それはまだできません。目的地への案内は未対応です。ついてくることはできます" };
+    }
     // 指定座標への移動: 座標は数の組であって計算式ではない。質問形は対象外
     if (COORD_TRIPLE_RE.test(t) && MOVE_VERB_RE.test(t) && !/[？?]/.test(t) && !/教えて|ですか/.test(t)) {
       return { kind: "goto_coord", missing: "指定した座標への移動", reply: "それはまだできません。指定した座標への移動は、文字指示では未対応です" };

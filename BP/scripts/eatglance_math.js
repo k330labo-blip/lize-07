@@ -1,4 +1,4 @@
-// eatglance_math.js — POLISH-ANIM-EATGLANCE-01 純粋核 (cyc2157 統合、純粋核先行・feeder 未接続)
+// eatglance_math.js — POLISH-ANIM-EATGLANCE-01 純粋核 (cyc2157 統合、cyc2363 feeder 接続済み・実機確認待ち)
 // リゼ自身の飲食開始を発火源に、飲食中だけ視線ピッチを手元へ落とす表示層のみの演出。
 // 食べ物は最大 +9度・約1300ms (咀嚼に合わせた ±2度の微振動つき)、飲み物は最大 +6度・
 // 約1050ms。種別不明では発火しない。冷却20秒、連食では最初の1回だけ。

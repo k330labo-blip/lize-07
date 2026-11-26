@@ -375,7 +375,8 @@ function classifyVerb(clause) {
   return null;
 }
 const WANT_RE = /欲しい|ほしい|ちょうだい|ください|下さい|お願い/;
-const ESCORT_RE = /ついてきて|付いてきて|ついて来て|一緒に来て|一緒について|こっち来て|護衛|守って|案内して/;
+const ESCORT_RE = /ついてきて|付いてきて|ついて来て|一緒に来て|一緒について|こっち来て|護衛|守って/;
+const WATCH_RE = /警戒して|見張って/;
 const FREE_RE = /おまかせ|お任せ|自由にや|好きにし|任せるよ/;
 const SIDE_START_RE = /^(ついでに|途中で|途中|あと|それと|さらに|また)/;
 
@@ -1089,6 +1090,9 @@ export function parseOrder(input) {
   if (candidates.length === 0) {
     if (FREE_RE.test(text)) {
       return { kind: "free", target: null, amount: null, constraints, sideTasks: [], negations, unresolved, returnTo, raw };
+    }
+    if (WATCH_RE.test(text) && !/[？?]/.test(text) && !/(たら|れば|の間|間だけ|間は)/.test(text)) {
+      return { kind: "watch", target: null, amount: null, constraints, sideTasks: [], negations, unresolved, returnTo, raw };
     }
     if (ESCORT_RE.test(text)) {
       return { kind: "escort", target: null, amount: null, constraints, sideTasks: [], negations, unresolved, returnTo, raw };

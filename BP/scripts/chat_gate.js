@@ -12,13 +12,17 @@ function isQuestionForm(t) {
     || /ますか/.test(t) // cyc2330 G6: 「整理できますか」は「ですか」を含まない質問形
     || /(したら|すると|すれば|したらば).{0,12}(どう|何|なる)/.test(t)
     // cyc2347 A06 R-A (0-C1): 疑問詞＋終助詞「の」／文末「のか」は「？」無しでも質問形
-    || /(いつ|なぜ|どうして|なんで)/.test(t)
+    // cyc2363 A06 (0-C1 N4/過剰遮断是正): 誰/何 系を追加し、疑問詞は境界付きにする
+    // (「いつも」「なぜか」「なんでか」の部分一致で正当な指令まで遮断していた)
+    || /(いつ(?![も、])|なぜ(?![か、])|どうして|なんで(?![か、])|誰が|誰なの|のは誰|何を|何のために|何のこと|って何)/.test(t)
     || /のか[。．]?$/.test(t.trim());
 }
 function isHypothetical(t) {
   return /もし/.test(t) || /と言ったら|って言ったら|と言えば|と仮定/.test(t) || /「[^」]*」と言/.test(t)
     // cyc2347 A06 R-B (0-C1): 『』括弧と括弧なし伝聞も引用・伝聞 (括弧種別で結果を割らない)
-    || /『[^』]*』と言/.test(t) || /(と言われた|って言ってた|って聞いた|と言われ)/.test(t);
+    || /『[^』]*』と言/.test(t) || /(と言われた|って言ってた|って聞いた|と言われ)/.test(t)
+    // cyc2363 A06 (0-C1 N3): 伝聞の完了形「言った/言いました」と「という話を聞いた」も伝聞
+    || /(と言った|って言った|と言いました|って言いました|という話を聞いた)/.test(t);
 }
 function isNegatedDirective(t, re) {
   // 「〜しないで」「〜してほしくない」「まだ〜てほしくない」など、指令語への否定
@@ -36,6 +40,8 @@ function isNegatedDirective(t, re) {
   if (/つもりはない|つもりはありません/.test(t)) return true;
   // cyc2347 A06 R-C (0-C1): 「気はない/ありません」と漢字「欲しくない」も否定 (表記ゆれを述語側で吸収)
   if (/気はない|気はありません|欲しくない/.test(t)) return true;
+  // cyc2363 A06 (0-C1 N1): 意志否定の基本形「したくない/したくはない」と助詞挟み「ほしくはない」
+  if (/(したくない|したくはない|ほしくはない)/.test(t)) return true;
   return false;
 }
 
@@ -56,6 +62,9 @@ function isConditionalForm(t) {
 // 発話であり指令ではない。確認作業そのもの (「かどうか確認して」) は熟慮述語を含まないため対象外。
 function isDeliberating(t) {
   if (/かどうか/.test(t) && /(迷|考え|検討|悩|聞いて|決めてない|決まってない|まだ決め)/.test(t)) return true;
+  // cyc2363 A06 (0-C1 N2): 素の「か＋決めてない」と確認求め「かどうか＋教えて/知りたい」も熟慮/確認 (3ゲート共有)
+  if (/か決めてない/.test(t)) return true;
+  if (/かどうか/.test(t) && /(教えて|知りたい)/.test(t)) return true;
   // cyc2221 A15 R-2 (0-C1): 「？」無しの熟慮・許可求めも指令ではない。
   // 「しようかな/ようかな」「するか迷ってる」は意思決定前、「〜てもいい」は許可求め。
   if (/(しようかな|ようかな|するか迷|ようか迷|迷って|迷い中)/.test(t)) return true;
@@ -88,6 +97,10 @@ export function gateCancel(text) {
     if (/だけを(やめて|中止|止めて|キャンセル)/.test(t) || /のみ(やめて|中止|止めて|キャンセル)/.test(t) || /中止は.{0,12}だけにして/.test(t) || /(やめて|中止して|止めて).{0,24}(他は|ほかは|採掘は|石炭集めは).{0,8}(続けて|継続)/.test(t)) return { fire: false, kind: "partial" };
     // cyc2347 A06 R-F2 (0-C1): 「のみを＋指令語」も部分スコープ (助詞「を」挟み)
     if (/のみを(やめて|中止|止めて|キャンセル)/.test(t)) return { fire: false, kind: "partial" };
+    // cyc2363 A06 (0-C1 N6): 中止が名詞形「中止、」で置かれ継続が後続する文も部分スコープ
+    if (/(中止|キャンセル)[、,].{0,16}(他は|ほかは).{0,8}(続けて|継続)/.test(t)) return { fire: false, kind: "partial" };
+    // cyc2363 A06 (0-C1 N5): cancel 側にも先送り「〜た後に＋指令語」遮断を入れる (factory と対称)
+    if (/(た後に|だ後に|なった後に|の後に).{0,16}(やめて|中止|止めて|キャンセル)/.test(t)) return { fire: false, kind: "conditional" };
     if (isNegatedDirective(t)) return { fire: false, kind: "negation" };
     // cyc2347 A06 R-E (0-C1): gateCancel にも howto 遮断を入れ3ゲート対称にする
     if (isHowToRequest(t)) return { fire: false, kind: "question" };
@@ -123,7 +136,8 @@ export function gateFactory(text) {
     // cyc2134 A02: 後置先送り (一般の「てからにして」/明日/後で) も即時開始しない
     if (isDeferredFactory(t)) return { fire: false, kind: "conditional" };
     // cyc2347 A06 R-F1/R-F3 (0-C1): 「〜の後に＋工場語」と「まだ今じゃない」も即時開始しない
-    if (/(なった後|の後に).{0,20}(自動化|ライン)/.test(t)) return { fire: false, kind: "conditional" };
+    // cyc2363 A06 (0-C1 N5): 完了形「〜た後に」も先送りとして一般化
+    if (/(なった後|の後に|た後に|だ後に).{0,20}(自動化|ライン)/.test(t)) return { fire: false, kind: "conditional" };
     if (/まだ今じゃない|まだ今ではない/.test(t)) return { fire: false, kind: "conditional" };
     return { fire: true, kind: "start" };
   } catch { return { fire: false, kind: "error" }; }
@@ -191,6 +205,8 @@ export function isHowToRequest(text) {
     if (/(集め方|作り方|つくり方)は[？?]?$/.test(t.trim())) return true;
     // cyc2347 A06 R-E: 「〜する方法は」で終わる説明要求も howto (教えて無し形)
     if (/(方法|やり方)は[？?]?$/.test(t.trim())) return true;
+    // cyc2363 A06 (0-C1 N4): 「理由/目的を教えて・知りたい」は説明要求 (howto 語彙に理由は入らないため構造で拾う)
+    if (/(理由|目的)を(教えて|知りたい|聞きたい)/.test(t)) return true;
     return false;
   } catch { return false; }
 }
