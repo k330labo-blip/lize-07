@@ -858,7 +858,7 @@ const SOLILOQUY_RE = /(なあ|なぁ|いいな|すごく|とても|めっちゃ|
 // 条件節側に対象メンションが無く、後続に対象メンションがある場合だけ条件と認める (汎用形)。
 function extractConditionPrefix(text) {
   try {
-    const m = String(text ?? "").match(/^([^、。]{2,16}?(?:たら|なったら|になったら|降ったら|ている間|てる間))、?(.*)$/);
+    const m = String(text ?? "").match(/^([^、。]{2,16}?(?:なったら|になったら|降ったら|やんだら|止んだら|ている間だけ|てる間だけ|間だけ|ている間|てる間|たら))、?(.*)$/);
     if (!m) return null;
     const seg = m[1], rest = m[2];
     if (!rest) return null;
@@ -869,7 +869,12 @@ function extractConditionPrefix(text) {
     else if (/満腹|お腹いっぱい|腹いっぱい/.test(seg)) kind = "satiety";
     else if (/夜/.test(seg)) kind = "night";
     else if (/朝/.test(seg)) kind = "morning";
-    return { raw: seg, kind };
+    // R-C2-3+4 (cyc2380): 終端の形から役割と反転を構造として保持する。
+    // 「間(だけ)」形は継続条件 (window)、たら系は開始トリガー (start)。
+    // 「やんだら/止んだら」は雨の場合に限り rain_end (rain の反転) へ。非・雨では custom のまま。
+    const role = /(?:間だけ|ている間|てる間)$/.test(seg) ? "window" : "start";
+    if (/(?:やんだら|止んだら)$/.test(seg) && kind === "rain") kind = "rain_end";
+    return { raw: seg, kind, role };
   } catch { return null; }
 }
 

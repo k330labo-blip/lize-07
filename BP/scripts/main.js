@@ -145,7 +145,7 @@ import { itemSnapshotOf, boxSnapshotOf, buildSortInput, summarizeSort } from "./
 import { createStairLookState, noteStairLook, stairLookPitch } from "./stairlook_math.js"; // POLISH-ANIM-STAIRSLOOK-01 (cycle1455): 表示層のみ・実機確認待ち
 import { createOrderLookState, noteOrderAccepted, sampleOrderLook } from "./orderlook_math.js"; // POLISH-ANIM-ORDERLOOK-01: 指示受理直後の「受けました」の頷き (表示層のみ・実機確認待ち)
 import { createHomebowState, noteHomeArrival, sampleHomebow } from "./homebow_math.js"; // POLISH-ANIM-HOMEBOW-01 (cyc1908): 拠点入庫完了直後の小さな一礼 (表示層のみ・実機確認待ち)
-import { evalCondition, conditionExpired, isEvaluableCondition } from "./condition_math.js"; // 0-C2 読み手 (cycle1337): 条件付き注文の発火判定
+import { evalCondition, conditionExpired, isEvaluableCondition, conditionRole, evalWindowEnd } from "./condition_math.js"; // 0-C2 読み手 (cycle1337): 条件付き注文の発火判定。R-C2-4 (cyc2380): window 終了判定
 import { serializePendingCondition, deserializePendingCondition, normalizePendingCondition } from "./pending_condition_math.js"; // E-01 (cycle1722): 条件保留を DP cb_pending_condition へ永続化し、再起動・回収・死亡での無言消失を防ぐ
 import { detectUnsupportedIntent } from "./unsupported_intent.js"; // 0-C7 (cycle1337): 未対応依頼への明示返答ゲート
 import { BLUEPRINTS, buildOrderOf, materialsSummaryOf, resolveMaterialItem } from "./blueprints.js";
@@ -3727,9 +3727,36 @@ function tickPendingCondition(bot, owner, r, ctx) {
     const verdict = evalCondition(cond, { isRaining: ctx?.env?.isRaining === true, isNight: ctx?.env?.isNight === true, isDawn: ctx?.env?.isDawn === true, ownerHunger: typeof ctx?.owner?.hunger === "number" ? ctx.owner.hunger : undefined });
     if (verdict !== "fire") return false;
     clearPendingCondition(bot, r);
-    const fireOrder = { ...o, constraints: { ...(o.constraints || {}), condition: null } };
+    // R-C2-4 (cyc2380): window (継続条件) の注文は、開始時に条件の写しを constraints.window へ移す。
+    // condition は従来どおり null に潰し再保留ループを防ぐ。start 形では window を付けない。
+    const isWindow = conditionRole(cond) === "window";
+    const fireOrder = { ...o, constraints: { ...(o.constraints || {}), condition: null, ...(isWindow ? { window: { raw: cond.raw || "", kind: cond.kind } } : {}) } };
     try { say(owner, bot, `条件が来ました。${o.target?.name || "その対象"}の指示を始めます`, true); } catch {}
     startOrderFromParser(owner, bot, r, fireOrder);
+    return true;
+  } catch { return false; }
+}
+// R-C2-4 (cyc2380): window (継続条件) の終了監視。tickPendingCondition の冒頭ガード (mission 稼働中は
+// return) の内側には置かず、tick ループから独立に呼ばれる。対象は mission.order.constraints.window のみ。
+// 終了判定は evalWindowEnd (純粋核) へ委譲し、"ended" の連続2回観測で初めて止める (境界のちらつき対策)。
+// unknown は streak を増やしも戻しもしない。停止は cancelMission (silent) を再利用し、条件終了の専用文を1回言う。
+// 適用範囲は mission 実行中のみ (longtask/buildPlan 化した window 注文の終了監視は未対応・残件)。
+function tickConditionWindow(bot, owner, r, ctx) {
+  try {
+    const win = r.mission?.status === "active" ? r.mission?.order?.constraints?.window : null;
+    if (!win) { r.windowEndStreak = 0; return false; }
+    const now = Date.now();
+    if (now - (r.windowCheckAt || 0) < 3000) return false;
+    r.windowCheckAt = now;
+    const verdict = evalWindowEnd(win, { isRaining: typeof ctx?.env?.isRaining === "boolean" ? ctx.env.isRaining : undefined, isNight: typeof ctx?.env?.isNight === "boolean" ? ctx.env.isNight : undefined, isDawn: typeof ctx?.env?.isDawn === "boolean" ? ctx.env.isDawn : undefined, ownerHunger: typeof ctx?.owner?.hunger === "number" ? ctx.owner.hunger : undefined });
+    if (verdict === "active") { r.windowEndStreak = 0; return false; }
+    if (verdict !== "ended") return false; // unknown: 止めない・進めない
+    r.windowEndStreak = (r.windowEndStreak || 0) + 1;
+    if (r.windowEndStreak < 2) return false;
+    const raw = win.raw || "その間";
+    r.windowEndStreak = 0; r.windowCheckAt = 0;
+    cancelMission(bot, owner, r, true);
+    try { say(owner, bot, `${raw}は終わりました。指示はここまでにします。集めた分はそのままです`, true); } catch {}
     return true;
   } catch { return false; }
 }
@@ -4594,6 +4621,7 @@ system.runInterval(() => {
     }
     // キュー0副次 R1 (cycle1421): 単発ミッションの toolNeed は昇格接続が消費の入口になる (実装は tickLongTask 内の1か所のまま)
     if (!consumed && !r.longtask && r.toolNeed && tickToolPrepPromote(bot, p, r)) consumed = true;
+    tickConditionWindow(bot, p, r, ctx); // R-C2-4 (cyc2380): window 終了監視は mission 稼働中にも評価する (保留側ガードの外)
     if (!consumed && tickPendingCondition(bot, p, r, ctx)) consumed = true; // 0-C2 読み手 (cycle1337): 条件成立で保留注文を開始する
     if (r.longtask && tickLongTask(bot, p, r, ctx)) consumed = true;
     if (!consumed && r.buildPlan && r.buildPlan.stage === "gather" && tickGatherNoProgress(bot, p, r)) consumed = true; // GATHER-NOEXIT: suspended でも評価されるよう active ゲートの外・前
@@ -5094,7 +5122,7 @@ function parserOrderToMission(o) {
   const hostiles = o.constraints?.hostiles === "engage" ? "fight" : o.constraints?.hostiles === "ignore" ? "ignore" : "avoid";
   const sideTasks = (o.sideTasks || []).map((s) => { const st = s.target || {}; const id = typeof st === "string" ? st : (st.item || st.block || st.entity); return id ? { kind: s.kind === "hunt" ? "hunt" : "gather", target: id, amount: s.amount ?? 8 } : null; }).filter(Boolean);
   const forbiddenTargets = [...new Set((o.negations || []).map((n) => n?.target?.item || n?.target?.block || n?.target?.entity).filter(Boolean))].filter((id) => id !== (t.item || t.block || t.entity));
-  return { kind: o.kind === "hunt" ? "hunt" : "gather", target: t.item || t.block || t.entity || null, amount: o.amount ?? 32, constraints: { hostiles, forbiddenTargets, caps: Array.isArray(o.caps) ? o.caps : [] }, sideTasks, returnTo: o.returnTo === "home" ? "home" : "owner", name: t.name || null, tool: o.tool ?? null, placement: o.placement ?? null, gearSet: Array.isArray(o.gearSet) ? o.gearSet : null }; // 0-C2 (cycle1215): caps を mission 制約へ同梱 (保持のみ)。0-C4 (cycle1321): 道具と設置位置も保持する
+  return { kind: o.kind === "hunt" ? "hunt" : "gather", target: t.item || t.block || t.entity || null, amount: o.amount ?? 32, constraints: { hostiles, forbiddenTargets, caps: Array.isArray(o.caps) ? o.caps : [], window: o.constraints?.window ? { raw: o.constraints.window.raw || "", kind: o.constraints.window.kind || "" } : null }, sideTasks, returnTo: o.returnTo === "home" ? "home" : "owner", name: t.name || null, tool: o.tool ?? null, placement: o.placement ?? null, gearSet: Array.isArray(o.gearSet) ? o.gearSet : null }; // 0-C2 (cycle1215): caps を mission 制約へ同梱 (保持のみ)。0-C4 (cycle1321): 道具と設置位置も保持する。R-C2-4 (cyc2380): window 写しも保持する
 }
 
 // Phase5 否定配線 (NEGW): 禁止・聞き返しは mission を作らない。記録と復唱/聞き返しのみ。
@@ -5153,7 +5181,9 @@ function startOrderFromParser(p, bot, r, o) {
     // R-C2-1 (cyc2374): 既存の条件保留がある場合は無言で上書きせず、置換した事実を明示する。保持形・TTL・上書き自体の挙動は変えない。
     const replacedPending = !!r.pendingConditionOrder;
     try { setPendingCondition(bot, r, { order: o, at: Date.now(), ownerId: p?.id ?? null }); } catch {}
-    say(p, bot, `分かりました。${replacedPending ? "前の条件の指示は置き換えます。" : ""}${o.constraints.condition.raw}、${o.target?.name || "その対象"}${o.amount ? o.amount + "個" : ""}の指示を始めます。それまでは保留します`, true);
+    // R-C2-4 (cyc2380): window 形は「その間だけ動いて、終わったら止める」ことを受理時点で伝える。
+    if (conditionRole(o.constraints.condition) === "window") say(p, bot, `分かりました。${replacedPending ? "前の条件の指示は置き換えます。" : ""}${o.constraints.condition.raw}だけ、${o.target?.name || "その対象"}${o.amount ? o.amount + "個" : ""}の指示をします。その間が終わったら止めます`, true);
+    else say(p, bot, `分かりました。${replacedPending ? "前の条件の指示は置き換えます。" : ""}${o.constraints.condition.raw}、${o.target?.name || "その対象"}${o.amount ? o.amount + "個" : ""}の指示を始めます。それまでは保留します`, true);
     return;
   }
   // 0-C2 (cycle1215): 上限だけの発話 (kind:"cap") は禁止として記録せず、上限として保持する。

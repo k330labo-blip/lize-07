@@ -11,7 +11,13 @@ export const SATIETY_FIRE_HUNGER = 18;
 // R-C2-2 (cyc2372): 受理時点で評価可能な条件か。評価方法が無い条件 (custom 等) を
 // 「保留します」と受けてしまうと、発火口が無く TTL 取り下げまで受理したように見える。
 // 受理側はこれが false の条件を保留にせず、その場で明示返答する (0-C7 の原則)。
-export const EVALUABLE_CONDITION_KINDS = ["rain", "night", "morning", "satiety"];
+export const EVALUABLE_CONDITION_KINDS = ["rain", "night", "morning", "satiety", "rain_end"];
+
+// R-C2-3+4 (cyc2380): 条件の役割。欄が無い旧形・壊れた形は "start" (開始トリガー、現行挙動) とみなす。
+// "window" は継続条件 (duration): 述語が真の間だけ作業し、偽になったら止める。
+export function conditionRole(condition) {
+  try { return condition?.role === "window" ? "window" : "start"; } catch { return "start"; }
+}
 export function isEvaluableCondition(condition) {
   try {
     const kind = condition?.kind;
@@ -30,6 +36,10 @@ export function evalCondition(condition, env) {
       if (typeof e.isRaining !== "boolean") return "unknown";
       return e.isRaining ? "fire" : "wait";
     }
+    if (kind === "rain_end") { // R-C2-3 (cyc2380): 「雨がやんだら」専用 kind。rain の反転 (止んでいる状態で fire)
+      if (typeof e.isRaining !== "boolean") return "unknown";
+      return e.isRaining ? "wait" : "fire";
+    }
     if (kind === "night") {
       if (typeof e.isNight !== "boolean") return "unknown";
       return e.isNight ? "fire" : "wait";
@@ -43,6 +53,20 @@ export function evalCondition(condition, env) {
       return e.ownerHunger >= SATIETY_FIRE_HUNGER ? "fire" : "wait";
     }
     // custom 等、評価方法が無い条件は発火させない (保持のみ)。
+    return "unknown";
+  } catch { return "unknown"; }
+}
+
+// R-C2-4 (cyc2380): window (継続条件) の終了判定。戻り値: "ended" | "active" | "unknown"。
+// evalCondition の写像 (fire→active / wait→ended / unknown→unknown)。終了側で使えない kind
+// (rain_end・custom 等) は unknown とし、止める根拠にしない。unknown は終了でも継続確定でもない。
+export function evalWindowEnd(condition, env) {
+  try {
+    const kind = condition?.kind;
+    if (!kind || kind === "rain_end" || kind === "custom") return "unknown";
+    const v = evalCondition(condition, env);
+    if (v === "fire") return "active";
+    if (v === "wait") return "ended";
     return "unknown";
   } catch { return "unknown"; }
 }
