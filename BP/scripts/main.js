@@ -5045,8 +5045,10 @@ function startOrderFromParser(p, bot, r, o) {
       say(p, bot, `その条件「${o.constraints.condition.raw || "その条件"}」は、私では判定できません。条件が来ても自動では始められないので、この指示は受けていません。条件なしで頼むか、条件が来たときに声をかけてください`, true);
       return;
     }
+    // R-C2-1 (cyc2374): 既存の条件保留がある場合は無言で上書きせず、置換した事実を明示する。保持形・TTL・上書き自体の挙動は変えない。
+    const replacedPending = !!r.pendingConditionOrder;
     try { setPendingCondition(bot, r, { order: o, at: Date.now(), ownerId: p?.id ?? null }); } catch {}
-    say(p, bot, `分かりました。${o.constraints.condition.raw}、${o.target?.name || "その対象"}${o.amount ? o.amount + "個" : ""}の指示を始めます。それまでは保留します`, true);
+    say(p, bot, `分かりました。${replacedPending ? "前の条件の指示は置き換えます。" : ""}${o.constraints.condition.raw}、${o.target?.name || "その対象"}${o.amount ? o.amount + "個" : ""}の指示を始めます。それまでは保留します`, true);
     return;
   }
   // 0-C2 (cycle1215): 上限だけの発話 (kind:"cap") は禁止として記録せず、上限として保持する。
