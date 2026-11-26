@@ -129,6 +129,7 @@ import { createWarehouseRegistry, serializeWarehouseRegistry, deserializeWarehou
 import { createStairLookState, noteStairLook, stairLookPitch } from "./stairlook_math.js"; // POLISH-ANIM-STAIRSLOOK-01 (cycle1455): 表示層のみ・実機確認待ち
 import { createOrderLookState, noteOrderAccepted, sampleOrderLook } from "./orderlook_math.js"; // POLISH-ANIM-ORDERLOOK-01: 指示受理直後の「受けました」の頷き (表示層のみ・実機確認待ち)
 import { evalCondition, conditionExpired } from "./condition_math.js"; // 0-C2 読み手 (cycle1337): 条件付き注文の発火判定
+import { serializePendingCondition, deserializePendingCondition, normalizePendingCondition } from "./pending_condition_math.js"; // E-01 (cycle1722): 条件保留を DP cb_pending_condition へ永続化し、再起動・回収・死亡での無言消失を防ぐ
 import { detectUnsupportedIntent } from "./unsupported_intent.js"; // 0-C7 (cycle1337): 未対応依頼への明示返答ゲート
 import { BLUEPRINTS, buildOrderOf, materialsSummaryOf, resolveMaterialItem } from "./blueprints.js";
 import { designFactory, GOAL_ALIASES } from "./factory_design.js";
@@ -166,6 +167,9 @@ let tick = 0;
 
 const dp = (e, k, fb) => { try { const v = e.getDynamicProperty(k); return v === undefined ? fb : v; } catch (err) { noteFail(e, "dp:" + k, err); return fb; } };
 const dps = (e, k, v) => { try { e.setDynamicProperty(k, v); } catch (err) { noteFail(e, "dps:" + k, err); } };
+// E-01 (cycle1722): 条件保留の保存・消去はこの2本に集約する (メモリと DP を必ず同時に更新し、片方だけ残して復活・消失させない)
+function setPendingCondition(bot, r, pend) { try { const n = normalizePendingCondition(pend); r.pendingConditionOrder = n || pend; dps(bot, "cb_pending_condition", serializePendingCondition(pend)); } catch {} } // A01 R-1: メモリ側も保存形 (正規化済み) に揃え、往復で形が変わらないようにする
+function clearPendingCondition(bot, r) { try { r.pendingConditionOrder = null; dps(bot, "cb_pending_condition", ""); } catch {} } // A01 R-3: メモリが既に null でも DP 残骸を必ず掃除する
 // 失敗の可視化（v0.4.1）: 握り潰す代わりに記録する。本人の文脈（c.x.lastFail）と状態表示に戻し、
 // 開発中は [LIZE DEBUG] ログも残す（同じ失敗は初回3回＋20回ごとだけ出してログを埋めない）。
 const failStats = { total: 0, byWhere: {} };
@@ -325,6 +329,9 @@ function rt(bot) {
   }
   if (r.warehouse === undefined) { // 倉庫 W1: 台帳を DP cb_warehouse から復元 (壊れた保存は空台帳として開始し、本体を止めない)
     try { const wj = dp(bot, "cb_warehouse", ""); r.warehouse = wj ? deserializeWarehouseRegistry(wj) : createWarehouseRegistry(); } catch { r.warehouse = createWarehouseRegistry(); }
+  }
+  if (r.pendingConditionOrder === undefined) { // E-01 (cycle1722): 条件保留を DP cb_pending_condition から復元 (undefined センチネル方式、mission と同形。壊れた保存は保留なし)
+    try { r.pendingConditionOrder = deserializePendingCondition(dp(bot, "cb_pending_condition", "")); } catch { r.pendingConditionOrder = null; }
   }
   if (r.longtask === undefined) { // DP cb_longtask から復元
     try { const lj = dp(bot, "cb_longtask", ""); r.longtask = lj ? JSON.parse(lj) : null; } catch { r.longtask = null; }
@@ -1986,7 +1993,7 @@ function scanBlockNear(bot, r, typeId, ttlJitter = 0) {
 function scanBlocksNear(bot, r, typeIds) {
   const now = Date.now();
   if (!r.mScanMap) r.mScanMap = {};
-  const want = new Set(typeIdsQ);
+  const want = new Set(typeIds); // cycle1722 A17偶然発見: 以前は wideQuery 側の局所名を写し間違えた未定義変数を参照し、呼ぶたび ReferenceError になっていた
   const best = {}, bd = {};
   for (const id of typeIds) { best[id] = null; bd[id] = Infinity; }
   const pt = r.percTargets || {};
@@ -3115,7 +3122,7 @@ function tickLongTask(bot, owner, r, ctx) {
   return false;
 }
 function cancelMission(bot, owner, r, silent = false) {
-  r.pendingConditionOrder = null; // E-02: 中止は条件保留も畳む (保留だけが残って後で発火するのを防ぐ)
+  clearPendingCondition(bot, r); // E-02+E-01: 中止は条件保留も畳む (保留だけが残って後で発火するのを防ぐ。DP 側も同時に消す)
   if (r.mission) { r.mission = null; clearPlanRecords(r); persistMission(bot, r, true); dps(bot, "cb_order", ""); }
   r.work = null; r.workHoldLeg = null; r.workChain = null; // cycle0033 F2: cancelled work must not keep occupying tickAutonomy
   r.buildPlan = null;
@@ -3438,15 +3445,15 @@ function tickPendingCondition(bot, owner, r, ctx) {
   try {
     const pend = r.pendingConditionOrder; if (!pend) return false;
     const now = Date.now();
-    if (conditionExpired(pend.at, now)) { r.pendingConditionOrder = null; try { say(owner, bot, "条件の指示は、時間が経ったので取り下げました", true); } catch {} return false; }
+    if (conditionExpired(pend.at, now)) { clearPendingCondition(bot, r); try { say(owner, bot, "条件の指示は、時間が経ったので取り下げました", true); } catch {} return false; }
     if ((r.mission && r.mission.status === "active") || r.longtask || r.buildPlan) return false;
     if (now - (r.pendingConditionCheckAt || 0) < 3000) return false;
     r.pendingConditionCheckAt = now;
     const o = pend.order; const cond = o?.constraints?.condition;
-    if (!cond) { r.pendingConditionOrder = null; return false; }
+    if (!cond) { clearPendingCondition(bot, r); return false; }
     const verdict = evalCondition(cond, { isRaining: ctx?.env?.isRaining === true, isNight: ctx?.env?.isNight === true, isDawn: ctx?.env?.isDawn === true, ownerHunger: typeof ctx?.owner?.hunger === "number" ? ctx.owner.hunger : undefined });
     if (verdict !== "fire") return false;
-    r.pendingConditionOrder = null;
+    clearPendingCondition(bot, r);
     const fireOrder = { ...o, constraints: { ...(o.constraints || {}), condition: null } };
     try { say(owner, bot, `条件が来ました。${o.target?.name || "その対象"}の指示を始めます`, true); } catch {}
     startOrderFromParser(owner, bot, r, fireOrder);
@@ -4726,7 +4733,7 @@ function releaseRestrictions(bot, r, o) {
 function startOrderFromParser(p, bot, r, o) {
   // 0-C2 (cycle1215): 条件付き注文は即時発行しない。条件を保持して保留し、その旨を返す。
   if (o.constraints?.condition) {
-    try { r.pendingConditionOrder = { order: o, at: Date.now() }; } catch {}
+    try { setPendingCondition(bot, r, { order: o, at: Date.now(), ownerId: p?.id ?? null }); } catch {}
     say(p, bot, `分かりました。${o.constraints.condition.raw}、${o.target?.name || "その対象"}${o.amount ? o.amount + "個" : ""}の指示を始めます。それまでは保留します`, true);
     return;
   }
@@ -4859,7 +4866,7 @@ function handleChatMessage(p, rawIn) {
   }
   // ①.4 E-02: 仕事が無く条件保留だけがある状態でも、中止発話で保留を取り下げられる出口
   if (!r.mission && r.pendingConditionOrder && gateCancel(raw).fire) {
-    r.pendingConditionOrder = null;
+    clearPendingCondition(bot, r);
     system.run(() => { say(p, bot, "分かりました。条件の指示は取り下げました", true); try { conv.hear(raw, "pending_condition_cancel"); } catch {} });
     return;
   }

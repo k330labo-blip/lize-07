@@ -17,6 +17,8 @@ function isHypothetical(t) {
 function isNegatedDirective(t, re) {
   // 「〜しないで」「〜してほしくない」「まだ〜てほしくない」など、指令語への否定
   if (/(しないで|しちゃだめ|してはだめ|やめてほしくない|止めてほしくない|ほしくない|ないでください|ないでね|ないで$|ないで。)/.test(t)) return true;
+  // cycle1722 A13 R2: 命令形の否定「中止するな／やめるな／止めるな」も否定 (現行は fire してしまう実測あり)
+  if (/(中止|キャンセル|やめ|止め).{0,4}(するな|るな)/.test(t)) return true;
   if (/まだ.{0,8}(やめて|中止|止めて|キャンセル)/.test(t) && /ほしくない|ないで/.test(t)) return true;
   return false;
 }
@@ -43,6 +45,8 @@ export function gateFactory(text) {
     if (!FACTORY_RE.test(t)) return { fire: false, kind: "none" };
     if (isHypothetical(t)) return { fire: false, kind: "hypothetical" };
     if (isNegatedDirective(t)) return { fire: false, kind: "negation" };
+    // cycle1722 A13 R1: 「自動化の方法を教えて」は説明要求。工場経路は通常解釈より先に呼ばれるため、ここでも howto を止める
+    if (isHowToRequest(t)) return { fire: false, kind: "question" };
     if (isQuestionForm(t)) return { fire: false, kind: "question" };
     if (/(なったら|たら|れば|ときは|時は).{0,20}(自動化|ライン)/.test(t)) return { fire: false, kind: "conditional" };
     return { fire: true, kind: "start" };
