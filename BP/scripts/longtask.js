@@ -125,18 +125,27 @@ export function fromInvestTier(tier) {
   if (tier === "stone" || tier === "iron" || tier === "diamond") return tier;
   return null;
 }
+// 1葉の主道具種 (cyc2366 0-J F-1: investKindFor から切り出し。分類規則は従来どおり)。
+// preferFrom=true のときは probe step 形 (from 優先) で分類する。
+export function stepToolKind(s, preferFrom = false) {
+  try {
+    if (!s || (s.type !== "gather" && s.type !== "hunt")) return null;
+    if (s.type === "hunt") return "sword";
+    const primary = preferFrom ? (s.from || s.item) : s.item;
+    const key = `${primary || ""} ${s.via || ""}`;
+    if (/group:logs|_log|_wood|_stem/.test(key)) return "axe";
+    if (/group:cobble|_ore|stone|cobble|deepslate|netherrack|raw_|diamond|obsidian/.test(key) || (requiredLevelFor(primary) || 0) > 0) return "pickaxe";
+    if (/dirt|sand|gravel|clay|snow/.test(key)) return "shovel";
+    return null;
+  } catch { return null; }
+}
 // 主道具種: dec.steps の採取/討伐葉の need 合計が最大の種。sword は第1段では候補生成から外す。
 export function investKindFor(dec) {
   try {
     const totals = {};
     for (const s of (dec?.steps || [])) {
       if (s.type !== "gather" && s.type !== "hunt") continue;
-      const key = `${s.item || ""} ${s.via || ""}`;
-      let kind = null;
-      if (s.type === "hunt") kind = "sword";
-      else if (/_log|_wood|_stem/.test(key)) kind = "axe";
-      else if (/_ore|stone|cobble|deepslate|netherrack|raw_|diamond|obsidian/.test(key) || (requiredLevelFor(s.item) || 0) > 0) kind = "pickaxe";
-      else if (/dirt|sand|gravel|clay|snow/.test(key)) kind = "shovel";
+      const kind = stepToolKind(s);
       if (kind) totals[kind] = (totals[kind] || 0) + (s.need || 1);
     }
     let best = null, bestN = 0;
@@ -152,22 +161,54 @@ function investRemainingBlocks(dec, order) {
     return sum > 0 ? sum : Math.max(1, Math.floor(order?.amount || 1));
   } catch { return Math.max(1, Math.floor(order?.amount || 1)); }
 }
+// cyc2366 0-J F-1 (決定側・主因): 節約の対象は主道具種 kind が効く葉だけ。
+// 他種 gather / hunt まで合算すると節約を過大評価し判定が反転する (cyc2365 A07 §1-1)。
+export function investRemainingForKind(dec, kind) {
+  try {
+    let sum = 0;
+    for (const s of (dec?.steps || [])) {
+      if (s.type !== "gather" && s.type !== "hunt") continue;
+      if (stepToolKind(s) === kind) sum += (s.need || 1);
+    }
+    return sum;
+  } catch { return 0; }
+}
 // 候補1件の投資コストを planBootstrap の probe 実行から積算する (汚染なし investTier 経由)。
+// cyc2366 0-J F-3 案A: 純粋関数のメモ化 (入力スナップショットがキー。値が変われば自動で無効)。
+const _probeCostCache = new Map();
 export function probeInvestCost(candTier, kind, invCounts, invDurability, currentBootTier) {
+  try {
+    const cacheKey = `${kind}|${candTier}|${currentBootTier || ""}|${JSON.stringify(invCounts || {})}|${JSON.stringify(invDurability || {})}`;
+    if (_probeCostCache.has(cacheKey)) return _probeCostCache.get(cacheKey);
+    const result = probeInvestCostUncached(candTier, kind, invCounts, invDurability, currentBootTier);
+    if (_probeCostCache.size >= 64) _probeCostCache.clear();
+    _probeCostCache.set(cacheKey, result);
+    return result;
+  } catch { return null; }
+}
+function probeInvestCostUncached(candTier, kind, invCounts, invDurability, currentBootTier) {
   try {
     const probe = planBootstrap({ invCounts: invCounts || {}, invDurability: invDurability || {}, goal: { tools: [kind], investTier: candTier, amount: 1 } });
     if (!probe || !Array.isArray(probe.steps) || !probe.steps.length) return null;
     if (!(probe.toolsNeeded || []).some((t) => t.kind === kind)) return null; // probe 汚染ガード: 対象 kind 以外はコスト化しない
-    let avail = currentBootTier || null;
+    // cyc2366 0-J F-1 (probe側): avail は種別マップ。初期値は所持から種ごとに引く
+    // (単一スカラだと所持ツルハシの tier が他種の単価へ漏れ、コストが過大になる)。
+    const availByKind = {};
+    for (const k of ["axe", "pickaxe", "shovel", "sword"]) {
+      const owned = bestToolTierFromCounts(invCounts || {}, k, "wood");
+      availByKind[k] = owned && owned !== "golden" ? owned : (k === kind ? (currentBootTier || null) : null);
+    }
+    if (currentBootTier && (!availByKind[kind] || (TIER_LEVEL[currentBootTier] || 0) > (TIER_LEVEL[availByKind[kind]] || 0))) availByKind[kind] = currentBootTier;
     let cost = 0;
     for (const s of probe.steps) {
       if (s.type === "gather") {
-        const t = timePerBlock({ baseTime: INVEST_BASE_TIME, tier: toInvestTier(avail) || "none", toolClass: kind, effectiveClass: kind });
+        const ec = stepToolKind(s, true);
+        const t = ec ? timePerBlock({ baseTime: INVEST_BASE_TIME, tier: toInvestTier(availByKind[ec]) || "none", toolClass: ec, effectiveClass: ec }) : null;
         cost += (s.count || 1) * (t == null ? INVEST_BASE_TIME : t);
       } else if (s.type === "craft") {
         cost += 6 * (s.crafts || 1);
         const m = /^(?:minecraft:)?(wooden|stone|iron|diamond)_(axe|pickaxe|shovel|sword)$/.exec(s.item || "");
-        if (m) { const bt = m[1] === "wooden" ? "wood" : m[1]; if (!avail || (TIER_LEVEL[bt] || 0) > (TIER_LEVEL[avail] || 0)) avail = bt; }
+        if (m) { const bt = m[1] === "wooden" ? "wood" : m[1]; const ck = m[2]; if (!availByKind[ck] || (TIER_LEVEL[bt] || 0) > (TIER_LEVEL[availByKind[ck]] || 0)) availByKind[ck] = bt; }
       } else if (s.type === "smelt") {
         cost += 6 + 200 * (s.count || 1);
       }
@@ -193,7 +234,9 @@ export function decideLongtaskInvestment(dec, order, invCounts, invDurability, r
       candidates.push({ tier: toInvestTier(t), toolClass: kind, itemId: toolItemId(t, kind), investCost: c });
     }
     if (!candidates.length && !current) return null;
-    return decideToolInvestment({ remaining: investRemainingBlocks(dec, order), baseTime: INVEST_BASE_TIME, effectiveClass: kind, current, candidates });
+    const remainingKind = investRemainingForKind(dec, kind);
+    if (remainingKind <= 0) return null; // kind が効く葉が無いのに節約を付けることはしない (防御)
+    return decideToolInvestment({ remaining: remainingKind, baseTime: INVEST_BASE_TIME, effectiveClass: kind, current, candidates });
   } catch { return null; }
 }
 
