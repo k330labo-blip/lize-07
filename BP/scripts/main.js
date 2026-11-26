@@ -513,7 +513,7 @@ function buildContext(bot, owner) {
       if (isFood(it.typeId)) { c.inv.hasFood = true; c.inv.foodCount += it.amount; }
       if (isValuable(it.typeId)) { c.inv.hasValuable = true; c.inv.valuableCount += it.amount; }
       if (it.typeId === "minecraft:torch") c.inv.hasTorch = true;
-      if (it.typeId.includes("_log") || it.typeId.includes("_wood") || it.typeId.includes("_stem")) c.x.woodCount = (c.x.woodCount || 0) + it.amount;
+      if (it.typeId.includes("_log") || it.typeId.includes("_wood") || (it.typeId.endsWith("_stem") && /(crimson|warped)/.test(it.typeId))) c.x.woodCount = (c.x.woodCount || 0) + it.amount;
       if (it.typeId === "minecraft:cobblestone" || it.typeId === "minecraft:stone" || it.typeId === "minecraft:cobbled_deepslate") c.x.stoneCount = (c.x.stoneCount || 0) + it.amount;
       if (it.typeId === "minecraft:torch") c.x.torchCount = (c.x.torchCount || 0) + it.amount;
       if (isWeaponish(it.typeId)) c.inv.hasWeapon = true;
@@ -865,7 +865,7 @@ function buildContext(bot, owner) {
     sinceDangerSec: r.lastDangerAt ? (Date.now() - r.lastDangerAt) / 1000 : 99999,
   };
   c.x.working = !!r.work;
-  c.x.workTargetKind = r.work ? (CROP_DROPS[r.work.typeId] ? "crop" : (r.work.typeId.includes("_log") || r.work.typeId.includes("_wood") || r.work.typeId.includes("_stem")) ? "tree" : "ore") : null;
+  c.x.workTargetKind = r.work ? (CROP_DROPS[r.work.typeId] ? "crop" : (r.work.typeId.includes("_log") || r.work.typeId.includes("_wood") || (r.work.typeId.endsWith("_stem") && /(crimson|warped)/.test(r.work.typeId))) ? "tree" : "ore") : null;
   c.x.workTargetDist = r.work ? dist(bot.location, r.work.loc) : 999;
   // 装備スナップショット（rules_equipment の要求フィールド）
   const eqCore = equipCoreOf(bot, r);
@@ -1099,13 +1099,13 @@ function structureGuard(dim, loc) {
   return false;
 }
 // 作業対象の硬さ (startWork の hardOf を単一の正として切り出し v0.4.88。tickWork の dig_first 差し替えと共用)
-function workHardOf(id) { return CROP_DROPS[id] ? 1 : /_leaves$/.test(id) ? 1 : id.includes("_log") || id.includes("_stem") ? 3 : /deepslate|diamond|emerald/.test(id) ? 6 : 4; }
+function workHardOf(id) { return CROP_DROPS[id] ? 1 : /_leaves$/.test(id) ? 1 : id.includes("_log") || (id.endsWith("_stem") && /(crimson|warped)/.test(id)) ? 3 : /deepslate|diamond|emerald/.test(id) ? 6 : 4; }
 
 function startWork(bot, r, target, opts = {}) {
   if (!target) return false;
   // v0.4.59 (外部レビュー指摘1): 原木/幹は、同じ幹の一番下を対象にする。上の原木を狙うと
   // 葉の上でホバーして掘る距離 (3D 2.9) に届かず詰む。進捗保持の同一判定より前に寄せる。
-  if (target.typeId && (target.typeId.includes("_log") || target.typeId.includes("_stem"))) {
+  if (target.typeId && (target.typeId.includes("_log") || (target.typeId.endsWith("_stem") && /(crimson|warped)/.test(target.typeId)))) {
     try {
       let y = target.y;
       while (y > target.y - 32) { const b = bot.dimension.getBlock({ x: target.x, y: y - 1, z: target.z }); if (!b || b.typeId !== target.typeId) break; y--; }
@@ -1317,7 +1317,7 @@ function tickWork(bot, owner, r, ctx) {
   let gain = CROP_DROPS[w.typeId] || null;
   if (!gain) for (const [re, item, n] of ORE_DROPS) if (re.test(w.typeId)) { gain = [item, n]; break; }
   if (!gain) { try { gain = dropTupleForBlock(w.typeId); } catch { gain = null; } } // 基礎 N1 (v0.4.65): CROP/ORE で決まらない決定的源は sourcing の dropItem/yield 下限が正 (メロン→スライス等)。確率源は block_drops が null を返す
-  if (!gain && (w.typeId.includes("_log") || w.typeId.includes("_wood") || w.typeId.includes("_stem") || /granite$|diorite$|andesite$|tuff$|calcite$/.test(w.typeId))) gain = [w.typeId, 1];
+  if (!gain && (w.typeId.includes("_log") || w.typeId.includes("_wood") || (w.typeId.endsWith("_stem") && /(crimson|warped)/.test(w.typeId)) || /granite$|diorite$|andesite$|tuff$|calcite$/.test(w.typeId))) gain = [w.typeId, 1];
   // v0.4.56 (外部レビュー指摘3): ドロップ表に無いブロックを壊して消滅させない。原則はブロック自身を落とす
   // (土・砂・砂利・ネザーラック等)。草ブロックはバニラどおり土、葉は素手では落とさない、岩盤は対象外。
   if (!gain && w.typeId === "minecraft:grass_block") gain = ["minecraft:dirt", 1];
@@ -4436,7 +4436,7 @@ function statusTagOf(bot, r, effAct) {
   if (r.buildPlan) return r.buildPlan.stage === "gather" ? `建築の材料集め中：${r.buildPlan.name}` : `建築中：${r.buildPlan.name}（${r.buildPlan.placed || 0}箇所）`;
   if (r.work) {
     const t = r.work.typeId || "";
-    return CROP_DROPS[t] ? "収穫中" : (t.includes("_log") || t.includes("_wood") || t.includes("_stem")) ? "伐採中" : "採掘中";
+    return CROP_DROPS[t] ? "収穫中" : (t.includes("_log") || t.includes("_wood") || (t.endsWith("_stem") && /(crimson|warped)/.test(t))) ? "伐採中" : "採掘中";
   }
   const actLabel = effAct ? (ACT_LABEL[effAct] || "") : "";
   const passive = !actLabel || effAct === "follow" || effAct === "follow_close" || effAct === "follow_high" || effAct === "idle_hover" || effAct === "stay_anchor";
