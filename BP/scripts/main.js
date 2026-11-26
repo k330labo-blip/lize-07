@@ -13,6 +13,7 @@ import { ALL_LINES, CHAT_ALL, CHAT_LORE, LORE_DEEP_MIN_BOND, FOLLOWUPS, RULE_COU
 import { OF_FOODS, OF_CONTAINERS } from "./brain/compat_orbital.js";
 import { createWithdrawExecutor, WITHDRAW_RANGE } from "./withdraw.js";
 import { plan as goapPlan, sourcingActions } from "./goap.js"; // Phase3 GOAP-lite (v0.4.12): 影評価のみ (記録専用、実行系は不変)
+import { createPlanRunner, createSystemScheduler } from "./goap_runner.js"; // Phase4 P4-A S2-2 (cyc2364): 配線のみ (request は S2-3 まで出さない・挙動変化なし)
 import { buildEvaluationFromCtx } from "./goap_state.js"; // Phase3 (v0.4.14): 影評価 state builder (CRAFT/PLACE 含む計画空間、三状態)
 import { evaluateFirstStepP3, buildP3Material } from "./goap_exec.js";
 import { makeInvGoal, evalGoal, goalKey } from "./goal_pred.js"; // Phase3 NQ-02 (v0.4.17): Goal述語の正式表現 (記録専用) // Phase3 S1a (v0.4.15): Plan第一手ゲート (記録専用、実行・分岐は変えない)
@@ -207,6 +208,28 @@ function flushFailAgg(bot, r) { try { if (!bot || !r || !r.failAgg) return; cons
 function expSnapshot(r) { try { const st = r && r.expStore; if (!st) return ""; return [st.items.length, expBytes(st)].join("|"); } catch { return ""; } }
 function flushExp(bot, r) { try { if (!bot || !r || !r.expStore) return; const snap = expSnapshot(r); if (!snap || snap === r.expSnap) return; const gen = (Number.isInteger(r.expGen) ? r.expGen : 0) + 1; const out = serializeExpStore(r.expStore, { gen }); if (!out) return; const prev = r.expWrites || {}; for (const k of Object.keys(prev)) if (!(k in out.writes)) { try { bot.setDynamicProperty(k, ""); } catch {} } for (const [k, v] of Object.entries(out.writes)) if (k !== "cb_exp") { try { bot.setDynamicProperty(k, v); } catch {} } if (out.writes["cb_exp"]) { try { bot.setDynamicProperty("cb_exp", out.writes["cb_exp"]); } catch {} } r.expGen = gen; r.expWrites = out.writes; r.expSnap = snap; } catch {} }
 function commitLastAction(r, rec) { try { if (!r || !rec) return; r.actionSeq = (r.actionSeq || 0) + 1; r.lastAction = { act: rec.act || null, ok: !!rec.ok, reason: rec.reason || null, item: rec.item || null, at: rec.at || Date.now(), seq: r.actionSeq }; try { const trec = { k: "result", a: rec.act || null, r: rec.ok ? "ok" : "ng" }; if (!rec.ok && typeof rec.reason === "string" && rec.reason) trec.fr = { w: rec.act || null, m: rec.reason }; r.trace?.record(trec); } catch {} try { if (r.failAgg) recordAction(r.failAgg, rec, r.actionSeq); } catch {} try { if (r.expStore) { const er = buildExpFromCommit(rec, expCtxOf(r, rec, { pack: VERSION })); if (er) addExpRecord(r.expStore, er); } } catch {} } catch {} } // 6-ML: result軸の記録 (戻り値は使わない)
+// 6-ML U4 (cyc2364 A17再整形): MOVE の終端記録 (記録のみ・挙動不変)。到着=成功は目標座標キーで1回だけ、例外=失敗は同一目標+理由で5秒間引き。ground 委譲は in_progress であり失敗として記録しない。
+function recordMoveExp(r, outcome, via) {
+  try {
+    if (!r || !outcome) return;
+    const t = r.target; if (!t) return;
+    const goalKey = [Math.floor(t.x), Math.floor(t.y || 0), Math.floor(t.z), via].join(",");
+    if (outcome.ok) { if (r.expMoveDoneKey === goalKey) return; r.expMoveDoneKey = goalKey; }
+    else { const fk = goalKey + "|" + (outcome.reason || ""); if (r.expMoveFailKey === fk && Date.now() - (r.expMoveFailAt || 0) < 5000) return; r.expMoveFailKey = fk; r.expMoveFailAt = Date.now(); }
+    r.lastMove = { act: "MOVE", ok: !!outcome.ok, reason: outcome.ok ? null : (outcome.reason || null), item: null, via: via || null, at: Date.now() };
+    commitLastAction(r, r.lastMove);
+  } catch {}
+}
+// 6-ML U4: EQUIP の成否記録 (記録のみ・挙動不変)。理由は fromEquipmentResult で契約語彙へ正規化する。
+function recordEquipExp(r, res, via) {
+  try {
+    if (!r || !res || typeof res !== "object") return;
+    const norm = fromEquipmentResult(res, "setEquip");
+    const item = (res.item && typeof res.item === "object") ? (res.item.typeId || null) : (typeof res.item === "string" ? res.item : (typeof res.typeId === "string" ? res.typeId : null));
+    r.lastEquip = { act: "EQUIP", ok: !!norm?.ok, reason: norm?.ok ? null : (norm?.reason || null), item, via: via || "equip_core", at: Date.now() };
+    commitLastAction(r, r.lastEquip);
+  } catch {}
+}
 function recordTake(r, via, o) { try { r.lastTake = { act: "TAKE", via, ok: !!o.ok, reason: o.reason || null, taken: o.taken || 0, partial: !!o.partial, item: o.item || null, at: Date.now() }; commitLastAction(r, r.lastTake); } catch {} }
 function noteTakeFull(bot, r, key, typeId) { const now = Date.now(); if (r.takeFullKey === key && now - (r.takeFullAt || 0) < 60000) return; r.takeFullKey = key; r.takeFullAt = now; noteFail(bot, "bts_take:inventory_full", new Error("inventory full: " + typeId)); }
 function noteTakeBan(r, entityId, typeId) { try { if (!r.takeBan) r.takeBan = createTakeBanState(); recordTakeBan(r.takeBan, entityId, typeId, Date.now()); } catch {} } // TR2136-01 (cycle2200): 記録専用 (noteFail は呼ばない＝失敗ログの二重計上をしない)
@@ -328,6 +351,7 @@ function rt(bot) {
   const r = bots.get(bot.id);
   if (!r.trace) { try { r.trace = createTrace({ load: () => dp(bot, "cb_trace", ""), save: (v) => dps(bot, "cb_trace", v) }); } catch { r.trace = null; } } // Phase4 cb_trace (v0.4.56): fail/result の記録専用。保存失敗由来の fail は器側で落とす (再帰防止)
   if (!r.workBan) { try { r.workBan = createWorkBanState(); } catch { r.workBan = null; } } // cyc2232 A02 (0-D1): workBan を初期生成し vein 選定の fail-closed 全滅を防ぐ
+  if (!r.planRunner) { try { r.planRunner = createPlanRunner({ ...createSystemScheduler(system), maxSlices: 240 }); } catch { r.planRunner = null; } } // Phase4 P4-A S2-2: プローブ不可なら null のまま同期運用 (記録は fail 系の間引き作法に従い毎tick出さない)
   if (!r.failAgg) { try { r.failAgg = createFailAgg(); const rep = restoreFailAggShardsWithReport((k) => dp(bot, k, "")); if (rep && rep.status === "ok") r.failAgg = rep.agg; try { const m = JSON.parse(dp(bot, "cb_failagg", "") || "null"); if (m && Number.isInteger(m.gen)) r.failAggGen = m.gen; } catch {} r.failAggSnap = failAggSnapshot(r); } catch { if (!r.failAgg) r.failAgg = null; } } // Phase4 failAgg: S3b 永続化 (cb_failagg キー分割)。clearPlanRecords へ登録しない
   if (!r.expStore) { try { const rep = restoreExpStore((k) => dp(bot, k, "")); r.expStore = rep.store; try { const m = JSON.parse(dp(bot, "cb_exp", "") || "null"); if (m && Number.isInteger(m.gen)) r.expGen = m.gen; } catch {} r.expSnap = expSnapshot(r); } catch { if (!r.expStore) r.expStore = null; } } // 6-ML (cycle0710): 経験ストア復元。失敗時は null で本体に影響させない
   if (r.mission === undefined) { // DP cb_mission から復元（再召喚・再起動をまたぐ）
@@ -413,6 +437,7 @@ function equipCoreOf(bot, r) {
     r.equipCore = createEquipCore(bot, {
       invOf, hpOf, dp, dps,
       onEquipEvent: (kind, fromOwner) => { r.equipChanged = kind; r.equipChangedAt = Date.now(); r.equipFromOwner = !!fromOwner; },
+      onEquipResult: (res) => recordEquipExp(r, res, "equip_core"), // 6-ML U4: setEquip 成否を EQUIP として記録 (記録のみ)
       onHeal: (info) => { r.justHealedAt = Date.now();
         try { const id = typeof info?.item === "string" ? info.item : "";
           const kind = /(aidkit|bandage|medical|first_aid)/.test(id) ? null
@@ -1854,8 +1879,8 @@ system.runInterval(() => {
     const pos0 = bot.location;
     // --- 飛行を先に試す ---
     let fres = null;
-    if (FLY_ENABLE) { try { fres = flyTick(flyOf(bot, r), pos0, 0.1, { ownerPos: r.ownerPosCache || null }); } catch (err) { noteFail(bot, "flyTick", err); } }
-    if (fres) { const fr = fres.reason || ""; if (fr && fr !== r.lastFlyReason) r.flyReasonCount = (r.flyReasonCount || 0) + 1; if (fr) r.lastFlyReason = fr; if (fres.arrived) r.flyArrivedAt = Date.now(); } // Phase2: fly理由の回収（追加のみ・挙動不変）
+    if (FLY_ENABLE) { try { fres = flyTick(flyOf(bot, r), pos0, 0.1, { ownerPos: r.ownerPosCache || null }); } catch (err) { try { recordMoveExp(r, { ok: false, reason: "API_ERROR" }, "fly"); } catch {} noteFail(bot, "flyTick", err, { expDone: true }); } } // 6-ML U4: 例外は MOVE 失敗として commit 済みのため fail軸 EXP は二重記録回避
+    if (fres) { const fr = fres.reason || ""; if (fr && fr !== r.lastFlyReason) r.flyReasonCount = (r.flyReasonCount || 0) + 1; if (fr) r.lastFlyReason = fr; if (fres.arrived) { r.flyArrivedAt = Date.now(); try { recordMoveExp(r, { ok: true }, "fly"); } catch {} } } // Phase2: fly理由の回収（追加のみ・挙動不変） // 6-ML U4: 到着は MOVE 成功として記録
     if (fres && fres.mode === "fly") {
       if (fres.move) { try { bot.teleport(fres.move, { rotation: { x: 0, y: fres.move.yaw } }); } catch {} }
       else { try { clearPathAhead(bot, r, ["dest_blocked", "flight_blocked", "no_progress"].includes(fres.reason) || r.stuckSec >= 1); } catch {} } if (fres.move && r.stuckSec >= 1) { try { clearPathAhead(bot, r, true); } catch {} } // queue0-A bug1 (cycle1728): hover move issued but stuck -> still try digging rescue // v0.4.68: 塞がれて動けない時は掘って進む
@@ -1871,8 +1896,9 @@ system.runInterval(() => {
     if (r.flyMode === "fly") { try { navClearGoal(navOf(bot, r)); } catch {} } // fly→ground 切替時は nav の古い目標を捨てる
     r.flyMode = "ground";
     let res = null;
-    try { res = navTick(navOf(bot, r), bot.location, 0.1, { act: r.moveAct }); } catch {}
+    try { res = navTick(navOf(bot, r), bot.location, 0.1, { act: r.moveAct }); } catch { try { recordMoveExp(r, { ok: false, reason: "API_ERROR" }, "nav"); } catch {} } // 6-ML U4: 従来無言だった例外を MOVE 失敗として記録のみ
     r.navMode = res?.mode || "direct";
+    if (res && res.arrived) { try { recordMoveExp(r, { ok: true }, res.mode === "path" ? "nav" : "direct"); } catch {} } // 6-ML U4: nav 到着は MOVE 成功として記録
     if (res && res.mode === "path" && res.move) {
       const p0 = bot.location;
       const lifted = liftFeet(bot.dimension, { x: res.move.x, y: res.move.y, z: res.move.z }); // v0.4.69: 段差で下半身が埋まらない
@@ -2518,8 +2544,8 @@ function findMissionTarget(bot, r, scan, step, scanUnknown = false) {
   if (step.type === "hunt_entity") {
     let e = null;
     if (target && target !== "hostile") e = (scan?.hostiles || []).find((x) => x.typeId === target) || (scan?.animals || []).find((x) => x.typeId === target);
-    if (!e) e = scan?.nearestHostile || null;
-    return e ? { found: true, kind: "entity", loc: { ...e.location }, typeId: target, entity: e } : (scanUnknown ? { found: false, detail: { state: "unknown" } } : { found: false });
+    else e = scan?.nearestHostile || null; // HUNT-SUBST-01 (cyc2364): 種別指定時は別種への代替をしない。最寄り敵へのフォールバックは汎用指定 "hostile" のときだけ
+    return e ? { found: true, kind: "entity", loc: { ...e.location }, typeId: e.typeId, entity: e } : (scanUnknown ? { found: false, detail: { state: "unknown" } } : { found: false }); // typeId は実体の種別を正とする (依頼種別で名乗らない)
   }
   // 原木の扱い (0-D3 是正): 総称指定では全樹種が対象だが、特定樹種の指定ではその樹種だけを対象にする (従来は指定樹種を先頭に置くだけで全樹種が候補だった)
   const tail = String(target || "").split(":").pop();
@@ -2645,7 +2671,7 @@ function startMission(bot, owner, r, mo, announce = true, opts = {}) {
   return m;
 }
 // Phase3 stale是正 F2 (v0.4.22, cycle1301 A05/A16): ミッション終了・差替時に計画系レコードを無効化する。残留した allow を将来の読み手が使う事故を防ぐ (記録の掃除のみ、分岐には使わない)。
-function clearPlanRecords(r) { try { r.toolNeed = null; r.lastPlan = null; r.lastPlanGate = null; r.lastPlanGateP3 = null; r.lastPlanRevalP4 = null; r.lastPlanGateUnified = null; r.lastPlanRevalFull = null; r.lastPlanRevalAdopt = null; r.lastPlanRevalFullAdopt = null; r.lastPlanGateUnifiedAdopt = null; r.lastGoal = null; r.lastPlanInspect = null; r.lastPlanAt = 0; r.planAdoptSeen = null; r.planAdoptShieldUsedFor = null; r.lastPlanAdoptEffect = null; r.tracePlanSeen = null; r.traceActSeen = null; } catch {} }
+function clearPlanRecords(r) { try { r.planRunner?.cancelCurrent("superseded"); } catch {} try { r.toolNeed = null; r.lastPlan = null; r.lastPlanGate = null; r.lastPlanGateP3 = null; r.lastPlanRevalP4 = null; r.lastPlanGateUnified = null; r.lastPlanRevalFull = null; r.lastPlanRevalAdopt = null; r.lastPlanRevalFullAdopt = null; r.lastPlanGateUnifiedAdopt = null; r.lastGoal = null; r.lastPlanInspect = null; r.lastPlanAt = 0; r.planAdoptSeen = null; r.planAdoptShieldUsedFor = null; r.lastPlanAdoptEffect = null; r.tracePlanSeen = null; r.traceActSeen = null; } catch {} }
 function finishMission(bot, owner, r) {
   r.mission = null; clearPlanRecords(r);
   // 0-F2 (cyc2003): 防具一式の残り部位があれば次を開始する (完了した部位は再開しない)
@@ -3566,7 +3592,7 @@ function applyDirective(bot, owner, r, ctx, scan, d) {
 function missionTargetValid(bot, r) {
   if (!r.mTargetLoc) return false;
   if (r.mTargetKind === "block") { let b = null; try { b = bot.dimension.getBlock(r.mTargetLoc); } catch {} return !!b && b.typeId === r.mTargetType; }
-  if (r.mTargetEntity) { try { return typeof r.mTargetEntity.isValid === "function" ? !!r.mTargetEntity.isValid() : !!r.mTargetEntity.isValid; } catch { return false; } }
+  if (r.mTargetEntity) { try { const valid = typeof r.mTargetEntity.isValid === "function" ? !!r.mTargetEntity.isValid() : !!r.mTargetEntity.isValid; if (!valid) return false; if (r.mTargetType && r.mTargetType !== "hostile" && r.mTargetType.includes(":") && r.mTargetEntity.typeId && r.mTargetEntity.typeId !== r.mTargetType) return false; return true; } catch { return false; } } // HUNT-SUBST-01 (cyc2364): 固定対象も block 分岐と同型に種別照合する (汎用指定はスキップ)
   return true;
 }
 // 0-C2 読み手 (cycle1337): 条件付き注文の発火側。保留は行き止まりにせず、条件成立で1回だけ開始する。
@@ -4690,7 +4716,7 @@ function openMenu(p, bot) {
     if (res.selection === 11) {
       const core = equipCoreOf(bot, r);
       if (core) {
-        const api = createEquipmentApi(p, bot, core, { invOf, hpOf, say, nameOfItem, onEquipEvent: (kind, fromOwner) => { r.equipChanged = kind; r.equipChangedAt = Date.now(); r.equipFromOwner = !!fromOwner; } });
+        const api = createEquipmentApi(p, bot, core, { invOf, hpOf, say, nameOfItem, onEquipEvent: (kind, fromOwner) => { r.equipChanged = kind; r.equipChangedAt = Date.now(); r.equipFromOwner = !!fromOwner; }, onEquipResult: (res) => recordEquipExp(r, res, "equip_ui") }); // 6-ML U4: UI経路の装備成否を EQUIP として記録 (記録のみ)
         openEquipUI(p, { forms: { ActionFormData, ModalFormData }, api }).catch(() => {});
       }
     }
@@ -4898,7 +4924,8 @@ world.afterEvents.entityDie.subscribe((ev) => {
   if (dead.typeId !== "minecraft:player" && dead.typeId !== BOT_ID) {
     let hostile = GVC_HOSTILE_SET.has(dead.typeId);
     if (!hostile) { try { hostile = !!dead.getComponent("minecraft:type_family")?.hasTypeFamily("monster"); } catch {} }
-    if (hostile) for (const [bid, rr] of bots) { let b = null; try { b = world.getEntity(bid); } catch {} if (b && b.dimension.id === dead.dimension.id && dist(b.location, dead.location) < 7) rr.missionKills = (rr.missionKills || 0) + 1; }
+    if (hostile) for (const [bid, rr] of bots) { let b = null; try { b = world.getEntity(bid); } catch {} if (b && b.dimension.id === dead.dimension.id && dist(b.location, dead.location) < 7) { // HUNT-SUBST-01 (cyc2364): 現行 hunt ステップの対象種別 (または汎用指定) に一致する死亡だけを数える。加害者の厳密な帰属は正式版APIで担保しにくいため最低ラインは種別一致とする
+      try { const mm = rr.mission; const st = mm && mm.status === "active" ? (mm.steps || [])[mm.currentStep || 0] : null; if (st && st.type === "hunt_entity" && (!st.target || st.target === "hostile" || st.target === dead.typeId)) rr.missionKills = (rr.missionKills || 0) + 1; } catch {} } }
   }
   if (dead.typeId === BOT_ID) {
     const oid = dp(dead, "cb_owner", "");

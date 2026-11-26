@@ -5,7 +5,8 @@
 // を合成して「工程（leg）の列」に変換する。実行は main.js の tickLongTask が担い、
 // 採取 leg は既存ミッション、工程 leg は crafting.js が実行する。
 import { decompose } from "./decomposer.js";
-import { planBootstrap, requiredLevelFor, TIERS, TIER_LEVEL, GROUPS } from "./bootstrap.js";
+import { planBootstrap, requiredLevelFor, TIERS, TIER_LEVEL, GROUPS, bestToolTierFromCounts, toolItemId } from "./bootstrap.js";
+import { decideToolInvestment, timePerBlock } from "./tool_invest_math.js";
 
 export { GROUPS };
 
@@ -110,6 +111,92 @@ export function normalizePlankLegs(legs, invCounts) {
   } catch { return legs; }
 }
 
+// ===== 0-J 道具投資アダプタ (cyc2364 統合、cyc2347 §5-2/§5-3) =====
+// 判断ロジックは置かず、純粋核 decideToolInvestment への入力供給に限定する。
+// BASE_TIME は候補間比較のための抽象単位 (実測源はコード内に無い。絶対値ではなく比較が目的)。
+const INVEST_BASE_TIME = 60;
+export function toInvestTier(bootstrapTier) {
+  if (bootstrapTier === "wood") return "wooden";
+  if (bootstrapTier === "stone" || bootstrapTier === "iron" || bootstrapTier === "diamond" || bootstrapTier === "netherite") return bootstrapTier;
+  return null; // golden/未知は核の速度表に無いため変換しない (既知制限)
+}
+export function fromInvestTier(tier) {
+  if (tier === "wooden") return "wood";
+  if (tier === "stone" || tier === "iron" || tier === "diamond") return tier;
+  return null;
+}
+// 主道具種: dec.steps の採取/討伐葉の need 合計が最大の種。sword は第1段では候補生成から外す。
+export function investKindFor(dec) {
+  try {
+    const totals = {};
+    for (const s of (dec?.steps || [])) {
+      if (s.type !== "gather" && s.type !== "hunt") continue;
+      const key = `${s.item || ""} ${s.via || ""}`;
+      let kind = null;
+      if (s.type === "hunt") kind = "sword";
+      else if (/_log|_wood|_stem/.test(key)) kind = "axe";
+      else if (/_ore|stone|cobble|deepslate|netherrack|raw_|diamond|obsidian/.test(key) || (requiredLevelFor(s.item) || 0) > 0) kind = "pickaxe";
+      else if (/dirt|sand|gravel|clay|snow/.test(key)) kind = "shovel";
+      if (kind) totals[kind] = (totals[kind] || 0) + (s.need || 1);
+    }
+    let best = null, bestN = 0;
+    for (const [k, n] of Object.entries(totals)) if (n > bestN) { best = k; bestN = n; }
+    if (!best || best === "sword") return null;
+    return best;
+  } catch { return null; }
+}
+function investRemainingBlocks(dec, order) {
+  try {
+    let sum = 0;
+    for (const s of (dec?.steps || [])) if (s.type === "gather" || s.type === "hunt") sum += (s.need || 1);
+    return sum > 0 ? sum : Math.max(1, Math.floor(order?.amount || 1));
+  } catch { return Math.max(1, Math.floor(order?.amount || 1)); }
+}
+// 候補1件の投資コストを planBootstrap の probe 実行から積算する (汚染なし investTier 経由)。
+export function probeInvestCost(candTier, kind, invCounts, invDurability, currentBootTier) {
+  try {
+    const probe = planBootstrap({ invCounts: invCounts || {}, invDurability: invDurability || {}, goal: { tools: [kind], investTier: candTier, amount: 1 } });
+    if (!probe || !Array.isArray(probe.steps) || !probe.steps.length) return null;
+    if (!(probe.toolsNeeded || []).some((t) => t.kind === kind)) return null; // probe 汚染ガード: 対象 kind 以外はコスト化しない
+    let avail = currentBootTier || null;
+    let cost = 0;
+    for (const s of probe.steps) {
+      if (s.type === "gather") {
+        const t = timePerBlock({ baseTime: INVEST_BASE_TIME, tier: toInvestTier(avail) || "none", toolClass: kind, effectiveClass: kind });
+        cost += (s.count || 1) * (t == null ? INVEST_BASE_TIME : t);
+      } else if (s.type === "craft") {
+        cost += 6 * (s.crafts || 1);
+        const m = /^(?:minecraft:)?(wooden|stone|iron|diamond)_(axe|pickaxe|shovel|sword)$/.exec(s.item || "");
+        if (m) { const bt = m[1] === "wooden" ? "wood" : m[1]; if (!avail || (TIER_LEVEL[bt] || 0) > (TIER_LEVEL[avail] || 0)) avail = bt; }
+      } else if (s.type === "smelt") {
+        cost += 6 + 200 * (s.count || 1);
+      }
+    }
+    return cost;
+  } catch { return null; }
+}
+// アダプタ本体: 戻り値は核の判定結果そのまま。判定不能なら null (呼び出し側は investTier を渡さない従来形へ)。
+export function decideLongtaskInvestment(dec, order, invCounts, invDurability, reqLevel) {
+  try {
+    const kind = investKindFor(dec);
+    if (!kind) return null;
+    const bestBoot = bestToolTierFromCounts(invCounts || {}, kind, "wood");
+    const curMathTier = bestBoot === "netherite" ? "netherite" : toInvestTier(bestBoot);
+    const curLevel = bestBoot === "netherite" ? 5 : (bestBoot ? (TIER_LEVEL[bestBoot] || 0) : 0);
+    const current = curMathTier ? { tier: curMathTier, toolClass: kind } : null;
+    const candidates = [];
+    for (const t of TIERS) {
+      if ((TIER_LEVEL[t] || 0) < (reqLevel || 0)) continue;
+      if ((TIER_LEVEL[t] || 0) <= curLevel) continue;
+      const c = probeInvestCost(t, kind, invCounts, invDurability, bestBoot);
+      if (c == null) continue;
+      candidates.push({ tier: toInvestTier(t), toolClass: kind, itemId: toolItemId(t, kind), investCost: c });
+    }
+    if (!candidates.length && !current) return null;
+    return decideToolInvestment({ remaining: investRemainingBlocks(dec, order), baseTime: INVEST_BASE_TIME, effectiveClass: kind, current, candidates });
+  } catch { return null; }
+}
+
 // 注文 → 長期タスク計画。工程が無い純採取なら null（通常ミッションで足りる）。
 // 分解不能なら { feasible:false, warnings } を返す。
 export function planLongTask(order, invCounts, invDurability) { // cycle2311: 第3引数 invDurability を planBootstrap へ中継 (従来は供給者が無く耐久予備が発動しなかった)
@@ -134,8 +221,13 @@ export function planLongTask(order, invCounts, invDurability) { // cycle2311: �
   }
   const reqTier = reqLevel > 0 ? TIERS[reqLevel - 1] : null;
 
+  // 0-J: 道具投資判断 (アダプタ)。例外・判定不能時は investTier を渡さない従来形へフォールバック。
+  let inv = null;
+  try { inv = decideLongtaskInvestment(dec, order, invCounts || {}, invDurability || {}, reqLevel); } catch { inv = null; }
+  const investTierArg = inv ? (inv.invest && inv.candidate ? fromInvestTier(inv.candidate.tier) : null) : undefined;
+
   let boot = null;
-  try { boot = planBootstrap({ invCounts: invCounts || {}, invDurability: invDurability || {}, goal: { targetItem: dec.target.item, ...(reqTier ? { targetTier: reqTier } : {}), activity: "gather", amount } }); } catch { boot = null; } // cycle2311: amount も中継 (消費見積もり・数量予備が従来は届いていなかった)
+  try { boot = planBootstrap({ invCounts: invCounts || {}, invDurability: invDurability || {}, goal: { targetItem: dec.target.item, ...(reqTier ? { targetTier: reqTier } : {}), ...(investTierArg !== undefined ? { investTier: investTierArg } : {}), activity: "gather", amount } }); } catch { boot = null; } // cycle2311: amount も中継 (消費見積もり・数量予備が従来は届いていなかった)
 
   const legs = [];
   if (boot && boot.status !== "ready" && Array.isArray(boot.steps)) for (const s of boot.steps) legs.push(normalizeBootStep(s));

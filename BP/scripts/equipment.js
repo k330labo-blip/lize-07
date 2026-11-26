@@ -273,7 +273,7 @@ export function createEquipmentSystem(adapters = {}) {
     getHealth: () => ({ cur: 20, max: 20 }), addHealth: () => 0,
     load: () => null, save: () => {},
     now: () => Date.now(), random: () => Math.random(),
-    onShoot: null, onHeal: null, onEquipChange: null,
+    onShoot: null, onHeal: null, onEquipChange: null, onEquipResult: null, // 6-ML U4: setEquip 成否通知 (任意・記録専用)。戻り値は不変
     ...adapters,
   };
   const armorMode = ARMOR_MODES.includes(A.armorMode) ? A.armorMode : DEFAULT_ARMOR_MODE;
@@ -331,17 +331,18 @@ export function createEquipmentSystem(adapters = {}) {
   function getEquipped(slot) { return isSlot(slot) ? cloneItem(state.equip[slot]) : null; }
 
   function setEquip(slot, item) {
-    if (!isSlot(slot)) return { ok: false, reason: "bad_slot" };
+    const doneEquip = (res) => { if (A.onEquipResult) { try { A.onEquipResult(res); } catch {} } return res; }; // 6-ML U4: 通知は成否全経路で1回だけ。返すオブジェクトは従来と同一
+    if (!isSlot(slot)) return doneEquip({ ok: false, reason: "bad_slot" });
     const it = cloneItem(item);
     let applied = false;
     try { applied = !!A.equipSet(slot, cloneItem(it)); } catch { applied = false; }
-    if (!applied) return { ok: false, reason: "equip_failed" };
+    if (!applied) return doneEquip({ ok: false, reason: "equip_failed" });
     const prev = state.equip[slot];
     state.equip[slot] = it;
     if (slot === "Mainhand") ensureMag(true); // 銃が変わったら装弾は新しい銃の満タンから
     persist();
     if (A.onEquipChange) { try { A.onEquipChange(slot, cloneItem(it), cloneItem(prev)); } catch {} }
-    return { ok: true, slot, item: cloneItem(it), prev: cloneItem(prev) };
+    return doneEquip({ ok: true, slot, item: cloneItem(it), prev: cloneItem(prev) });
   }
   function unequip(slot) { return setEquip(slot, null); }
 

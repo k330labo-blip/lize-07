@@ -23,6 +23,7 @@ export function createEquipCore(bot, helpers) {
     save: (s) => dps(bot, "cb_equip", s),
     onHeal: () => { try { helpers.onHeal?.(); } catch {} },
     onEquipChange: (slot, item) => { try { helpers.onEquipEvent?.(slot === "Mainhand" ? (item && String(item.typeId).startsWith("gun:") ? "gun" : "weapon") : "armor", false); } catch {} },
+    onEquipResult: (res) => { try { helpers.onEquipResult?.(res); } catch {} }, // 6-ML U4: setEquip 成否を統合側へ転送 (任意・記録専用)
   });
 }
 
@@ -55,6 +56,7 @@ export function createEquipmentApi(owner, bot, core, helpers) {
   const slotDef = (key) => EQUIP_SLOTS.find((s) => s.key === key);
   const listItems = (e) => { const cont = invOf(e); const out = []; if (cont) for (let i = 0; i < cont.size; i++) { const it = cont.getItem(i); if (it) out.push({ slot: i, typeId: it.typeId, name: nameOfItem(it.typeId), amount: it.amount }); } return out; };
   const syncCore = () => { try { core.refresh(); core.persist(); } catch {} };
+  const emitEquip = (res, typeId, slotKey, unequip) => { try { helpers.onEquipResult?.({ ok: !!res?.ok, reason: res?.ok ? undefined : (res?.reason || (unequip ? "remove_failed" : "equip_failed")), item: typeId ? { typeId } : null, slot: slotKey || null }); } catch {} return res; }; // 6-ML U4: 成否通知 (記録専用)。UIへ返すオブジェクトは従来と同一
   return {
     say: (text) => say(owner, bot, text, true),
     getSnapshot: () => {
@@ -73,29 +75,29 @@ export function createEquipmentApi(owner, bot, core, helpers) {
     ownerCandidates: (slotKey) => listItems(owner).filter((it) => classifySlot(it.typeId) === slotKey),
     ownerItems: () => listItems(owner),
     unequipToOwner: (key) => {
-      const s = slotDef(key); const c = eqComp(); if (!c || !s) return { ok: false };
+      const s = slotDef(key); const c = eqComp(); if (!c || !s) return emitEquip({ ok: false }, null, key, true);
       let it = null; try { it = c.getEquipment(EquipmentSlot[s.mc]); } catch {}
-      if (!it) return { ok: false };
-      const oc = invOf(owner); if (!oc || !canFit(oc, it.typeId, it.amount)) return { ok: false };
-      const rest = oc.addItem(it); if (rest) return { ok: false };
-      try { c.setEquipment(EquipmentSlot[s.mc], undefined); } catch { return { ok: false }; }
+      if (!it) return emitEquip({ ok: false }, null, key, true);
+      const oc = invOf(owner); if (!oc || !canFit(oc, it.typeId, it.amount)) return emitEquip({ ok: false }, it.typeId, key, true);
+      const rest = oc.addItem(it); if (rest) return emitEquip({ ok: false }, it.typeId, key, true);
+      try { c.setEquipment(EquipmentSlot[s.mc], undefined); } catch { return emitEquip({ ok: false }, it.typeId, key, true); }
       syncCore();
       try { helpers.onEquipEvent?.("unequip", true); } catch {}
-      return { ok: true, name: nameOfItem(it.typeId) };
+      return emitEquip({ ok: true, name: nameOfItem(it.typeId) }, it.typeId, key, true);
     },
     equipFromOwner: (key, ownerSlot) => {
-      const s = slotDef(key); const c = eqComp(); const oc = invOf(owner); if (!c || !s || !oc) return { ok: false };
-      const stack = oc.getItem(ownerSlot); if (!stack) return { ok: false };
-      if (classifySlot(stack.typeId) !== key) return { ok: false };
+      const s = slotDef(key); const c = eqComp(); const oc = invOf(owner); if (!c || !s || !oc) return emitEquip({ ok: false }, null, key, false);
+      const stack = oc.getItem(ownerSlot); if (!stack) return emitEquip({ ok: false }, null, key, false);
+      if (classifySlot(stack.typeId) !== key) return emitEquip({ ok: false, reason: "bad_slot" }, stack.typeId, key, false);
       let prev = null; try { prev = c.getEquipment(EquipmentSlot[s.mc]); } catch {}
-      if (prev && !canFit(oc, prev.typeId, prev.amount)) return { ok: false }; // 旧装備を返せなければ付け替え自体を中止
+      if (prev && !canFit(oc, prev.typeId, prev.amount)) return emitEquip({ ok: false }, stack.typeId, key, false); // 旧装備を返せなければ付け替え自体を中止
       if (stack.amount > 1) oc.setItem(ownerSlot, new ItemStack(stack.typeId, stack.amount - 1)); else oc.setItem(ownerSlot, undefined);
-      try { c.setEquipment(EquipmentSlot[s.mc], new ItemStack(stack.typeId, 1)); } catch { try { oc.addItem(new ItemStack(stack.typeId, 1)); } catch {} return { ok: false }; }
+      try { c.setEquipment(EquipmentSlot[s.mc], new ItemStack(stack.typeId, 1)); } catch { try { oc.addItem(new ItemStack(stack.typeId, 1)); } catch {} return emitEquip({ ok: false }, stack.typeId, key, false); }
       if (prev) { try { oc.addItem(prev); } catch {} }
       syncCore();
       const kind = key === "mainhand" ? (String(stack.typeId).startsWith("gun:") || /gun|rifle|pistol|smg|shotgun/.test(stack.typeId) ? "gun" : "weapon") : key === "offhand" ? "armor" : "armor";
       try { helpers.onEquipEvent?.(kind, true); } catch {}
-      return { ok: true, name: nameOfItem(stack.typeId) };
+      return emitEquip({ ok: true, name: nameOfItem(stack.typeId) }, stack.typeId, key, false);
     },
     giveToOwner: (botSlot, n) => moveStack(invOf(bot), invOf(owner), botSlot, n),
     receiveFromOwner: (ownerSlot, n) => {
