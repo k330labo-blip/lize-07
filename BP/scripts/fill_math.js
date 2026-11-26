@@ -91,6 +91,35 @@ export function fillRunsNeeded(def, haveFilled, want) {
   } catch { return 0; }
 }
 
+// S5 (cyc2383): 溶岩充填の安全な立ち位置の選択 (純粋)。
+// 罠 (cyc2382 A16 §2-1/§3-1): lavaNear を媒体セルへ当てると常時 true で全拒否になる。
+// 判定対象は媒体セルでなく立ち位置候補であり、候補の lavaAround は「媒体セル方向の
+// 近傍を除外して」呼び出し側が数える (溶岩源に隣接するだけで全候補が危険になるため)。
+// candidates: [{ loc, free, lavaAround }]、selfPos からの最寄りの安全候補を返す。
+export function selectSafeFillStand(input) {
+  try {
+    const self = input?.selfPos; if (!self) return { stand: null, reason: "no_safe_stand" };
+    let best = null;
+    for (const c of input?.candidates || []) {
+      if (!c || !c.loc || c.free !== true || c.lavaAround === true) continue;
+      const d = Math.hypot(c.loc.x + 0.5 - self.x, c.loc.y - self.y, c.loc.z + 0.5 - self.z);
+      if (!best || d < best.d) best = { stand: c.loc, d };
+    }
+    return best ? { stand: best.stand, reason: null } : { stand: null, reason: "no_safe_stand" };
+  } catch { return { stand: null, reason: "no_safe_stand" }; }
+}
+
+// S5 (cyc2383): 現在位置が溶岩に対して危険か (純粋)。neighborTypeIds は媒体セルを
+// 除外した近傍の typeId 群を呼び出し側が渡す。
+export function fillStandUnsafe(input) {
+  try {
+    const isLava = (t) => typeof t === "string" && t.includes("lava");
+    if (isLava(input?.selfTypeId)) return true;
+    for (const t of input?.neighborTypeIds || []) if (isLava(t)) return true;
+    return false;
+  } catch { return false; }
+}
+
 // S3 (cyc2381): entity 媒体の選択 (純粋)。ban 形式は trunk_ban.js banKeyFor の実形式:
 // fill 媒体 (cow/water/lava) は幹・落下ブロックではないため常に cellKey
 // "floor(x),floor(y),floor(z)" (typeId なし)。trunk:/fall: 形式は fill では発生しない (cyc2380 A16 確定)。

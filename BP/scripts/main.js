@@ -131,7 +131,7 @@ import { scanOpportunities, noteAttempt, pruneCooldowns } from "./side_tasks.js"
 import { createSideChase, chaseTick, sideChaseRangeFor } from "./side_chase.js"; // SIDE-COOLDOWN-CHASE (cycle1134): 接近保持と終端クールダウン
 import { gateCancel, gateFactory, gateWarehouseSort, gateTeachItemDest, isHowToRequest } from "./chat_gate.js"; // 0-C1 (cycle1155): 質問・否定・仮定・部分スコープでは中止/工場/指示を発火しない共通ゲート
 import { pickNearest as veinPickNearest, veinNeighbors, sameResource as veinSameResource } from "./vein_math.js";
-import { fillDefOf, selectFillMedium, checkFillPreconditions, verifyFillPost, fillRunsNeeded, isSourceMediumCell } from "./fill_math.js"; // 0-C R-C4-4 S3 (cyc2381): 充填媒体の探索判定 (純粋核) // 0-D1 (cycle1400): 鉱脈継続・距離優先の純粋核
+import { fillDefOf, selectFillMedium, checkFillPreconditions, verifyFillPost, fillRunsNeeded, isSourceMediumCell, selectSafeFillStand, fillStandUnsafe } from "./fill_math.js"; // 0-C R-C4-4 S3 (cyc2381): 充填媒体の探索判定 (純粋核) // 0-D1 (cycle1400): 鉱脈継続・距離優先の純粋核
 import { classifyDescent as d2Classify, ensureSpiralAnchor as d2EnsureAnchor, spiralStepAt as d2StepAt } from "./d2_spiral_math.js"; // 0-D2 (cycle1434): 発見後も螺旋降下 / G2 (cyc2363): 起点は ensure で固定し対象キーで作り直さない
 import { allowedLogIds, countLogsForTarget } from "./tree_species_math.js";
 import { createWideScanFails, partitionWideIds, noteWideSuccess, noteWideIdFailure, noteWideGlobalFailure, wideIdBlocked } from "./wide_scan_fails.js"; // 0-D4 Bprime (cycle1455): wide scan failures isolated per typeId
@@ -2602,9 +2602,12 @@ function findMissionTarget(bot, r, scan, step, scanUnknown = false) {
         const blockCands = [];
         for (const md of blockMedia) { const loc = scanBlockNear(bot, r, md.id); if (loc) blockCands.push({ loc, typeId: md.id }); else if (noteScanState(md.id)) return { found: false, detail: { state: "unknown" } }; }
         const bp = veinPickNearest(blockCands, bot.location);
-        if (bp) return { found: true, kind: "fill_medium", loc: bp.loc, typeId: bp.typeId, fillItem: target, mediumKind: "block", entity: null, detail: { state: "present", via: "fill_scan" } };
+        if (bp) { // S5: 溶岩は安全な立ち位置がある候補だけを返す (無い候補は選択時点で外す)
+          if (bp.typeId === "minecraft:lava") { const stand = fillSafeStand(bot, bp.loc); if (stand) return { found: true, kind: "fill_medium", loc: bp.loc, typeId: bp.typeId, fillItem: target, mediumKind: "block", entity: null, stand, detail: { state: "present", via: "fill_scan" } }; }
+          else return { found: true, kind: "fill_medium", loc: bp.loc, typeId: bp.typeId, fillItem: target, mediumKind: "block", entity: null, detail: { state: "present", via: "fill_scan" } };
+        }
         const sv = lookupSurvey(bot, blockMedia.map((md) => md.id), Date.now() < (r.mBanUntil || 0) ? r.mBanKey : null);
-        if (sv) return { found: true, kind: "fill_medium", loc: sv.loc, typeId: sv.typeId, fillItem: target, mediumKind: "block", entity: null, detail: { state: "present", via: "fill_survey" } };
+        if (sv) { if (sv.typeId === "minecraft:lava") { const stand = fillSafeStand(bot, sv.loc); if (stand) return { found: true, kind: "fill_medium", loc: sv.loc, typeId: sv.typeId, fillItem: target, mediumKind: "block", entity: null, stand, detail: { state: "present", via: "fill_survey" } }; } else return { found: true, kind: "fill_medium", loc: sv.loc, typeId: sv.typeId, fillItem: target, mediumKind: "block", entity: null, detail: { state: "present", via: "fill_survey" } }; }
         return { found: false, detail: { state: "absent" } };
       }
       const mediaIds = media.map((md) => md.id);
@@ -3689,6 +3692,46 @@ function execSideTask(bot, owner, r, ctx, scan) {
     else r.target = { x: t.pos.x + 0.5, y: t.pos.y, z: t.pos.z + 0.5 };
   }
 }
+// 0-C R-C4-4 S5 (cyc2383): 溶岩充填の安全な立ち位置 (設計 tests/cyc2382_a16_rc44s5.md §3)。
+// lavaNear は媒体セルでなく立ち位置候補へ当て、媒体方向の近傍は除外して数える。
+function fillSafeStand(bot, mediumLoc) {
+  try {
+    const dim = bot.dimension;
+    const free = (x, y, z) => { try { const b = dim.getBlock({ x, y, z }); if (!b) return false; return !solidOfTypeId(b.typeId) && !b.isLiquid; } catch { return false; } };
+    const cands = [];
+    for (const dy of ACCESS.STAND_DY) for (const [dx, dz] of ACCESS.DIRS) {
+      const x = mediumLoc.x + dx, y = mediumLoc.y + dy, z = mediumLoc.z + dz;
+      let lavaAround = false;
+      for (const [ox, oy, oz] of [[0, 0, 0], [1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]) {
+        const nx = x + ox, ny = y + oy, nz = z + oz;
+        if (nx === mediumLoc.x && ny === mediumLoc.y && nz === mediumLoc.z) continue; // 媒体方向は除外 (第2の罠)
+        try { const b = dim.getBlock({ x: nx, y: ny, z: nz }); if (b && b.typeId.includes("lava")) { lavaAround = true; break; } } catch {}
+      }
+      cands.push({ loc: { x, y, z }, free: free(x, y, z) && free(x, y + 1, z), lavaAround });
+    }
+    return selectSafeFillStand({ candidates: cands, selfPos: bot.location }).stand;
+  } catch { return null; }
+}
+// S5: tx 直前の現在位置再確認。危険なら tx 0回で媒体セルを60秒 ban し、理由を伝える。
+function fillLavaGate(bot, owner, r) {
+  try {
+    if (r.mTargetFillItem !== "minecraft:lava_bucket" || !r.mTargetLoc) return false;
+    const dim = bot.dimension, p = bot.location;
+    const cell = { x: Math.floor(p.x), y: Math.floor(p.y), z: Math.floor(p.z) };
+    let selfTypeId = null; try { selfTypeId = dim.getBlock(cell)?.typeId || null; } catch {}
+    const neigh = [];
+    for (const [ox, oy, oz] of [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]) {
+      const n = { x: cell.x + ox, y: cell.y + oy, z: cell.z + oz };
+      if (n.x === r.mTargetLoc.x && n.y === r.mTargetLoc.y && n.z === r.mTargetLoc.z) continue;
+      try { const b = dim.getBlock(n); if (b) neigh.push(b.typeId); } catch {}
+    }
+    if (!fillStandUnsafe({ selfTypeId, neighborTypeIds: neigh })) return false;
+    r.lastFill = { act: "FILL", ok: false, reason: "unsafe_stand", item: r.mTargetFillItem, at: Date.now() };
+    r.mBanKey = `${Math.floor(r.mTargetLoc.x)},${Math.floor(r.mTargetLoc.y)},${Math.floor(r.mTargetLoc.z)}`; r.mBanUntil = Date.now() + 60000; r.mTargetLoc = null; r.mTargetKey = "";
+    if (Date.now() - (r.fillUnsafeSaidAt || 0) > 60000) { r.fillUnsafeSaidAt = Date.now(); try { say(owner, bot, "溶岩のそばに安全に立てる場所がないため、その溶岩は汲みません", true); } catch {} }
+    return true;
+  } catch { return false; }
+}
 // 0-C R-C4-4 S4 (cyc2382): 充填 tx の実行部。設計は tests/cyc2381_a16_rc44s4.md §4 が正。
 // isAdult は判定手段が無い間は渡さない (false を渡すと全頭 not_adult で永久に充填できない)。
 // no_container は失敗記録だけで済ませず、連続3回で本人へ明示する (単発経路には子legが無いため)。
@@ -3697,6 +3740,7 @@ function fillOnce(bot, owner, r) {
     const item = r.mTargetFillItem || null;
     const def = item ? fillDefOf(item) : null;
     if (!item || !def) { r.lastFill = { act: "FILL", ok: false, reason: "unknown_item", item, at: Date.now() }; return false; }
+    if (fillLavaGate(bot, owner, r)) return false; // S5: 溶岩では現在位置が危険なら tx を撃たない
     const step = r.mission?.steps?.[r.mission?.currentStep];
     const want = Math.max(1, step?.need || 1);
     const before0 = countInv(bot);
@@ -3756,7 +3800,7 @@ function applyDirective(bot, owner, r, ctx, scan, d) {
     }
     case "work": {
       if (d.step === "side_collect" && r.sideTask) { execSideTask(bot, owner, r, ctx, scan); r.moveAct = "follow"; break; }
-      if (r.mTargetKind === "fill_medium") { const e = r.mTargetEntity; const dest = e ? { ...e.location } : { x: r.mTargetLoc.x + 0.5, y: r.mTargetLoc.y, z: r.mTargetLoc.z + 0.5 }; r.target = dest; try { r.lastFillApproach = { typeId: r.mTargetType, at: Date.now(), inRange: dist(bot.location, dest) <= 2.6 }; if (r.lastFillApproach.inRange) fillOnce(bot, owner, r); } catch {} } // R-C4-4 S3/S4: 媒体へ接近し、範囲内なら充填tx (fillOnce) を撃つ。zapEntity/startWork へは接続しない
+      if (r.mTargetKind === "fill_medium") { const e = r.mTargetEntity; const dest = e ? { ...e.location } : (r.mTargetType === "minecraft:lava" && r.mTargetFillStand ? { x: r.mTargetFillStand.x + 0.5, y: r.mTargetFillStand.y, z: r.mTargetFillStand.z + 0.5 } : { x: r.mTargetLoc.x + 0.5, y: r.mTargetLoc.y, z: r.mTargetLoc.z + 0.5 }); r.target = dest; try { r.lastFillApproach = { typeId: r.mTargetType, at: Date.now(), inRange: dist(bot.location, dest) <= 2.6 }; if (r.lastFillApproach.inRange) fillOnce(bot, owner, r); } catch {} } // R-C4-4 S3/S4/S5: 媒体へ接近し、範囲内なら充填tx (fillOnce) を撃つ。溶岩は安全な立ち位置を dest にする。zapEntity/startWork へは接続しない
       else if (r.mTargetKind === "entity" && r.mTargetEntity) { const e = r.mTargetEntity; r.target = { ...e.location }; if (dist(bot.location, e.location) < 3.2) zapEntity(bot, r, e); }
       else if (r.mTargetKind === "item" && r.mTargetEntity) { const e = r.mTargetEntity; r.target = { x: e.location.x, y: e.location.y, z: e.location.z }; if (dist(bot.location, e.location) < 1.9) pickupItemEntity(bot, owner, e, ctx); }
       else if (r.mTargetLoc && r.mTargetKind === "block" && shouldTunnel(bot, r, r.mTargetLoc)) tickTunnel(bot, owner, r, ctx, r.mTargetLoc); // v0.4.66: 地中の対象へ掘り進む
@@ -3894,7 +3938,7 @@ function tickMission(bot, owner, ctx, scan) {
     if (curHave !== r.mLastHave) { r.mLastHave = curHave; r.mTargetSince = Date.now(); }
     else if (r.mTargetLoc && r.mTargetSince && Date.now() - r.mTargetSince > 45000 && !(r.tunnel && r.tunnel.key === r.mTargetKey && Date.now() - r.tunnel.lastStepAt < 15000)) { /* v0.4.66: 掘り進めている間は見切らない */ r.mBanKey = banKeyFor(r.mTargetLoc, r.mTargetType) || r.mTargetKey; r.mBanUntil = Date.now() + 60000; r.mTargetLoc = null; r.mTargetKey = ""; r.mTargetSince = Date.now(); } // queue0-A bug2 (cycle1728): trunk-unit ban (was found-cell key, looped on same trunk)
     // 目標の固定: 一度狙った対象は、消える/壊れるまで変えない（毎tickの最寄り再選択による上下動・迷走を断つ）
-    if (r.mTargetLoc && missionTargetValid(bot, r)) ft = { found: true, kind: r.mTargetKind, loc: r.mTargetLoc, typeId: r.mTargetType, entity: r.mTargetEntity, fillItem: r.mTargetFillItem || undefined, mediumKind: r.mTargetMediumKind || undefined };
+    if (r.mTargetLoc && missionTargetValid(bot, r)) ft = { found: true, kind: r.mTargetKind, loc: r.mTargetLoc, typeId: r.mTargetType, entity: r.mTargetEntity, fillItem: r.mTargetFillItem || undefined, mediumKind: r.mTargetMediumKind || undefined, stand: r.mTargetFillStand || undefined };
     else {
       ft = findMissionTarget(bot, r, scan, step, ctx.x?.obs ? ctx.x.obs.scan !== "ok" : ctx.x?.scanOk === false);
       if (ft.found && ft.loc && isBanned(ft.loc, ft.typeId, r.mBanKey, r.mBanUntil, Date.now())) { // queue0-A bug2 (cycle1728)
@@ -3947,7 +3991,7 @@ function tickMission(bot, owner, ctx, scan) {
       try { if (!r.inspectAgg) r.inspectAgg = createInspectAgg(); recordInspectEval(r.inspectAgg, r.lastPlanInspect); } catch {}
     }
   } catch {}
-  if (ft.found) { const key = ft.loc ? `${ft.loc.x},${ft.loc.y},${ft.loc.z}` : ""; if (key !== r.mTargetKey) { r.mTargetKey = key; r.mTargetSince = Date.now(); } r.mTargetLoc = ft.loc; r.mTargetType = ft.typeId; r.mTargetEntity = ft.entity || null; r.mTargetKind = ft.kind; if (ft.kind === "fill_medium") { if (ft.fillItem) r.mTargetFillItem = ft.fillItem; if (ft.mediumKind) r.mTargetMediumKind = ft.mediumKind; } else { r.mTargetFillItem = null; r.mTargetMediumKind = null; } }
+  if (ft.found) { const key = ft.loc ? `${ft.loc.x},${ft.loc.y},${ft.loc.z}` : ""; if (key !== r.mTargetKey) { r.mTargetKey = key; r.mTargetSince = Date.now(); } r.mTargetLoc = ft.loc; r.mTargetType = ft.typeId; r.mTargetEntity = ft.entity || null; r.mTargetKind = ft.kind; if (ft.kind === "fill_medium") { if (ft.fillItem) r.mTargetFillItem = ft.fillItem; if (ft.mediumKind) r.mTargetMediumKind = ft.mediumKind; r.mTargetFillStand = ft.stand || null; } else { r.mTargetFillItem = null; r.mTargetMediumKind = null; r.mTargetFillStand = null; } }
   // Phase2 INSPECT Step 3c-2 (v0.4.34, U4): 位置スナップショットと距離・帰還判定を1つの try で確定させる。位置が読めなければ posKnown=false とし、捏造値ではなく既存定義 (nearestDist 不明=-1 / atReturn=false) で obs を作って advance へ届ける
   let rp = null, nearestDist = -1, posSnap = null, dimSnap = null, posKnown = true;
   try {
