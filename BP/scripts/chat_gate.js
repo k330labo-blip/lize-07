@@ -27,6 +27,27 @@ function isNegatedDirective(t, re) {
   return false;
 }
 
+// cyc2134 A01/A02 (0-C1 R1): 条件節の語形を一般化し両ゲートで共有する。
+// 「たら」だけでなく濁点形「だら」、仮定形「〜れば/けば/…ば」一般、動詞辞書形＋「と」
+// (暗くなると/終わると、指令語が直後〜6文字以内にある場合のみ) を条件節とする。
+// 名詞中の偶然一致 (片仮名「タラ」、漢字＋「と」等) は拾わない。
+function isConditionalForm(t) {
+  return /(したら|すると|すれば|たら|だら|れば|けば|げば|せば|てば|ねば|べば|めば|えば)/.test(t)
+    || /[うくぐすつぬぶむる]と(?=.{0,6}(中止|やめて|止めて|キャンセル|自動化|ライン))/.test(t);
+}
+// cyc2134 A02 (0-C1 R4): 熟慮形「〜かどうか＋迷ってる/考えて/検討/聞いて」は意思決定前の
+// 発話であり指令ではない。確認作業そのもの (「かどうか確認して」) は熟慮述語を含まないため対象外。
+function isDeliberating(t) {
+  return /かどうか/.test(t) && /(迷|考え|検討|悩|聞いて|決めてない|決まってない|まだ決め)/.test(t);
+}
+// cyc2134 A02 (0-C1 R2/R3): 工場の後置先送り。「〜は…てからにして」(先送り構文) と
+// 明日/後での先送りを条件扱いにする。逐次構文「自動化してから中止して」(てから＋別指令で
+// 「にして」を伴わない) は開始として維持する。
+function isDeferredFactory(t) {
+  return /(自動化|ライン).{0,48}てからにして/.test(t)
+    || /(自動化|ライン).{0,24}(明日から|明日やって|明日以降|後で|あとで|後日)/.test(t);
+}
+
 // 中止ゲート: {fire, kind} kind: none|cancel|question|hypothetical|negation|partial|conditional
 export function gateCancel(text) {
   try {
@@ -36,9 +57,10 @@ export function gateCancel(text) {
     // 部分スコープ: 「Aは続けて、Bだけやめて」は全体中止ではない
     if (/だけ(やめて|中止|止めて|キャンセル)/.test(t) || /(続けて|継続して).{0,16}(やめて|中止|止めて)/.test(t)) return { fire: false, kind: "partial" };
     if (isNegatedDirective(t)) return { fire: false, kind: "negation" };
+    if (isDeliberating(t)) return { fire: false, kind: "question" };
     if (isQuestionForm(t)) return { fire: false, kind: "question" };
-    // cyc2003 A13: 単独「たら」条件 (雨が降ったら中止して 等) も条件節として発火しない
-    if (/(したら|すると|すれば|たら)/.test(t)) return { fire: false, kind: "conditional" };
+    // cyc2003 A13 + cyc2134 A01: 条件節 (たら/だら/れば一般/動詞＋と) では発火しない
+    if (isConditionalForm(t)) return { fire: false, kind: "conditional" };
     return { fire: true, kind: "cancel" };
   } catch { return { fire: false, kind: "error" }; }
 }
@@ -52,10 +74,15 @@ export function gateFactory(text) {
     if (isNegatedDirective(t)) return { fire: false, kind: "negation" };
     // cycle1722 A13 R1: 「自動化の方法を教えて」は説明要求。工場経路は通常解釈より先に呼ばれるため、ここでも howto を止める
     if (isHowToRequest(t)) return { fire: false, kind: "question" };
+    if (isDeliberating(t)) return { fire: false, kind: "question" };
     if (isQuestionForm(t)) return { fire: false, kind: "question" };
-    if (/(なったら|たら|れば|ときは|時は).{0,20}(自動化|ライン)/.test(t)) return { fire: false, kind: "conditional" };
+    if (/(なったら|たら|だら|れば|ときは|時は).{0,20}(自動化|ライン)/.test(t)) return { fire: false, kind: "conditional" };
+    // cyc2134 A01: 前置条件の一般形 (動詞＋と/れば一般) も中止側と対称に止める
+    if (isConditionalForm(t)) return { fire: false, kind: "conditional" };
     // cyc2003 A13: 後置条件 (「自動化するのは雨が降ってからにして」) も条件節
-    if (/(自動化|ライン).{0,40}(降ってから|なってから|たら|れば)/.test(t)) return { fire: false, kind: "conditional" };
+    if (/(自動化|ライン).{0,40}(降ってから|なってから|たら|だら|れば)/.test(t)) return { fire: false, kind: "conditional" };
+    // cyc2134 A02: 後置先送り (一般の「てからにして」/明日/後で) も即時開始しない
+    if (isDeferredFactory(t)) return { fire: false, kind: "conditional" };
     return { fire: true, kind: "start" };
   } catch { return { fire: false, kind: "error" }; }
 }
