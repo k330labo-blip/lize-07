@@ -117,6 +117,7 @@ import { scanOpportunities, noteAttempt, pruneCooldowns } from "./side_tasks.js"
 import { createSideChase, chaseTick, sideChaseRangeFor } from "./side_chase.js"; // SIDE-COOLDOWN-CHASE (cycle1134): 接近保持と終端クールダウン
 import { gateCancel, gateFactory, isHowToRequest } from "./chat_gate.js"; // 0-C1 (cycle1155): 質問・否定・仮定・部分スコープでは中止/工場/指示を発火しない共通ゲート
 import { pickNearest as veinPickNearest, veinNeighbors, sameResource as veinSameResource } from "./vein_math.js"; // 0-D1 (cycle1400): 鉱脈継続・距離優先の純粋核
+import { classifyDescent as d2Classify, createSpiralAnchor as d2CreateAnchor, spiralStepAt as d2StepAt } from "./d2_spiral_math.js"; // 0-D2 (cycle1434): 発見後も螺旋降下
 import { allowedLogIds, countLogsForTarget } from "./tree_species_math.js"; // 0-D3: 樹種指定時は対象選択・進捗をその樹種だけに限定する
 import { shouldReplayGaze, GAZE_REPLAY_INTERVAL_TICKS } from "./gaze_cadence_math.js"; // 0-E1 GAZE-CADENCE-01: 視線レイヤーを本体ループから分離する
 import { mergeCaps, capForTarget } from "./cap_guard_math.js"; // 0-C2 読み手 (cycle1337): セッション上限を mission へ届ける
@@ -2341,6 +2342,16 @@ function tickTunnel(bot, owner, r, ctx, goal) {
     }
   }
   let next, cells;
+  // 0-D2 (cycle1434): 深い真下対象は1x1垂直掘りにせず螺旋階段で降りる。現在位置が階段の段と一致するときだけ委譲し、それ以外は従来分岐 (露出・浅い対象は従来どおり直接掘り)。
+  try {
+    const plan = d2Classify({ x: bx, y: by, z: bz }, { x: goal.x, y: goal.y, z: goal.z }, {});
+    if (plan && plan.mode === "spiral") {
+      if (!r.tunnel.d2Anchor || r.tunnel.d2Key !== key) { r.tunnel.d2Anchor = d2CreateAnchor({ x: bx, y: by, z: bz }, { x: goal.x, y: goal.y, z: goal.z }); r.tunnel.d2Key = key; }
+      const cur = d2StepAt(r.tunnel.d2Anchor, r.tunnel.steps), nxt = d2StepAt(r.tunnel.d2Anchor, r.tunnel.steps + 1);
+      if (cur && nxt && cur.x === bx && cur.y === by && cur.z === bz && Math.abs(nxt.x - bx) + Math.abs(nxt.z - bz) <= 1) { next = { x: nxt.x, y: nxt.y, z: nxt.z }; cells = [next, { x: next.x, y: next.y + 1, z: next.z }]; r.tunnel.d2Spiral = true; }
+    }
+  } catch {}
+  if (!next) {
   if (Math.abs(dx) <= 1 && Math.abs(dz) <= 1 && dy < -1) { next = { x: bx, y: by - 1, z: bz }; cells = [next]; }                       // 真下へ
   else if (Math.abs(dx) <= 1 && Math.abs(dz) <= 1 && dy > 2) { next = { x: bx, y: by + 1, z: bz }; cells = [{ x: bx, y: by + 2, z: bz }]; } // 真上へ
   else {
@@ -2349,6 +2360,7 @@ function tickTunnel(bot, owner, r, ctx, goal) {
     next = { x: bx + sx, y: ny, z: bz + sz };
     cells = [next, { x: next.x, y: ny + 1, z: next.z }];
     if (ny > by) cells.push({ x: bx, y: by + 2, z: bz });                                                                     // 上り階段は頭上も
+  }
   }
   for (const c of cells) if (lavaNear(dim, c)) { abandonTunnel(bot, owner, r, "LAVA"); return; }
   for (const c of cells) {
@@ -4249,7 +4261,7 @@ system.runInterval(() => {
 
 // 世界記憶の定期保存（30秒ごと・dirty のときだけ）
 system.runInterval(() => {
-  for (const [id, r] of bots) { try { if (r.wmem && r.wmem.dirty) r.wmem.save(); } catch {} try { if (r.trace && r.trace.dirty) r.trace.flush(); } catch {} try { const b = world.getEntity(id); if (b) flushFailAgg(b, r); } catch {} try { const b = world.getEntity(id); if (b) flushExp(b, r); } catch {} /* 6-ML: 周期 flush 相乗り */ }
+  for (const [id, r] of bots) { try { if (r.wmem && r.wmem.dirty) r.wmem.save(); } catch {} try { if (r.trace && r.trace.dirty) r.trace.flush(); } catch {} try { const b = world.getEntity(id); if (b) flushFailAgg(b, r); } catch {} try { const b = world.getEntity(id); if (b) saveWarehouse(b, r); } catch {} /* 倉庫W1 (cycle1434): 保存発火点を周期 flush へ接続 (従来は定義のみで呼び出し0件だった) */ try { const b = world.getEntity(id); if (b) flushExp(b, r); } catch {} /* 6-ML: 周期 flush 相乗り */ }
 }, 600);
 world.afterEvents.entityHurt.subscribe((ev) => {
   try {
