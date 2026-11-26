@@ -918,7 +918,10 @@ function placementOf(clause, anchorInfo) {
     if (/ここに/.test(clause)) return { mode: "here", anchor: null, dir: null };
     const dm = clause.match(/(上|右|左|前|後ろ|後|下|隣|となり|横)に(?=置|おい)/);
     if (dm) return { mode: "relative", anchor: null, dir: dm[1] };
-    return null;
+    // 0-C4 R-C4-2 Step 0 (cyc2376): 位置語なしの設置動詞も設置指示として保持する (第4形)。
+    // 「松明を3個置いて」で placement が付かず個数が作る数に化ける保持漏れの是正。
+    // 解決側では here と同等に扱う。「作って」は設置動詞を含まないため影響しない。
+    return { mode: "unspecified", anchor: null, dir: null };
   } catch { return null; }
 }
 

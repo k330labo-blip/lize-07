@@ -28,6 +28,7 @@ import { genSpeech } from "./gen_speech.js";
 import { parseOrder, resumeClarifyOrder, classifyClarifyUnmatched } from "./order_parser.js";
 import { resolveItem } from "./decomposer.js"; // 倉庫 W3-TEACH (cyc2355): 素材名→typeId の単一の正 (注文経路と共用)
 import { resolveRequestedTool, toolItemIdOf } from "./tool_request_math.js"; // 0-C4 R-C4-1 (cyc2375): 道具指定の実行側 reader 純粋核
+import { resolvePlacement, linkedPlacementCells, placementItemIdOf } from "./placement_resolve.js"; // 0-C4 R-C4-2 (cyc2376): 設置位置の実行側 reader 純粋核
 import { isCropMature, CROP_MATURITY_MAX, isCropBlock, cropBreakGate } from "./crop_maturity.js";
 import { resolveWorkAccess, ACCESS } from "./work_access.js"; // 基礎 遮蔽除去 (v0.4.76): 作業アクセス解決の純粋核
 import { evaluateDig } from "./dig_gate.js"; // 要望バッチA (v0.4.88): 掘削の統一ゲート
@@ -5192,10 +5193,49 @@ function startOrderFromParser(p, bot, r, o) {
   if (o.kind === "escort") { dps(bot, "cb_mode", "follow"); say(p, bot, "分かりました。そばを離れません", true); return; }
   if (o.kind === "watch") { applyChatAct(p, bot, r, "stay_anchor"); say(p, bot, "分かりました。ここで見張ります。敵が近づけば対応します", true); return; }
   if (o.kind === "build") {
-    // 0-C4 (cycle1321): 設置位置 (ここ/相対) は注文と一緒に保持する。設置実行への接続は次段。
-    if (o.placement && o.target) { try { r.pendingPlacement = { target: o.target?.block || o.target?.item || null, name: o.target?.name || null, placement: o.placement, at: Date.now() }; } catch {} }
+    // 0-C4 R-C4-2 (cyc2376): 設置位置は受理した同一呼び出しの中で、発話時点のスナップショット
+    // (発話者セル・次元・向き) に対して解決して凍結し、既存の startBuild/tickBuild へ渡す。
+    // tick を跨いだ解決はしない (所有者が移動した後の現在位置では解決しない)。
+    let placementSnap = null;
+    if (o.placement && o.target) {
+      try {
+        const yaw = Number(p.getRotation?.().y);
+        let viewDir = null;
+        if (Number.isFinite(yaw)) { const rad = yaw * Math.PI / 180; const vx = -Math.sin(rad), vz = Math.cos(rad); viewDir = Math.abs(vx) >= Math.abs(vz) ? { x: Math.sign(vx), z: 0 } : { x: 0, z: Math.sign(vz) }; }
+        placementSnap = { ownerPos: { x: Math.floor(p.location.x), y: Math.floor(p.location.y), z: Math.floor(p.location.z) }, dim: (() => { try { return p.dimension?.id ?? null; } catch { return null; } })(), viewDir };
+        r.pendingPlacement = { target: o.target?.block || o.target?.item || null, name: o.target?.name || null, placement: o.placement, at: Date.now(), ownerPos: placementSnap.ownerPos, dim: placementSnap.dim, viewDir: placementSnap.viewDir };
+      } catch {}
+    }
     const nm = o.target?.name || "";
     const bp = BLUEPRINTS.find((b) => nm && (b.name.includes(nm) || nm.includes(b.name) || b.id === nm));
+    if (o.placement && o.target?.block && placementSnap) {
+      if (bp && o.placement.mode === "relative") { // 設計 §4 Step 4: 図面原点の相対指定は未定義。黙って発話者位置に建てない
+        try { r.pendingPlacement = null; } catch {}
+        say(p, bot, "設置場所つきの建築は、まだできません。場所なしで頼んでください", true); return;
+      }
+      if (!bp) {
+        if (r.mission && r.mission.status === "active") { say(p, bot, "今の指示の途中です。やめるなら「やめて」と言ってください", true); return; }
+        const itemId = placementItemIdOf(o.target);
+        const anchorExpected = !!(o.placement.anchor && (o.placement.anchor.block || o.placement.anchor.item));
+        let anchorCell = null;
+        if (anchorExpected) { try { anchorCell = scanBlockNear(bot, r, placementItemIdOf(o.placement.anchor)); } catch {} }
+        const res = resolvePlacement({ placement: o.placement, ownerPos: placementSnap.ownerPos, viewDir: placementSnap.viewDir, anchorCell, anchorExpected });
+        try { r.pendingPlacement = null; } catch {} // 設置分岐に入ったら成功・失敗を問わず消費する (残留を仕様にしない)
+        if (!res.ok) {
+          if (res.reason === "anchor_not_found") say(p, bot, `${o.placement.anchor?.name || "設置先"}が、近くに見つかりません`, true);
+          else say(p, bot, "設置する場所が決められませんでした。場所を変えて、もう一度どうぞ", true);
+          return;
+        }
+        let occ = null; try { occ = (p.dimension || bot.dimension).getBlock(res.cell); } catch {}
+        if (occ && occ.typeId && occ.typeId !== "minecraft:air") { say(p, bot, "そこには、もう別のものがあります。置けませんでした", true); return; }
+        const amount = Math.max(1, Math.floor(o.amount ?? 1));
+        const relCells = amount > 1 ? linkedPlacementCells(amount, placementSnap.viewDir) : [{ dx: 0, dy: 0, dz: 0 }];
+        const cells = relCells.map((c) => ({ ...c, item: itemId }));
+        if (amount > 1) say(p, bot, `${nm}を${amount}個、置きます`, true);
+        startBuild(bot, p, r, nm || "設置", cells, res.cell, true);
+        return;
+      }
+    }
     if (!bp) {
       // v0.4.67: 図面が無くても、クラフトで作れる物 (道具・かまど・インゴット等) なら長期タスクとして作る
       const mo0 = parserOrderToMission(o);
