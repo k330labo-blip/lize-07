@@ -384,6 +384,9 @@ function rt(bot) {
   if (r.pendingConditionOrder === undefined) { // E-01 (cycle1722): 条件保留を DP cb_pending_condition から復元 (undefined センチネル方式、mission と同形。壊れた保存は保留なし)
     try { r.pendingConditionOrder = deserializePendingCondition(dp(bot, "cb_pending_condition", "")); } catch { r.pendingConditionOrder = null; }
   }
+  if (r.pendingGearSet === undefined) { // 0-F R-2 (cyc2379): 一式の残り部位を DP cb_pending_gear から復元 (undefined センチネル方式)。mission が無い/復元で破棄された場合は復元せず DP 残骸も掃除する (単独では発火させない)
+    try { const gj = dp(bot, "cb_pending_gear", ""); const arr = gj ? JSON.parse(gj) : null; const okArr = Array.isArray(arr) ? arr.filter((x) => typeof x === "string" && x.startsWith("minecraft:")) : []; r.pendingGearSet = (r.mission && okArr.length) ? okArr : null; if (!r.pendingGearSet) dps(bot, "cb_pending_gear", ""); } catch { r.pendingGearSet = null; }
+  }
   if (r.longtask === undefined) { // DP cb_longtask から復元
     try { const lj = dp(bot, "cb_longtask", ""); r.longtask = lj ? JSON.parse(lj) : null; } catch { r.longtask = null; }
   }
@@ -2763,6 +2766,7 @@ function finishMission(bot, owner, r) {
     if (Array.isArray(r.pendingGearSet) && r.pendingGearSet.length && owner) {
       const next = r.pendingGearSet.shift();
       if (!r.pendingGearSet.length) r.pendingGearSet = null;
+      savePendingGearSet(bot, r); // 0-F R-2 (cyc2379): 消費後の残りを保存し直す (再読込で残りが消えない)
       startMission(bot, owner, r, { kind: "gather", target: next, amount: 1, constraints: { hostiles: "avoid", forbiddenTargets: [] }, sideTasks: [], returnTo: "owner", name: null, tool: null, placement: null });
       persistMission(bot, r, true);
       return;
@@ -3378,6 +3382,12 @@ function tickLongTask(bot, owner, r, ctx) {
 // clearPendingCondition と対で使う。中止・保留失効で残すと、無関係な次ミッションの完了時に
 // 中止したはずの本来注文が finishMission 経由で復活する (ゾンビ復活) ため、終了経路では必ず消す。
 function clearPendingTool(r) { try { r.pendingAfterTool = null; r.requestedTool = null; r.toolAppliedLegIdx = null; } catch {} }
+// 0-F R-2 (cyc2379): 防具一式の残り部位 (pendingGearSet) の保存と掃除。従来はメモリのみ保持で、
+// (1) 再読込で残り部位が無言で消える (2) 中止・保留失効で畳まれず、無関係な次ミッションの完了時に
+// finishMission が拾って未依頼部位を開始しうる、という道具側 RG-1 と同じ非対称が残っていた。
+// 保存は DP cb_pending_gear (条件保留 cb_pending_condition と同作法)、掃除は終了経路から必ず通す。
+function savePendingGearSet(bot, r) { try { dps(bot, "cb_pending_gear", Array.isArray(r.pendingGearSet) && r.pendingGearSet.length ? JSON.stringify(r.pendingGearSet) : ""); } catch {} }
+function clearPendingGearSet(bot, r) { try { r.pendingGearSet = null; if (bot) dps(bot, "cb_pending_gear", ""); } catch {} }
 function cancelMission(bot, owner, r, silent = false) {
   clearPendingCondition(bot, r); // E-02+E-01: 中止は条件保留も畳む (保留だけが残って後で発火するのを防ぐ。DP 側も同時に消す)
   clearPendingTool(r); // RG-1 (cyc2377): 中止は道具調達の保留も畳む (条件保留と同じ非対称の解消)
@@ -3385,6 +3395,7 @@ function cancelMission(bot, owner, r, silent = false) {
   r.work = null; r.workHoldLeg = null; r.workChain = null; // cycle0033 F2: cancelled work must not keep occupying tickAutonomy
   r.buildPlan = null;
   r.buildStallKey = null; r.buildStallSince = 0; r.buildStallBest = null; r.buildDangerSince = null; r.buildDangerNoted = false; r.buildProgressAt = null; r.buildProgressIdx = null; r.buildProgressPlaced = null; // 基礎 R-3 (v0.4.81, cycle0417-a04): 中止した建築の stall/危険時計を残さない + BUILD-HOLD-NOEXIT (cycle1343)
+  clearPendingGearSet(bot, r); // 0-F R-2 (cyc2379): 中止は一式の残り部位も畳む (残すと次ミッション完了時に未依頼部位が開始する)
   if (!silent) say(owner, bot, "指示、中止しました。……今の作業はここまでです", true);
 }
 const SUSPEND_JP = { target_not_found: "対象が見つかりませんでした", no_progress: "進捗が止まってしまいました", cannot_reach_area: "指定の場所へ辿り着けませんでした", cannot_return: "帰還できませんでした", cannot_recover: "体力が回復しませんでした", unknown_step: "手順が読み取れませんでした", inv_unreadable: "持ち物が読み取れませんでした", hostile_stuck: "敵に阻まれて進めなくなりました" }; // cannot_recover は cycle0731 / hostile_stuck は cycle0606 で追加 (欠落していた表示漏れ)
@@ -4573,13 +4584,13 @@ system.runInterval(() => {
     if (!r.longtask && r.mission && r.mission.status === "suspended" && (r.mission.suspendReason === "cannot_recover" || r.mission.suspendReason === "inv_unreadable")) {
       const sres = tickSuspendedResume(bot, r);
       if (sres === "waiting") consumed = true;
-      else if (sres === "expired") { foldGatherBuildPlan(bot, p, r, "suspend_expired", r.mission); say(p, bot, `体力が回復しなかったため、指示を中断しました`, true); r.mission = null; clearPlanRecords(r); clearPendingTool(r); persistMission(bot, r, true); consumed = true; }
+      else if (sres === "expired") { foldGatherBuildPlan(bot, p, r, "suspend_expired", r.mission); say(p, bot, `体力が回復しなかったため、指示を中断しました`, true); r.mission = null; clearPlanRecords(r); clearPendingTool(r); clearPendingGearSet(bot, r); persistMission(bot, r, true); consumed = true; }
     }
     // cycle0606 PLAIN-SUSPEND-NOEXIT: 単発 suspended 6理由の期限型出口 (別担い手 tickPlainSuspendExpiry、10分で終了掃除)
     if (!consumed && !r.longtask && r.mission && r.mission.status === "suspended") {
       const pres = tickPlainSuspendExpiry(bot, r);
       // waiting は消費しない (保留中も通常行動を妨げない。従来の suspended 単発の振る舞いを維持)
-      if (pres === "expired") { const rsn = r.mission.suspendReason; say(p, bot, `保留が長引いたため、指示を中断しました。${SUSPEND_JP[rsn] || "進めなくなりました"}`, true); noteFail(bot, "mission:plain_suspend_expired", new Error(rsn || "")); r.mission = null; clearPlanRecords(r); clearPendingTool(r); persistMission(bot, r, true); consumed = true; }
+      if (pres === "expired") { const rsn = r.mission.suspendReason; say(p, bot, `保留が長引いたため、指示を中断しました。${SUSPEND_JP[rsn] || "進めなくなりました"}`, true); noteFail(bot, "mission:plain_suspend_expired", new Error(rsn || "")); r.mission = null; clearPlanRecords(r); clearPendingTool(r); clearPendingGearSet(bot, r); persistMission(bot, r, true); consumed = true; }
     }
     // キュー0副次 R1 (cycle1421): 単発ミッションの toolNeed は昇格接続が消費の入口になる (実装は tickLongTask 内の1か所のまま)
     if (!consumed && !r.longtask && r.toolNeed && tickToolPrepPromote(bot, p, r)) consumed = true;
@@ -5268,6 +5279,7 @@ function startOrderFromParser(p, bot, r, o) {
         if (!allOk) { say(p, bot, `${o.gearMaterial || ""}の一式は、今の調達経路では作りきれません。部位ごとに頼んでください`, true); return; }
         if (r.mission && r.mission.status === "active") { say(p, bot, "今の指示の途中です。やめるなら「やめて」と言ってください", true); return; }
         r.pendingGearSet = o.gearSet.slice(1).map((gid) => "minecraft:" + gid);
+        savePendingGearSet(bot, r); // 0-F R-2 (cyc2379): 設定と同時に DP へ保存する
         mo0.amount = 1; mo0.target = "minecraft:" + o.gearSet[0];
         startMission(bot, p, r, mo0);
         return;
