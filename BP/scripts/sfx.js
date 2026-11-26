@@ -38,6 +38,7 @@ export const SFX_TABLE = Object.freeze({
   amethyst:       { hit: "hit.amethyst_block", break: "dig.amethyst_block", step: "step.amethyst_block" }, // POLISH-SND-AMETHYST-01 (cycle0606, a10監査で専用ID確認済み): アメジスト系が stone へ落ちていた誤分類の是正
   shroomlight:    { hit: "hit.stone",  break: "dig.shroomlight",    step: "step.stone" },        // POLISH-SND-CLASS-A4 (cycle0936): break のみ専用ID確認済み、hit/step は stone 流用
   moss:           { hit: "hit.grass",  break: "dig.moss",           step: "step.moss" },         // POLISH-SND-CLASS-R2 (cycle1058): dig/step 専用ID確認済み、hit は grass 流用
+  candle:         { hit: "hit.candle", break: "dig.candle",       step: "step.cloth" },        // POLISH-SND-CLASS-CANDLE (cycle1134): dig/hit 専用ID確認済み、step は cloth 流用
   honey_block:    { hit: "hit.stone",  break: "dig.honey_block",    step: "step.stone" },        // POLISH-SND-CLASS-R1 (cycle0955): break 専用ID確認済み、hit/step は stone 流用
   lodestone:      { hit: "hit.stone",  break: "dig.lodestone",      step: "step.stone" },        // POLISH-SND-CLASS-R1 (cycle0955): break 専用ID確認済み、hit/step は stone 流用
 });
@@ -53,6 +54,7 @@ export const CONFIRMED_IDS = new Set([
   "dig.shroomlight", // cycle0936 a08: 専用ID確認済み (break のみ)
   "dig.honey_block", "dig.lodestone", // cycle0955 a07: 専用ID確認済み (break のみ)
   "dig.moss", "step.moss", // cycle1058 a07: 専用ID確認済み (break/step)
+  "dig.candle", "hit.candle", // cycle1134 a07: 専用ID確認済み (break/hit)
   "step.grass", "step.sand", "step.gravel", "step.cloth", "step.wood",
   "step.nether_wood", "step.stone", "step.netherrack", "step.nether_brick",
   "step.nether_gold_ore", "step.nylium", "step.iron",
@@ -170,11 +172,11 @@ export function materialOfTypeId(typeId) {
   if (id === "gravel" || id === "suspicious_gravel") return "gravel";     // 7
   if (id === "powder_snow") return "powder_snow";                         // 8
   if (id === "snow" || id === "snow_layer" || id === "snow_block" || id === "top_snow") return "snow"; // 9 (cycle0446: snow_block/top_snow が stone へ落ちていた誤分類を是正)
+  if (id === "cake" || id === "candle_cake" || id.endsWith("_candle_cake")) return "cloth"; // cycle1134: ケーキ形は cloth のまま (ろうそく単体は candle へ分離)
+  if (id === "candle" || id.endsWith("_candle")) return "candle"; // cycle1134: ろうそく17形は専用 dig.candle/hit.candle
   if (id.endsWith("_wool") || id.endsWith("_carpet")
       || id.endsWith("_bed") || id.endsWith("_banner") || id === "banner"
-      || id === "bed" || id === "carpet" || id === "wool"
-      || id === "candle" || id.endsWith("_candle")
-      || id === "cake" || id === "candle_cake" || id.endsWith("_candle_cake")) return "cloth"; // cycle0740 (a12): ケーキ系18形が stone へ落ちていた   // 10 (+a11 bed/banner 全色 / cycle0553: 素の banner / cycle0721: 素の bed/carpet/wool と ろうそく17形も stone へ落ちていた非対称を是正)
+      || id === "bed" || id === "carpet" || id === "wool") return "cloth"; // 10 (+a11 bed/banner 全色 / cycle0553: 素の banner / cycle0721: 素の bed/carpet/wool)
   if (id === "netherite_block") return "netherite";                      // 11a (cycle1303): 完全一致のみ。ancient_debris は巻き込まない
   if (id === "ice" || id === "packed_ice" || id === "blue_ice" || id === "frosted_ice") return "ice"; // 11b (cycle1322): 完全一致集合のみ (includes("ice") は将来の無関係 ID を巻き込むため不採用)
   if (id.includes("vines")) return "vines";                               // 11c (cycle1322): 複数形のみ。単数 vine は grass のまま (PLANT 側に "vines" を含む ID は無い)

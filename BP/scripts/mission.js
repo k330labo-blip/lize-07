@@ -286,14 +286,15 @@ function hostileDirective(m, s, obs) {
 // 寄り道ステップ自体は steps に残し、完了したら done にする（本ステップは進めない）。
 function sideDirective(m, obs) {
   if (obs?.invKnown === false) return null; // 所持が測れていない時は寄り道の完了判定をしない
-  if ((m.sideStreak || 0) >= SIDE_BUDGET) return null;
+  const continuation = obs?.sideContinuation === true; // SIDE-COOLDOWN-CHASE (cycle1134): 同一候補の接近継続は予算を消費しない
+  if (!continuation && (m.sideStreak || 0) >= SIDE_BUDGET) return null;
   if (!obs.foundSide) return null;
   if (Array.isArray(m.order?.constraints?.forbiddenTargets) && m.order.constraints.forbiddenTargets.includes(obs.foundSide)) return null; // Phase5 Slice1: 禁止対象の寄り道は旧セーブの step が残っていても発火させない
   const side = m.steps.find((s) => s.type === "side_collect" && s.status !== "done" && s.target === obs.foundSide);
   if (!side) return null;
   const have = measure(side, obs);
   if (have >= side.need) { side.status = "done"; return null; }
-  m.sideStreak = (m.sideStreak || 0) + 1;
+  if (!continuation) m.sideStreak = (m.sideStreak || 0) + 1;
   return { action: "work", target: side.target, reason: "side_collect_opportunistic", step: "side_collect", missionStatus: m.status };
 }
 

@@ -112,6 +112,7 @@ import { findSources, planFor } from "./sourcing.js";
 import { createMission, advance, missionSummary, withdrawKeyOf, STEP_TYPES } from "./mission.js";
 import { selectWithdrawCandidate, candKeyForFirstStep } from "./withdraw_candidate.js"; // Phase3 candKey B1 (v0.4.26): 候補選定・射影の純粋関数
 import { scanOpportunities, noteAttempt, pruneCooldowns } from "./side_tasks.js";
+import { createSideChase, chaseTick, sideChaseRangeFor } from "./side_chase.js"; // SIDE-COOLDOWN-CHASE (cycle1134): 接近保持と終端クールダウン
 import { BLUEPRINTS, buildOrderOf, materialsSummaryOf, resolveMaterialItem } from "./blueprints.js";
 import { designFactory, GOAL_ALIASES } from "./factory_design.js";
 import { simulate } from "./factory_sim.js";
@@ -279,7 +280,7 @@ function groundY(dim, x, z, fallback, refY) {
 function rt(bot) {
   if (!bots.has(bot.id)) bots.set(bot.id, { target: null, anchor: null, sayCd: 0, zapCd: 0, lastSay: "", lastPos: null, stuckSec: 0, scan: null, sessionStart: Date.now(), lastTopic: null, lastTopicAt: 0, moveAct: "follow", deliverFail: false, greetedDay: -1, wmem: null, perc: null, percAt: 0, percTargets: {}, work: null, goal: null, goalAt: 0, wander: null, wanderAt: 0, lastChunkKey: "",
     // v0.3.0 統合分
-    nav: null, navDim: null, navMode: "direct", mission: undefined, missionKills: 0, deliveredFlag: false, conv: null, fallbackStreak: 0, lastCtx: null, lastChatAt: 0, lastPraiseAt: 0, lastDangerAt: 0, sideState: { cooldowns: {}, now: 0 }, sideTask: null, mTargetLoc: null, mTargetType: null, mTargetEntity: null, mTargetKind: null, mFound: false, mAtReturn: false, mScan: null, percOpps: [], buildPlan: null, hyst: null, suspendNotified: false, usedHonesty: [],
+    nav: null, navDim: null, navMode: "direct", mission: undefined, missionKills: 0, deliveredFlag: false, conv: null, fallbackStreak: 0, lastCtx: null, lastChatAt: 0, lastPraiseAt: 0, lastDangerAt: 0, sideState: { cooldowns: {}, now: 0 }, sideTask: null, sideChase: null, sideHeldTask: null, sideContinuation: false, mTargetLoc: null, mTargetType: null, mTargetEntity: null, mTargetKind: null, mFound: false, mAtReturn: false, mScan: null, percOpps: [], buildPlan: null, hyst: null, suspendNotified: false, usedHonesty: [],
     lastAmbientAt: 0, equipCore: null, equipRestored: false, equipChanged: null, equipChangedAt: 0, equipFromOwner: false, justHealedAt: 0, lastAmmoCount: 0, lastHealCount: 0,
     // v0.3.9: 飛行・目標固定・ウォッチドッグ
     fly: null, flyDim: null, flyMode: "ground", ownerPosCache: null, moveTracker: null, moveDim: null, moveState: null, moveEvents: [], surfacebreathState: null, workglanceState: null, workglanceSeenAt: 0, catchsightState: null, catchsightPrevItemIds: null, catchsightPending: [], lastCatchSight: null, toolcheckState: null, loadpostureState: null, partnercheckState: null, ownerreturnState: null, idleState: null, lastIdle: null, idleSinceMs: null, idleAnchor: null, toolcheckSample: null, mTargetKey: "", mTargetSince: 0, mLastHave: -1, mBanKey: "", mBanUntil: 0, takeBan: null, watchHist: [], watchAt: 0, lastHopAt: 0,
@@ -3255,9 +3256,22 @@ function noteNightwatchTick(bot, r, c) {
 }
 function execSideTask(bot, owner, r, ctx, scan) {
   const t = r.sideTask; if (!t) return;
-  try { noteAttempt(r.sideState, t, Date.now()); } catch {}
+  // SIDE-COOLDOWN-CHASE (cycle1134): クールダウンは終端でのみ書く。接近中は同一候補を保持し続ける
+  try {
+    if (!r.sideChase) r.sideChase = createSideChase();
+    const range = sideChaseRangeFor(t.type);
+    let distNow = null;
+    try { distNow = dist(bot.location, t.pos); } catch {}
+    const candAlive = !!(ctx?.x?.opportunities || []).some((o) => t.targetId ? o.id === t.targetId : true);
+    const ev = chaseTick(r.sideChase, { task: t, distNow, candAlive: t.targetId ? candAlive : true, nowMs: Date.now(), range });
+    r.sideContinuation = ev.phase === "continue";
+    r.lastSideChase = { phase: ev.phase, reason: ev.reason || null, at: Date.now() };
+    if (ev.writeCooldown) { try { noteAttempt(r.sideState, t, Date.now()); } catch {} }
+    if (ev.phase === "abandon") { r.sideHeldTask = null; return; }
+    if (ev.phase === "complete" && t.type !== "pickup" && t.type !== "hunt") { /* break/harvest は距離完了を使わない */ }
+  } catch {}
   if (t.type === "pickup") {
-    r.target = { x: t.pos.x + 0.5, y: t.pos.y, z: t.pos.z + 0.5 };
+    r.target = { x: t.pos.x, y: t.pos.y, z: t.pos.z }; // cycle1134: item 実体座標に +0.5 を付けない
     const e = (scan?.items || []).find((x) => x.id === t.targetId);
     if (e && dist(bot.location, e.location) < 1.9) pickupItemEntity(bot, owner, e, ctx);
   } else if (t.type === "hunt") {
@@ -3346,6 +3360,15 @@ function tickMission(bot, owner, ctx, scan) {
     try { pruneCooldowns(r.sideState, Date.now()); } catch {}
     try { if (r.takeBan) pruneTakeBans(r.takeBan, Date.now()); } catch {} // cycle0033 a07: prune wiring (was test-only, state grew monotonically)
     try { r.sideTask = scanOpportunities(ctx, sideOrders, r.sideState); } catch {}
+    // SIDE-COOLDOWN-CHASE (cycle1134): scan が幾何ゲートで外れても、接近中の候補実体が存続する間は保持する
+    try {
+      if (!r.sideTask && r.sideChase?.activeKey && r.sideHeldTask) {
+        const held = r.sideHeldTask;
+        const opp = (ctx?.x?.opportunities || []).find((o) => held.targetId ? o.id === held.targetId : (o.typeId === held.itemType && held.pos && Math.abs((o.pos?.x ?? 1e9) - held.pos.x) < 1 && Math.abs((o.pos?.z ?? 1e9) - held.pos.z) < 1));
+        if (opp) { r.sideTask = { ...held, pos: { x: opp.pos.x, y: opp.pos.y, z: opp.pos.z } }; r.sideHeldTask = r.sideTask; }
+      }
+      if (r.sideTask) r.sideHeldTask = r.sideTask;
+    } catch {}
   }
   const step = m.steps[m.currentStep];
   let ft = { found: false };
@@ -3464,7 +3487,7 @@ function tickMission(bot, owner, ctx, scan) {
     regionSearch, searchExhausted,
     invCounts, kills: r.missionKills || 0, nearestDist,
     dangerDist: ctx.danger.nearestDist, pos: posSnap, dim: dimSnap,
-    foundTarget: !!ft.found, foundSide: r.sideTask ? r.sideTask.itemType : null,
+    foundTarget: !!ft.found, foundSide: r.sideTask ? r.sideTask.itemType : null, sideContinuation: r.sideContinuation === true,
     selfHpPct: ctx.self.hpPct, invFull: ctx.inv.full, atReturn: r.mAtReturn, delivered: !!r.deliveredFlag, posKnown, // Step 3c-2: 位置が測れていない間は true にならない
     invKnown: ctx.x?.obs ? ctx.x.obs.inv === "ok" : ctx.x?.invOk !== false, dangerKnown: ctx.x?.obs ? ctx.x.obs.scan === "ok" : ctx.x?.scanOk !== false,
     withdrawCandidate: wCand, withdrawInRange: wCand ? dist(bot.location, { x: wCand.x + 0.5, y: wCand.y + 0.5, z: wCand.z + 0.5 }) <= WITHDRAW_RANGE : false,
