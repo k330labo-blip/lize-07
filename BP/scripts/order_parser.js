@@ -1250,9 +1250,29 @@ export function parseOrder(input) {
   if (kind === "gather" && main.target?.entity) {
     return { kind: "clarify", target: main.target, amount: main.amount ?? null, constraints, sideTasks: [], negations, unresolved: [...unresolved, { slot: "target", reason: "gather_target_is_entity" }], caps, returnTo, raw };
   }
+  // 0-C2 R-C2-6 U6-1 (cyc2384): 肯定形「<主対象>だけ集めて/倒して」の限定を allowOnly として保持する。
+  // 従来は否定形「X以外は〜しないで」からしか allowOnly が立たず、肯定形の限定は落ちていた。
+  // 発火条件: 主対象のメンション直後が「だけ」、kind が gather/hunt、否定が無いこと
+  // (「鉄は掘らずに石炭だけ…」は否定側が正で、二重に立てない)。数量接頭辞の「だけ」
+  // (「10個だけ」) はメンション直後ではないため発火しない。条件節の「間だけ」は主対象の
+  // メンション直後には来ない。永続化はしない (U6-2: 注文自身の制約としてのみ伝播する)。
+  let allowOnlyPos = null;
+  try {
+    if ((kind === "gather" || kind === "hunt") && negations.length === 0) {
+      const cl = clauses[main.clause] || "";
+      const hs = hitsPerClause[main.clause] || [];
+      const mid = main.target?.item ?? main.target?.block ?? main.target?.entity ?? null;
+      if (mid) for (const h of hs) {
+        const t = targetOf(h);
+        const hid = t?.item ?? t?.block ?? t?.entity ?? null;
+        if (hid === mid && cl.slice(h.end, h.end + 2) === "だけ") { allowOnlyPos = { target: main.target, verb: kind }; break; }
+      }
+    }
+  } catch { allowOnlyPos = null; }
   return {
     kind,
     target: main.target,
+    allowOnly: allowOnlyPos,
     amount: main.amount,
     amountMeta: amountMeta ? { perRun: amountMeta.perRun ?? null, repeats: amountMeta.repeats ?? null, relative: amountMeta.relative === true, corrected: amountMeta.corrected === true } : null,
     constraints,
