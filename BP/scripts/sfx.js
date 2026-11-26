@@ -37,6 +37,7 @@ export const SFX_TABLE = Object.freeze({
   coral:          { hit: "hit.stone",  break: "dig.coral",          step: "step.stone" },        // POLISH-SND-TIER3-CORAL (cycle1322): hit/step は stone 代用
   amethyst:       { hit: "hit.amethyst_block", break: "dig.amethyst_block", step: "step.amethyst_block" }, // POLISH-SND-AMETHYST-01 (cycle0606, a10監査で専用ID確認済み): アメジスト系が stone へ落ちていた誤分類の是正
   shroomlight:    { hit: "hit.stone",  break: "dig.shroomlight",    step: "step.stone" },        // POLISH-SND-CLASS-A4 (cycle0936): break のみ専用ID確認済み、hit/step は stone 流用
+  moss:           { hit: "hit.grass",  break: "dig.moss",           step: "step.moss" },         // POLISH-SND-CLASS-R2 (cycle1058): dig/step 専用ID確認済み、hit は grass 流用
   honey_block:    { hit: "hit.stone",  break: "dig.honey_block",    step: "step.stone" },        // POLISH-SND-CLASS-R1 (cycle0955): break 専用ID確認済み、hit/step は stone 流用
   lodestone:      { hit: "hit.stone",  break: "dig.lodestone",      step: "step.stone" },        // POLISH-SND-CLASS-R1 (cycle0955): break 専用ID確認済み、hit/step は stone 流用
 });
@@ -51,6 +52,7 @@ export const CONFIRMED_IDS = new Set([
   "hit.amethyst_block", "dig.amethyst_block", "step.amethyst_block", // cycle0606 a10: 専用ID確認済み
   "dig.shroomlight", // cycle0936 a08: 専用ID確認済み (break のみ)
   "dig.honey_block", "dig.lodestone", // cycle0955 a07: 専用ID確認済み (break のみ)
+  "dig.moss", "step.moss", // cycle1058 a07: 専用ID確認済み (break/step)
   "step.grass", "step.sand", "step.gravel", "step.cloth", "step.wood",
   "step.nether_wood", "step.stone", "step.netherrack", "step.nether_brick",
   "step.nether_gold_ore", "step.nylium", "step.iron",
@@ -160,6 +162,7 @@ export function materialOfTypeId(typeId) {
   if (GLASSLIKE_IDS.has(id)) return "glass";                              // 3b (a11): 発光ガラス系
   if (id.endsWith("_leaves") || id === "leaves" || id === "leaves2") return "grass"; // 4: 葉は草系 (cycle0832 a11 A1: レガシー素形 leaves/leaves2 も同素材)
   if (GRASS_IDS.has(id)) return "grass";                                 // 5: 土は grass グループ
+  if (id === "moss_block" || id === "moss_carpet") return "moss"; // cycle1058 R2: PLANT_IDS (5b) より前に完全一致で抜く (pale_moss 系は巻き込まない)
   // 5b (cycle0922): 植物は grass。flower_pot は土器なので _flower の対象外に明示する
   if (id !== "flower_pot" && (PLANT_IDS.has(id) || id === "sapling" || id === "flower" || id === "tallgrass" || id === "mushroom" || id.endsWith("_sapling") || id.endsWith("_flower") || id.endsWith("_mushroom"))) return "grass"; // cycle0832 a11 A1: レガシー素形 sapling/flower/tallgrass/mushroom
   if (id === "sand" || id === "red_sand" || id === "suspicious_sand"

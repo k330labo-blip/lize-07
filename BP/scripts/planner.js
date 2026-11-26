@@ -159,6 +159,7 @@ function uExploreNearby(c, mem) {
 
 function uReturnHome(c) {
   if (!c.home?.registered) return 0;
+  if (c.home?.dimensionSame === false) return 0; // FW-03/RR-08 (cycle1058): 別次元拠点は deposit と同形に不可 (UNKNOWN は不可と読まない)
   const d = num(c.home?.dist, 999);
   let u = 0;
   if (c.env?.isNight && d > 24) u = Math.max(u, 0.52); // 夜に遠出しているなら帰る
@@ -171,7 +172,7 @@ function uReturnHome(c) {
 // 汎用 viable 枠 (cycle0404): 目標自身の作用で完了へ前進できる経路が無い目標は無期限に保持しない。
 // viable===false の目標は scoreGoals で効用 0 へ降ろされる (受け皿の dwell 減衰後にも負けないためキャップではなく 0)。例外時は降ろさない (UNKNOWN を不可と読まない)。
 function restViable(c) {
-  if (c.home?.registered) return true;
+  if (c.home?.registered && c.home?.dimensionSame !== false) return true; // FW-03/RR-08 (cycle1058): 別次元拠点だけでは viable にしない (回復アイテム項は下で別途判定)
   // RR-01 (cycle1153): 食料項は「useHealItem で回復に変換できる在庫」がある場合に限る。
   // 実 buildContext では HEAL_ITEMS の食料は hasHealItem も必ず立てるため正規の回復食は従来どおり viable。
   // HEAL_ITEMS 外の食料だけが外れる (従来も実行側で回復しなかった)。

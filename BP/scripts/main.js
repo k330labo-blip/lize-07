@@ -846,6 +846,9 @@ function deliverFilterFor(rule) {
   return null;
 }
 function homeOf(bot) { try { return JSON.parse(dp(bot, "cb_home", "")); } catch { return null; } }
+/* FW-03/RR-08 (cycle1058): 帰還点の単一解決。次元一致時のみ入庫点 (+0.5,+1,+0.5) を返し、不一致・dim欠落・不正形は null。
+   呼び手は既存フォールバック (主人背後等) へ倒すこと。コンテナセル中心 {...home} を目標化しない (体が入れないセル＋別次元座標の追跡を防ぐ) */
+function homeEntryPoint(bot, h) { try { if (!h || h.dim !== bot.dimension.id) return null; const x = Number(h.x), y = Number(h.y), z = Number(h.z); if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return null; return { x: x + 0.5, y: y + 1, z: z + 0.5 }; } catch { return null; } }
 // BH-04 (cycle1215): stay アンカーの単一の出入り口。位置も cb_mode と同じ entity DP (cb_anchor) へ保存し、
 // runtime 再生成 (再起動・再読込・bots.delete) 後も待機位置が移転しないようにする。消去も必ずここを通す
 // (DP 化と消去同期を分離すると、消したはずのアンカーが再起動で復活する)。
@@ -867,10 +870,10 @@ function execTarget(bot, owner, rule, ctx, scan) {
     case "stay_anchor": { const anch = anchorOf(bot); if (anch && dp(bot, "cb_mode", "") === "stay" && (!anch.dim || anch.dim === bot.dimension.id)) return { x: anch.x, y: anch.y, z: anch.z }; return r.anchor || bot.location; } // BH-04: stay 中は DP の定位置を正とし、次元が違う場合は現在位置へ倒す。一時的な stay_anchor (取引・見張り等) は従来どおりメモリ側を使う
     case "idle_hover": return bot.location;
     case "patrol_home": {
-      const c0 = home || o; const a = (Date.now() / 4000) % (Math.PI * 2);
+      const c0 = homeEntryPoint(bot, home) || o; const a = (Date.now() / 4000) % (Math.PI * 2);
       return { x: c0.x + Math.cos(a) * 5, y: c0.y, z: c0.z + Math.sin(a) * 5 };
     }
-    case "return_home": case "go_home": case "rest_at_home": return home ? { ...home } : behind(2);
+    case "return_home": case "go_home": case "rest_at_home": return homeEntryPoint(bot, home) || behind(2);
     case "deposit": case "chest_alert": return home ? { x: home.x + 0.5, y: home.y + 1, z: home.z + 0.5 } : behind(2);
     case "deliver_all": case "deliver_food": case "deliver_valuable": return behind(1.5);
     case "pickup_valuable": return scan?.valuableItem?.location || scan?.nearestItem?.location || behind(3);
@@ -1370,7 +1373,7 @@ function tickAutonomy(bot, owner, ctx, effMove) {
       else { try { r.target = behindOf(owner, 2); r.moveAct = "follow"; } catch {} }
       break; }
     case "explore_nearby": wanderTo(r, bot, owner); break;
-    case "return_home": { const h = homeOf(bot); if (h) r.target = { ...h }; break; }
+    case "return_home": { const h = homeOf(bot); const ep = homeEntryPoint(bot, h); if (ep) r.target = ep; else { try { r.target = behindOf(owner, 2); } catch {} } break; }
     case "rest_recover": {
       const h = homeOf(bot);
       if (!h) {
@@ -1381,7 +1384,7 @@ function tickAutonomy(bot, owner, ctx, effMove) {
         else { try { const res = core.useHealItem(); if (res?.reason !== "eating") { r.lastUseItem = { act: "use_heal_item", ok: !!res?.ok, reason: res?.reason || null, item: res?.item || null, at: Date.now(), via: "rest_recover" }; commitLastAction(r, r.lastUseItem); if (res?.ok) { try { sfxEat(bot.dimension, bot.location, res?.item || null); } catch {} } } } catch (e) { r.lastUseItem = { act: "use_heal_item", ok: false, reason: "API_ERROR", item: null, at: Date.now(), via: "rest_recover" }; commitLastAction(r, r.lastUseItem); noteFail(bot, "use_heal_item:exception", e, {expDone: true}); } }
         break;
       }
-      r.target = { ...h };
+      const epR = homeEntryPoint(bot, h); if (epR) r.target = epR; else { try { r.target = behindOf(owner, 2); } catch {} }
       /* S-01 完了作用: 拠点到着後だけ回復する (R-02 の到着 gate と対)。HP>=0.95 で uRestRecover が 0 になり目標は自然に外れる */
       if (h.dim === bot.dimension.id && dist(bot.location, { x: h.x + 0.5, y: h.y + 1, z: h.z + 0.5 }) < 3) {
         try { const hc = bot.getComponent("minecraft:health"); if (hc && hc.currentValue < hc.effectiveMax) hc.setCurrentValue(Math.min(hc.effectiveMax, hc.currentValue + 2)); } catch {}
@@ -3316,6 +3319,9 @@ function missionTargetValid(bot, r) {
 function tickMission(bot, owner, ctx, scan) {
   const r = rt(bot); const m = r.mission;
   if (!m || m.status !== "active") return false;
+  /* forbids G6-a (cycle1058): 開始後に記録された禁止も実行中 mission の寄り道・引き出しゲートへ届ける (G6-b の longtask 和集合パターンの横展開)。
+     和集合は単調増加のみ。G3 の解除が入ったら置換へ見直すこと */
+  try { if (m.order) { const fbNow = unionForbiddenIds(m.order?.constraints?.forbiddenTargets, r.sessionForbids, m.order?.kind || "gather"); if (fbNow.length) m.order.constraints = { ...(m.order.constraints || {}), forbiddenTargets: fbNow }; } } catch {}
   // 所持品が読めない時は「0個」と誤認して進めない（unknown を 0 と混同しない）
   if (ctx.x && ctx.x.invOk === false) {
     // cycle0033 F3: count consecutive unreadable on mission (persisted); suspend over limit; throttled noteFail
@@ -4457,7 +4463,7 @@ function applyChatAct(p, bot, r, act) {
   if (act === "follow") dps(bot, "cb_mode", "follow");
   if (act === "stay_anchor") { dps(bot, "cb_mode", "stay"); try { const bl = bot.location; setAnchor(bot, r, { x: bl.x, y: groundY(bot.dimension, bl.x, bl.z, bl.y, bl.y), z: bl.z }, bot.dimension.id); } catch { setAnchor(bot, r, { ...bot.location }, bot.dimension.id); } } // BH-04/BH-11: メニュー経路と同形に DP 保存＋地面寄せ
   if (act === "patrol_home") dps(bot, "cb_mode", "work");
-  if (act === "return_home") { const h = homeOf(bot); if (h) r.target = { ...h }; }
+  if (act === "return_home") { const h = homeOf(bot); const ep = homeEntryPoint(bot, h); if (ep) r.target = ep; }
   if (act === "go_owner") { try { const want = { x: p.location.x + 1, y: p.location.y, z: p.location.z }; teleportNearOwnerGuarded(bot, r, p.dimension, want, p.location); } catch {} } // queue3 step2: place ゲート経由
 }
 function parserOrderToMission(o) {
