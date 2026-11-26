@@ -67,6 +67,7 @@ import { createTakeBanState, recordTakeBan, isTakeBanned, pruneTakeBans } from "
 import { createWorkBanState, recordWorkBan, isWorkBanned, pruneWorkBans } from "./work_ban_math.js"; // cycle0832 F5: work層の見切り ban (hold枯渇後に到達不能候補を選び直す無限ループの是正)
 import { createOreSpotState, noteOreSpot, sampleOreSpot } from "./orespot_math.js"; // POLISH-ANIM-ORESPOT-01 (cycle0832): 貴重鉱石への二度見 (表示層のみ・実機確認待ち)
 import { createHomesightState, noteHomesight, sampleHomesight } from "./homesight_math.js"; // POLISH-ANIM-HOMESIGHT-01 (cycle0900): 拠点が見える距離まで帰ってきたときの小さな頷き (表示層のみ・実機確認待ち)
+import { createSleepwatchState, noteSleepwatch, sampleSleepwatch, sleepwatchYawPullDeg } from "./sleepwatch_math.js"; // POLISH-ANIM-SLEEPWATCH-01 (cycle0910): 主人が眠り始めた瞬間に一度だけ頭を向け直す見守り視線 (表示層のみ・実機確認待ち)
 import { createWorkglanceState, noteWorkglance, sampleWorkglance } from "./workglance_math.js"; // POLISH-ANIM-WORKGLANCE-01 (cycle1728, v0.5.19)
 import { createCatchsightState, noteCatchsight, sampleCatchsight } from "./catchsight_math.js";
 import { createRainShelterState, noteRainShelter, sampleRainShelter } from "./rainshelter_math.js"; // POLISH-ANIM-RAINSHELTER-01 (cycle2231): 持続雨の待機中に屋根方向へ視線を寄せる (表示層のみ・実機確認待ち) // POLISH-ANIM-CATCHSIGHT-01 (cycle2200): 主人が投げた物の追視 (表示層のみ・実機確認待ち)
@@ -649,6 +650,7 @@ function buildContext(bot, owner) {
   c.x.currentChunk = `${dimShort}:${Math.floor(bot.location.x / 16)},${Math.floor(bot.location.z / 16)}`;
   try { c.owner.onFire = !!owner.isOnFire; } catch {}
   try { c.x.ownerInBed = !!owner.isSleeping; } catch {}
+  noteSleepwatchTick(bot, r, c); // POLISH-ANIM-SLEEPWATCH-01 (cycle0910): ownerInBed はこの行で初めて立つため、feeder は知覚tick列 (上記) でなく必ずここ (設定直後) で呼ぶ。前に置くと毎回 undefined で永遠に発火しない (cycle0910-a04 実測)
   try { const oc0 = invOf(owner); if (oc0) c.x.ownerInvFull = oc0.emptySlotsCount === 0; } catch {}
   if (scan && scan.nearestHostile) { try { c.danger.ownerTargeted = dist(scan.nearestHostile.location, owner.location) < dist(scan.nearestHostile.location, bot.location); } catch {} }
   // バイオーム正規化（getBiome の長いID → ルール語彙）
@@ -3857,6 +3859,20 @@ function noteOrespotTick(bot, r, c) {
     if (out) r.lastOreSpot = { at: Date.now(), cellKey: out.cellKey };
   } catch {}
 }
+// POLISH-ANIM-SLEEPWATCH-01 (cycle0910): feeder は既存観測 (c.x.ownerInBed / c.self.distOwner / c.owner.dimensionSame) だけを使い新規走査なし。
+// 就寝状態は buildContext が owner.isSleeping (正式版API) から供給済み。状態は純粋核が新しい state を返すため代入で保持する (揮発のみ)。
+function noteSleepwatchTick(bot, r, c) {
+  try {
+    if (!bot || !r) return;
+    if (!r.sleepwatchState) r.sleepwatchState = createSleepwatchState();
+    let inWater = false; try { inWater = !!bot.isInWater; } catch {}
+    const suppressed = !!((c?.danger?.count ?? 0) > 0) || r.selfFalling === true || inWater || !!r.work;
+    const d = c?.self?.distOwner;
+    const out = noteSleepwatch(r.sleepwatchState, { nowMs: Date.now(), ownerSleeping: c?.x?.ownerInBed === true, ownerDist: typeof d === "number" && Number.isFinite(d) && d < 900 ? d : null, sameDimension: c?.owner?.dimensionSame === true, suppressed, overlayActive: false });
+    r.sleepwatchState = out.state;
+    if (out?.fired) r.lastSleepWatch = { at: Date.now(), dist: typeof d === "number" ? d : null };
+  } catch {}
+}
 // POLISH-ANIM-HOMESIGHT-01 (cycle0900): feeder は既存 ctx.home (dist/registered/dimensionSame) だけを使い新規走査なし
 function noteHomesightTick(bot, r, c) {
   try {
@@ -3959,6 +3975,7 @@ function applyGaze(bot, owner, ctx, scan) {
     if (rot && r.villagergreetState) { try { const vg = sampleVillagergreet(r.villagergreetState, Date.now()); if (vg.active) rot = { ...rot, y: rot.y + vg.yawDeg, x: rot.x + vg.pitchDeg }; } catch {} } // POLISH-ANIM-VILLAGERGREET-01 (cycle0855): 重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot && r.orespotState) { try { const os2 = sampleOreSpot(r.orespotState, Date.now()); if (os2.active) rot = { ...rot, y: rot.y + os2.yawDeg, x: rot.x + os2.pitchDeg }; } catch {} } // POLISH-ANIM-ORESPOT-01 (cycle0832): 重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot && r.homesightState) { try { const hs2 = sampleHomesight(r.homesightState, Date.now()); if (hs2.active) rot = { ...rot, x: rot.x + hs2.pitchDeg }; } catch {} } // POLISH-ANIM-HOMESIGHT-01 (cycle0900): 重畳の最下位 (表示層のみ・実機確認待ち)
+    if (rot && r.sleepwatchState) { try { const sw2 = sampleSleepwatch(r.sleepwatchState, Date.now()); if (sw2.active) { let yawPull = 0; try { if (owner) { const gr = gazeRotation(bot.location, { x: owner.location.x, y: owner.location.y + 1.4, z: owner.location.z }); yawPull = sleepwatchYawPullDeg(rot.y, gr?.y); } } catch {} rot = { ...rot, y: rot.y + yawPull, x: rot.x + sw2.pitchDeg }; } } catch {} } // POLISH-ANIM-SLEEPWATCH-01 (cycle0910): 重畳の最下位 (表示層のみ・実機確認待ち。体は回さない)
     if (rot) { try { bot.setRotation(rot); } catch {} }
   }
   if (gz.say && Math.random() < 0.4) sayAmbient(owner, bot, gz.say);

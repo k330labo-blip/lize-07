@@ -386,11 +386,14 @@ function searchDirective(m, s, obs, reason) {
     // cycle2248 裁定 (a10 実測): 進捗 (have 増加) でも戻らないと、必要量の大きい正常な長期採取が
     // 累積 20,001 観測で進捗中に target_not_found 保留になる (REGION-TOTAL-PROGRESS-BLIND)。
     // 他の全見切りカウンタと同じく進捗認定点で戻す。進捗ゼロなら累積が続くため終了保証は不変。
-    s.regionTotalObs = (s.regionTotalObs || 0) + 1;
-    if (s.regionTotalObs > REGION_TOTAL_LIMIT) { s.regionTotalObs = 0; return null; }
     // cycle0753-a02 ケースE: region 探索中でも所持が増えたら進捗として region 系カウンタを戻す (誤 suspend 防止)
+    // cycle0910 (REGION-TOTAL-RESET-AFTER-LIMIT 是正, cycle0900-a03 実測): リセットは加算・上限判定より前に置く。
+    // 後に置くと、累積が上限ちょうどに達した region 観測で have が増えても上限超過が先に発火し、
+    // 進捗中にもかかわらず null (= target_not_found 保留) になる。regionFrozenObs 側 (リセット→判定) と順序を揃える。
     if (typeof s.have === "number" && s.have > (s.regionLastHave ?? -1)) { s.regionObs = 0; s.regionFrozenObs = 0; s.regionTotalObs = 0; }
     s.regionLastHave = typeof s.have === "number" ? s.have : (s.regionLastHave ?? 0);
+    s.regionTotalObs = (s.regionTotalObs || 0) + 1;
+    if (s.regionTotalObs > REGION_TOTAL_LIMIT) { s.regionTotalObs = 0; return null; }
     // cycle0753: Known な region 探索は 49 区画で 1,900 観測を正当に超える (digdown 契約テストが
     // 「探索が続く」ことを固定) ため観測数では見切らない。出口は main 側 searchExhausted が担う。
     // ただし情報ゼロ (target/pos が unknown) の凍結が恒常化した場合は下の累計上限で見切る。
