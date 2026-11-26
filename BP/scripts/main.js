@@ -86,7 +86,7 @@ import { createPartnerCheckState, notePartnerCheck, partnerCheckOffset } from ".
 import { createEnderavertState, noteEnderavert, sampleEnderavert } from "./enderavert_math.js"; // POLISH-ANIM-ENDERAVERT-01 (cycle1940): 表示層のみ・実機確認待ち
 import { createSurveyLatch, recoverSurveyLatch, surveyLatchAvailable, tripSurveyLatch, applySurveyChunkOutcome, shouldTripGlobalLatch, pruneGlobalErrorEvents } from "./survey_broken.js"; // SURVEY-BROKEN-PERMANENT 是正 (cycle0628): 進捗で fails リセット＋区画隔離＋全体ラッチのクールダウン回復
 import { createXpGlanceState, noteXpGlance, sampleXpGlance, blendXpGlanceGaze } from "./xpglance_math.js"; // POLISH-ANIM-XPGLANCE-01 (cycle0628): 表示層のみ・実機確認待ち
-import { restoreForbids, mergeSessionForbids, serializeForbids, forbiddenTargetIds, unionForbiddenIds, normForbiddenId, isForbiddenWorkTarget, removeSessionForbids } from "./session_forbids.js"; // cycle0505: forbids G4 record 側の正規化 // cycle0117: G2/G6-b 読み手 (unionForbiddenIds/forbiddenTargetIds) // Phase5 (cycle1923): sessionForbids の復元純粋核 / 読み手R1 (cycle2006) / 保存の単一形 (cycle2036)
+import { restoreForbids, mergeSessionForbids, serializeForbids, forbiddenTargetIds, unionForbiddenIds, normForbiddenId, isForbiddenWorkTarget, removeSessionForbids, recomputeForbiddenIds, deriveBaseForbiddenIds } from "./session_forbids.js"; // cycle0505: forbids G4 record 側の正規化 // cycle0117: G2/G6-b 読み手 (unionForbiddenIds/forbiddenTargetIds) // Phase5 (cycle1923): sessionForbids の復元純粋核 / 読み手R1 (cycle2006) / 保存の単一形 (cycle2036)
 import { createMusicnodState, noteMusicnod, sampleMusicnod } from "./musicnod_math.js"; // POLISH-ANIM-MUSICNOD-01 (cycle2006): 表示層のみ・実機確認待ち
 import { createIdleState, noteIdle, sampleIdle } from "./idle_math.js"; // POLISH-ANIM-IDLE-01 (cycle2020): 待機モーション (表示層のみ・実機確認待ち)
 import { createLookLeadState, tickLookLead } from "./looklead_math.js"; // POLISH-ANIM-LOOKLEAD-01 (cycle2036): 作業対象への視線の先行 (表示層のみ・実機確認待ち)
@@ -2481,9 +2481,10 @@ function pickupItemEntity(bot, owner, itemEnt, ctx) {
 }
 function startMission(bot, owner, r, mo, announce = true, opts = {}) {
   // Phase5 読み手R1 (cycle2006): セッション禁止を入口でマージする。主対象自体が禁止なら leg でない注文は立てない (legsOnly は decomposer 側の完全一致除外に任せる)
+  const baseFb579 = Array.isArray(mo.constraints?.forbiddenTargets) ? [...mo.constraints.forbiddenTargets] : []; // v0.5.79: 注文由来の禁止 (base) を merge 前に固定。セッション由来分は毎tick再計算で出し入れする
   try { const mg = mergeSessionForbids(r.sessionForbids, mo); if (mg.mo) mo = mg.mo; if (mg.blocked) { if (announce || mo.legsOnly) say(owner, bot, `その対象は、しないと約束しています。${nameOfItem(mo.target)}は対象にしません`, true); return null; } } catch {} // cycle0117 G2: legsOnly も入口で止める (出口は呼び出し側A/Bに配線済み)
   // 0-C2 reader (cycle1455): allowOnly was stored but never read; gate non-leg hunt/gather missions to the allowed target only (legs are means, not targets).
-  try { if (!mo.legsOnly && r.allowOnly && mo.target && (mo.kind === "hunt" || mo.kind === "gather")) { const tid1455 = typeof mo.target === "string" ? mo.target : (mo.target?.item || mo.target?.block || mo.target?.entity || null); if (tid1455 && !isAllowedByAllowOnly(r.allowOnly, tid1455, mo.kind)) { if (announce) say(owner, bot, `その対象は対象外です。許可されている対象だけにします`, true); return null; } } } catch {}
+  try { if (!mo.legsOnly && r.allowOnly && mo.target && (mo.kind === "hunt" || mo.kind === "gather")) { const tid1455 = typeof mo.target === "string" ? mo.target : (mo.target?.item || mo.target?.block || mo.target?.entity || null); if (tid1455 && !isAllowedByAllowOnly(r.allowOnly, tid1455, mo.kind)) { if (announce) say(owner, bot, `その対象は対象外です。許可されている対象だけにします`, true); return null; } } if (!mo.legsOnly && r.allowOnly && Array.isArray(mo.sideTasks) && mo.sideTasks.length) { const keptSides = mo.sideTasks.filter((st) => { const sid = typeof st?.target === "string" ? st.target : (st?.target?.item || st?.target?.block || st?.target?.entity || null); return !sid || isAllowedByAllowOnly(r.allowOnly, sid, st?.kind || mo.kind); }); if (keptSides.length !== mo.sideTasks.length) mo = { ...mo, sideTasks: keptSides }; } } catch {} // v0.5.79: allowOnly は副目標にも適用する (a16 P1: 主目標だけ許可しても副目標が素通りしていた)
   // 0-C2 読み手 (cycle1337): セッション上限 (r.caps) を mission 制約へ届け、狩猟量を上限で clamp する
   try { const mergedCaps = mergeCaps(mo.constraints?.caps, r.caps); if (mergedCaps.length) { mo = { ...mo, constraints: { ...(mo.constraints || {}), caps: mergedCaps } }; if (mo.kind === "hunt") { const cp = capForTarget(mergedCaps, mo.target, "hunt"); if (cp !== null && (mo.amount ?? 1) > cp) mo = { ...mo, amount: cp }; } } } catch {}
   if (!mo.legsOnly) r.toolPrepTotal = 0; // キュー0副次 R1 (cycle1421): 道具準備の通算上限は新規注文ごとに数え直す (leg 子ミッションでは消さない)
@@ -2493,9 +2494,10 @@ function startMission(bot, owner, r, mo, announce = true, opts = {}) {
     try { ltPlan = planLongTask(mo, countInv(bot), invDurabilityOf(bot)); } catch { ltPlan = null; }
     // v0.4.67: 計画処理は ID によって minecraft: が無いと失敗する (stone_axe 等)。読み取り側は付けないので付けて再試行
     if (!(ltPlan && ltPlan.feasible) && typeof mo.target === "string" && !mo.target.includes(":")) { try { const p2 = planLongTask({ ...mo, target: "minecraft:" + mo.target }, countInv(bot), invDurabilityOf(bot)); if (p2 && p2.feasible) { ltPlan = p2; mo = { ...mo, target: "minecraft:" + mo.target }; } } catch {} }
-    if (ltPlan && ltPlan.feasible) { startLongTask(bot, owner, r, mo, ltPlan, announce); return null; }
+    if (ltPlan && ltPlan.feasible) { try { mo.baseForbiddenTargets = baseFb579; } catch {} startLongTask(bot, owner, r, mo, ltPlan, announce); return null; }
   }
   const m = createMission(mo, null);
+  try { m.baseForbiddenTargets = baseFb579.map((x) => normForbiddenId(x)).filter((x) => typeof x === "string" && x); } catch {} // v0.5.79: base を mission 本体へ保持 (persistMission の JSON に同梱される)
   r.mission = m; r.missionKills = 0; r.suspendNotified = false; r.mFound = false; r.sideTask = null; r.veinCands = []; // 0-D1: 鉱脈候補は mission 単位 (前 mission の残りを持ち越さない)
   // POLISH-ANIM-ORDERLOOK-01 feeder: 指示受理の辺で一度だけ発火を記録する (表示層のみ・実機確認待ち)
   try { if (announce && owner) { if (!r.orderlookState) r.orderlookState = createOrderLookState(); const oo = noteOrderAccepted(r.orderlookState, { nowMs: Date.now(), dist: dist(bot.location, owner.location), suppressed: false, danger: false, falling: r.selfFalling === true }); r.orderlookState = oo.state; if (oo.fired) r.lastOrderLook = { at: Date.now() }; } } catch {}
@@ -2572,7 +2574,7 @@ function refreshWarehouseCandidates(bot, r) {
 }
 function startLongTask(bot, owner, r, mo, plan, announce = true) {
   const ltName = (plan.target.name && !String(plan.target.name).includes(":")) ? plan.target.name : (mo.name || lname(plan.target.item)); // v0.4.67(外部): ID のまま表示しない
-  r.longtask = { target: plan.target.item, name: ltName, amount: plan.target.count, legs: plan.legs, legIdx: 0, phase: "legs", returnTo: mo.returnTo || "owner", hostiles: mo.constraints?.hostiles || "avoid", forbiddenTargets: mo.constraints?.forbiddenTargets || [], startedAt: Date.now() };
+  r.longtask = { target: plan.target.item, name: ltName, amount: plan.target.count, legs: plan.legs, legIdx: 0, phase: "legs", returnTo: mo.returnTo || "owner", hostiles: mo.constraints?.hostiles || "avoid", forbiddenTargets: mo.constraints?.forbiddenTargets || [], startedAt: Date.now(), baseForbiddenTargets: Array.isArray(mo.baseForbiddenTargets) ? mo.baseForbiddenTargets : null };
   r.mission = null; clearPlanRecords(r); r.ltLegActive = false; r.mineLeg = null; r.spiral = null;
   persistMission(bot, r, true); saveLongTask(bot, r);
   dps(bot, "cb_order", JSON.stringify({ ...mo, longtask: true, startedAt: Date.now() }));
@@ -2948,7 +2950,7 @@ function tickToolPrepPromote(bot, owner, r) {
 }
 function tickLongTask(bot, owner, r, ctx) {
   const lt = r.longtask; if (!lt) return false;
-  let fbIds = Array.isArray(lt.forbiddenTargets) ? [...lt.forbiddenTargets] : []; try { fbIds = unionForbiddenIds(lt.forbiddenTargets, r.sessionForbids, "gather"); } catch {} // cycle0117 G6-b: lt スナップショットと現行セッション禁止の和集合 (開始後の禁止も拾う)。断片ハーネス等で純粋核が無い環境ではスナップショットへ fail-safe
+  let fbIds = Array.isArray(lt.forbiddenTargets) ? [...lt.forbiddenTargets] : []; try { if (!Array.isArray(lt.baseForbiddenTargets)) lt.baseForbiddenTargets = deriveBaseForbiddenIds(lt.forbiddenTargets, r.sessionForbids, "gather"); fbIds = recomputeForbiddenIds(lt.baseForbiddenTargets, r.sessionForbids, "gather"); lt.forbiddenTargets = fbIds; } catch {} // v0.5.79: 和集合の単調増加を置換へ (解除が実行中タスクへ反映される) // cycle0117 G6-b: lt スナップショットと現行セッション禁止の和集合 (開始後の禁止も拾う)。断片ハーネス等で純粋核が無い環境ではスナップショットへ fail-safe
   if (lt.phase === "deliver") {
     // LT-DELIVER-NOEXIT (cycle1322, a01): deliver 相の終了保証。従来は上限が無く、入庫常時失敗/未到達で
     // 毎tick占有し続け cb_longtask 永続化で再起動でも解消しなかった。計数は lt 自体に保持し再起動を跨ぐ。
@@ -3440,7 +3442,7 @@ function tickMission(bot, owner, ctx, scan) {
   if (!m || m.status !== "active") return false;
   /* forbids G6-a (cycle1058): 開始後に記録された禁止も実行中 mission の寄り道・引き出しゲートへ届ける (G6-b の longtask 和集合パターンの横展開)。
      和集合は単調増加のみ。G3 の解除が入ったら置換へ見直すこと */
-  try { if (m.order) { const fbNow = unionForbiddenIds(m.order?.constraints?.forbiddenTargets, r.sessionForbids, m.order?.kind || "gather"); if (fbNow.length) m.order.constraints = { ...(m.order.constraints || {}), forbiddenTargets: fbNow }; } } catch {}
+  try { if (m.order) { const kind579 = m.order?.kind || "gather"; if (!Array.isArray(m.baseForbiddenTargets)) m.baseForbiddenTargets = deriveBaseForbiddenIds(m.order?.constraints?.forbiddenTargets, r.sessionForbids, kind579); const fbNow = recomputeForbiddenIds(m.baseForbiddenTargets, r.sessionForbids, kind579); m.order.constraints = { ...(m.order.constraints || {}), forbiddenTargets: fbNow }; } } catch {} // v0.5.79: 置換式の再計算 (旧コメントの「解除が入ったら置換へ見直す」を実施。base は注文由来のみ、セッション分は現行値で出し入れ)
   // 所持品が読めない時は「0個」と誤認して進めない（unknown を 0 と混同しない）
   if (ctx.x && ctx.x.invOk === false) {
     // cycle0033 F3: count consecutive unreadable on mission (persisted); suspend over limit; throttled noteFail

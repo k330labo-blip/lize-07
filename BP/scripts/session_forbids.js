@@ -105,3 +105,24 @@ export function isForbiddenWorkTarget(forbids, typeId, dropOf) {
     return false;
   } catch { return false; }
 }
+
+// --- cycle-next v0.5.79: recompute (0-C2 release reflection). The old refresh was
+// union-only (monotonic): once a session forbid entered a running task's snapshot
+// it never left, even after the owner released it (cycle1604 added the release
+// path). recompute = base (order-origin ids, fixed at task start) + the CURRENT
+// session forbids, so a released forbid drops out on the next refresh while a
+// newly recorded one still arrives. deriveBase recovers base from a legacy
+// snapshot by subtracting the ids the current session accounts for.
+export function recomputeForbiddenIds(baseIds, forbids, kind = "gather") {
+  try {
+    const base = Array.isArray(baseIds) ? baseIds.map(normForbiddenId).filter((x) => typeof x === "string" && x) : [];
+    return [...new Set([...base, ...forbiddenTargetIds(forbids, kind)])];
+  } catch { return []; }
+}
+export function deriveBaseForbiddenIds(snapshotIds, forbids, kind = "gather") {
+  try {
+    const snap = Array.isArray(snapshotIds) ? snapshotIds.map(normForbiddenId).filter((x) => typeof x === "string" && x) : [];
+    const sess = new Set(forbiddenTargetIds(forbids, kind));
+    return [...new Set(snap.filter((id) => !sess.has(id)))];
+  } catch { return []; }
+}
