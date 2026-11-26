@@ -117,7 +117,11 @@ import { scanOpportunities, noteAttempt, pruneCooldowns } from "./side_tasks.js"
 import { createSideChase, chaseTick, sideChaseRangeFor } from "./side_chase.js"; // SIDE-COOLDOWN-CHASE (cycle1134): 接近保持と終端クールダウン
 import { gateCancel, gateFactory, isHowToRequest } from "./chat_gate.js"; // 0-C1 (cycle1155): 質問・否定・仮定・部分スコープでは中止/工場/指示を発火しない共通ゲート
 import { pickNearest as veinPickNearest, veinNeighbors, sameResource as veinSameResource } from "./vein_math.js"; // 0-D1 (cycle1400): 鉱脈継続・距離優先の純粋核
+import { allowedLogIds, countLogsForTarget } from "./tree_species_math.js"; // 0-D3: 樹種指定時は対象選択・進捗をその樹種だけに限定する
+import { shouldReplayGaze, GAZE_REPLAY_INTERVAL_TICKS } from "./gaze_cadence_math.js"; // 0-E1 GAZE-CADENCE-01: 視線レイヤーを本体ループから分離する
 import { mergeCaps, capForTarget } from "./cap_guard_math.js"; // 0-C2 読み手 (cycle1337): セッション上限を mission へ届ける
+import { createWarehouseRegistry, serializeWarehouseRegistry, deserializeWarehouseRegistry } from "./warehouse_registry.js"; // 倉庫 W1: 台帳の DP 永続化 (cb_warehouse)
+import { createOrderLookState, noteOrderAccepted, sampleOrderLook } from "./orderlook_math.js"; // POLISH-ANIM-ORDERLOOK-01: 指示受理直後の「受けました」の頷き (表示層のみ・実機確認待ち)
 import { evalCondition, conditionExpired } from "./condition_math.js"; // 0-C2 読み手 (cycle1337): 条件付き注文の発火判定
 import { detectUnsupportedIntent } from "./unsupported_intent.js"; // 0-C7 (cycle1337): 未対応依頼への明示返答ゲート
 import { BLUEPRINTS, buildOrderOf, materialsSummaryOf, resolveMaterialItem } from "./blueprints.js";
@@ -309,6 +313,9 @@ function rt(bot) {
   }
   if (r.sessionForbids === undefined) { // Phase5 (cycle1923): セッション禁止を DP cb_forbids から復元 (undefined センチネル方式、mission と同形)
     try { const fj = dp(bot, "cb_forbids", ""); r.sessionForbids = restoreForbids(fj); } catch { r.sessionForbids = []; }
+  }
+  if (r.warehouse === undefined) { // 倉庫 W1: 台帳を DP cb_warehouse から復元 (壊れた保存は空台帳として開始し、本体を止めない)
+    try { const wj = dp(bot, "cb_warehouse", ""); r.warehouse = wj ? deserializeWarehouseRegistry(wj) : createWarehouseRegistry(); } catch { r.warehouse = createWarehouseRegistry(); }
   }
   if (r.longtask === undefined) { // DP cb_longtask から復元
     try { const lj = dp(bot, "cb_longtask", ""); r.longtask = lj ? JSON.parse(lj) : null; } catch { r.longtask = null; }
@@ -2376,10 +2383,10 @@ function findMissionTarget(bot, r, scan, step, scanUnknown = false) {
     if (!e) e = scan?.nearestHostile || null;
     return e ? { found: true, kind: "entity", loc: { ...e.location }, typeId: target, entity: e } : (scanUnknown ? { found: false, detail: { state: "unknown" } } : { found: false });
   }
-  // 原木の汎用扱い：「原木」や特定樹種の指定でも、周りの自然の木なら樹種を問わず一番近いものを伐る
+  // 原木の扱い (0-D3 是正): 総称指定では全樹種が対象だが、特定樹種の指定ではその樹種だけを対象にする (従来は指定樹種を先頭に置くだけで全樹種が候補だった)
   const tail = String(target || "").split(":").pop();
   if ((step.type === "gather_block" || step.type === "side_collect") && (tail === "log" || tail.endsWith("_log"))) {
-    const ids = tail === "log" ? LOG_BLOCK_IDS : [`minecraft:${tail}`, ...LOG_BLOCK_IDS.filter((x) => x !== `minecraft:${tail}`)];
+    const ids = allowedLogIds(target, LOG_BLOCK_IDS);
     // v0.4.64: 全樹種を1回の走査で確定させる (scanBlocksNear)。どれか1種でも stale なら一括走査し、
     // 全種の状態が必ず揃うため pending は発生しない。unknown (走査失敗過半) の扱いは従来どおり。
     if (ids.some((id) => scanCachePeek(r, id).state === "stale")) scanBlocksNear(bot, r, ids);
@@ -2393,7 +2400,7 @@ function findMissionTarget(bot, r, scan, step, scanUnknown = false) {
     if (best) return { found: true, kind: "block", loc: best.loc, typeId: best.typeId, detail: { state: "present" } };
     if (sawUnknown) return { found: false, detail: { state: "unknown" } }; // Step 3b: 測れていない間はドロップへ逸れない
     { const sv = lookupSurvey(bot, ids, Date.now() < (r.mBanUntil || 0) ? r.mBanKey : null); if (sv) return { found: true, kind: "block", loc: sv.loc, typeId: sv.typeId, detail: { state: "present", via: "survey" } }; } // v0.4.66: チャンク調査の結果
-    const it = (scan?.items || []).find((x) => LOG_BLOCK_IDS.includes(itemTypeOf(x)));
+    const it = (scan?.items || []).find((x) => ids.includes(itemTypeOf(x))); // 0-D3: ドロップ回収も樹種指定に従う
     if (it) return { found: true, kind: "item", loc: { ...it.location }, typeId: target, entity: it, detail: { state: "present" } };
     return { found: false, detail: { state: "absent" } }; // ここへ来るのは全樹種 absent 確定時のみ (Step 3b)
   }
@@ -2469,6 +2476,8 @@ function startMission(bot, owner, r, mo, announce = true, opts = {}) {
   }
   const m = createMission(mo, null);
   r.mission = m; r.missionKills = 0; r.suspendNotified = false; r.mFound = false; r.sideTask = null; r.veinCands = []; // 0-D1: 鉱脈候補は mission 単位 (前 mission の残りを持ち越さない)
+  // POLISH-ANIM-ORDERLOOK-01 feeder: 指示受理の辺で一度だけ発火を記録する (表示層のみ・実機確認待ち)
+  try { if (announce && owner) { if (!r.orderlookState) r.orderlookState = createOrderLookState(); const oo = noteOrderAccepted(r.orderlookState, { nowMs: Date.now(), dist: dist(bot.location, owner.location), suppressed: false, danger: false, falling: r.selfFalling === true }); r.orderlookState = oo.state; if (oo.fired) r.lastOrderLook = { at: Date.now() }; } } catch {}
   r.withdrawBlocked = new Set(); r.withdrawCooldownUntil = 0; r.withdrawTargetKey = null; // Phase2 WITHDRAW Step B: 試行済み情報は mission 単位で初期化
   persistMission(bot, r, true);
   dps(bot, "cb_order", JSON.stringify({ ...mo, startedAt: Date.now() }));
@@ -2507,6 +2516,8 @@ function foldGatherBuildPlan(bot, owner, r, reason, dyingMission) {
 // ---------- v0.4.0: 長期自律タスク ----------
 function lname(item) { return item === "group:logs" ? "原木" : item === "group:planks" ? "板材" : item === "group:cobble" ? "丸石" : nameOfItem(item); }
 function saveLongTask(bot, r) { dps(bot, "cb_longtask", r.longtask ? JSON.stringify(r.longtask) : ""); }
+// 倉庫 W1: 台帳の保存はこの1点だけを通す (登録・除外・行き先の変更は台帳を差し替えた後に呼ぶ)
+function saveWarehouse(bot, r) { try { if (r.warehouse) dps(bot, "cb_warehouse", serializeWarehouseRegistry(r.warehouse)); } catch {} }
 function startLongTask(bot, owner, r, mo, plan, announce = true) {
   const ltName = (plan.target.name && !String(plan.target.name).includes(":")) ? plan.target.name : (mo.name || lname(plan.target.item)); // v0.4.67(外部): ID のまま表示しない
   r.longtask = { target: plan.target.item, name: ltName, amount: plan.target.count, legs: plan.legs, legIdx: 0, phase: "legs", returnTo: mo.returnTo || "owner", hostiles: mo.constraints?.hostiles || "avoid", forbiddenTargets: mo.constraints?.forbiddenTargets || [], startedAt: Date.now() };
@@ -3486,13 +3497,12 @@ function tickMission(bot, owner, ctx, scan) {
     if (step?.type === "return" || step?.type === "deliver") nearestDist = dist(posSnap, rp);
     r.mAtReturn = dist(posSnap, rp) <= 3.2; // 到着信号は return/goto と共用の 3.2 を維持 (v0.4.79 で狭小化と deliverInRange 分離供給の双方を試行したが digdown E2E シナリオB が回帰したため不採用。帯域 2.6<d<=3.2 は applyDirective が毎tick target を張り続けて接近し、出口は mission deliver の trackStall が担保する)
   } catch { posKnown = false; nearestDist = -1; r.mAtReturn = false; posSnap = null; dimSnap = null; }
-  // 原木は樹種を問わず合算して数える（ジャングルでオーク指定でも進捗が進むように）
+  // 原木の進捗 (0-D3 是正): 総称指定では全樹種を合算するが、樹種指定ではその樹種だけを数える (別樹種の所持・拾得で進捗しない)
   let invCounts = ctx.x?.items || {};
   if (step && (step.type === "gather_block" || step.type === "side_collect") && step.target) {
     const st = String(step.target).split(":").pop();
     if (st === "log" || st.endsWith("_log")) {
-      const total = LOG_BLOCK_IDS.reduce((a, id) => a + (invCounts[id] || 0), 0);
-      invCounts = { ...invCounts, [step.target]: total };
+      invCounts = { ...invCounts, [step.target]: countLogsForTarget(invCounts, step.target, LOG_BLOCK_IDS) };
     }
   }
   // v0.4.66: 指示の実行中は、いる区画 (4×4 チャンク) を調査する。見つからなければ未調査の区画へ探しに行く
@@ -4057,6 +4067,7 @@ function applyGaze(bot, owner, ctx, scan) {
     if (rot && r.loadpostureState) { const lp = sampleLoadPosture(r.loadpostureState, Date.now()); if (lp.active) rot = { ...rot, x: rot.x + lp.pitchDeg }; } // POLISH-ANIM-LOADPOSTURE-01 (cycle1832): ピッチ重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot && r.partnercheckState) { const pc = partnerCheckOffset(r.partnercheckState, Date.now()); if (pc.active) rot = { ...rot, y: rot.y + pc.yawDeg, x: rot.x + pc.pitchDeg }; } if (rot && r.ownerreturnState) { const orc = ownerReturnOffset(r.ownerreturnState, Date.now()); if (orc.active) rot = { ...rot, y: rot.y + orc.yawDeg, x: rot.x + orc.pitchDeg }; } // POLISH-ANIM-OWNERRETURN-01 (cycle1923): 重畳の最下位 (表示層のみ・実機確認待ち) // POLISH-ANIM-PARTNERCHECK-01 (cycle1850): 重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot && r.musicnodState) { const mn = sampleMusicnod(r.musicnodState, Date.now()); if (mn.active) rot = { ...rot, x: rot.x + mn.gazePitchDeg }; } // POLISH-ANIM-MUSICNOD-01 (cycle2006): 重畳の最下位 (表示層のみ・実機確認待ち、近傍滞在が代理条件)
+    if (rot && r.orderlookState) { const ol = sampleOrderLook(r.orderlookState, Date.now()); if (ol.active) rot = { ...rot, x: rot.x + ol.pitchDeg }; } // POLISH-ANIM-ORDERLOOK-01: 重畳の最下位 (表示層のみ・実機確認待ち)。0-E1 の 2tick 視線で 850ms の頷きが複数回サンプリングされる
     if (rot && r.idleState) { const idl = sampleIdle(r.idleState, Date.now()); if (idl.active) rot = { ...rot, y: rot.y + idl.gazeYawRelDeg, x: rot.x + idl.gazePitchDeg }; } // POLISH-ANIM-IDLE-01 (cycle2020): 重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot && r.lookleadSample && (r.lookleadSample.active || r.lookleadSample.completed) && Date.now() - (r.lookleadSampleAt || 0) < 200) rot = { ...rot, y: rot.y + r.lookleadSample.yawDeltaDeg, x: rot.x + r.lookleadSample.pitchDeltaDeg }; // POLISH-ANIM-LOOKLEAD-01 (cycle2036): 重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot && r.catchsightState) { const cs = sampleCatchsight(r.catchsightState, Date.now(), catchsightSuppressInput(bot, owner, ctx, gz, r, Date.now())); if (cs.active) rot = { ...rot, y: rot.y + cs.yawDeg, x: rot.x + cs.pitchDeg }; } // POLISH-ANIM-CATCHSIGHT-01 (cycle2200): 重畳の最下位 (表示層のみ・実機確認待ち)
@@ -4080,7 +4091,7 @@ function applyGaze(bot, owner, ctx, scan) {
     if (rot && r.mountglanceState) { try { const mg2 = sampleMountglance(r.mountglanceState, Date.now()); if (mg2.active) { let yawPull = 0; try { if (owner) { const gr = gazeRotation(bot.location, { x: owner.location.x, y: owner.location.y + 1.4, z: owner.location.z }); yawPull = mountglanceYawPullDeg(rot.y, gr?.y); } } catch {} rot = { ...rot, y: rot.y + yawPull, x: rot.x + mg2.pitchDeg }; } } catch {} } // POLISH-ANIM-MOUNTGLANCE-01 (cycle0936): 重畳の最下位 (表示層のみ・実機確認待ち。体は回さない)
     if (rot) { try { bot.setRotation(rot); } catch {} }
   }
-  if (gz.say && Math.random() < 0.4) sayAmbient(owner, bot, gz.say);
+  if (gz.say && !r.gazeReplayCall && Math.random() < 0.4) sayAmbient(owner, bot, gz.say); // 0-E1: 視線再適用 (2tick) では環境発話を繰り返さない
 }
 
 // 名札の状態表示: 「今何をしているか／何をしようとしているか」を頭上に1行で出す（TANAKA指示）
@@ -4211,9 +4222,25 @@ system.runInterval(() => {
     syncFlyGoal(bot, r);
     syncNavGoal(bot, r);
     applyGaze(bot, p, ctx, scan);
+    try { r.gazeArgs = { owner: p, ctx, scan, at: Date.now() }; } catch {} // 0-E1: 視線レイヤー (2tick) が再適用するための最新引数の保持 (走査は増やさない)
     if (ctx.x?.firstToday && ctx.danger.count === 0) { r.greetedDay = world.getDay(); sayFromCategory(p, bot, world.getTimeOfDay() < 12000 ? "greet_morning" : "greet_night"); }
   }
 }, 10);
+
+// 0-E1 GAZE-CADENCE-01: 視線レイヤーを本体ループ (10tick) から分離し 2tick で回す。
+// 本体が保持した最新の引数 (ctx/scan) を再適用するだけで、新規の走査は行わない
+// (増えるのは setRotation の頻度だけ)。450〜600ms 級の波形が複数回サンプリングされ、
+// ピーク角度が実際に適用される (test_gaze_cadence_0e1 で実測)。引数が古い間は休止する。
+system.runInterval(() => {
+  for (const p of world.getAllPlayers()) {
+    if (bodies.isBody(p)) continue;
+    const bot = findBotEntity(p.id); if (!bot) continue;
+    const r = rt(bot);
+    const ga = r.gazeArgs; if (!ga || !shouldReplayGaze(Date.now(), ga.at)) continue;
+    r.gazeReplayCall = true;
+    try { applyGaze(bot, ga.owner, ga.ctx, ga.scan); } catch {} finally { r.gazeReplayCall = false; }
+  }
+}, GAZE_REPLAY_INTERVAL_TICKS);
 
 // オフラインの持ち主のBotはその場で待機
 system.runInterval(() => {
