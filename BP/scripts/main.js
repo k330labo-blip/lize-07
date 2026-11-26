@@ -66,7 +66,8 @@ import { createEdgepeekState, noteEdgepeek as noteEdgepeekState, sampleEdgepeek 
 import { createIcebalanceState, noteIcebalance as noteIcebalanceState, sampleIcebalance } from "./icebalance_math.js";
 import { createSnowtreadState, noteSnowtread, snowtreadCurrentOffset, applySnowtreadPitch } from "./snowtread_math.js"; // POLISH-ANIM-SNOWTREAD-01 (cycle2333): 雪上歩行の小さな沈み込み (表示層のみ・実機確認待ち)
 import { createStepupState, noteStepup as noteStepupState, sampleStepup } from "./stepup_math.js";
-import { banKeyFor, matchesBan, isBanned, filterBanned } from "./trunk_ban.js"; // queue0-A bug2 (cycle1728, v0.5.19): trunk-unit ban
+import { banKeyFor, matchesBan, isBanned, filterBanned, isTrunkType } from "./trunk_ban.js"; // queue0-A bug2 (cycle1728, v0.5.19): trunk-unit ban
+import { treeNeighbors, mergeTreeCands } from "./tree_cont_math.js"; // 0-D3 R1 (cycle0583): 同じ木の継続候補
 import { createTakeBanState, recordTakeBan, isTakeBanned, pruneTakeBans } from "./take_ban_math.js"; // TR2136-01 (cycle2200): 回収全量失敗の実行側見切り
 import { createWorkBanState, recordWorkBan, isWorkBanned, pruneWorkBans } from "./work_ban_math.js"; // cycle0832 F5: work層の見切り ban (hold枯渇後に到達不能候補を選び直す無限ループの是正)
 import { createOreSpotState, noteOreSpot, sampleOreSpot } from "./orespot_math.js"; // POLISH-ANIM-ORESPOT-01 (cycle0832): 貴重鉱石への二度見 (表示層のみ・実機確認待ち)
@@ -1275,6 +1276,7 @@ function tickWork(bot, owner, r, ctx) {
   }
   r.lastBreak = { act: "BREAK", ok: true, reason: null, item: w.typeId, gained: gain ? gain[1] : 0, at: Date.now() }; commitLastAction(r, r.lastBreak);
   try { if (String(w.typeId || "").includes("_ore")) { const nb = veinNeighbors(w.loc, w.typeId, (p) => { try { const bb = bot.dimension.getBlock(p); return bb ? bb.typeId : null; } catch { return null; } }); const prev = filterBanned(Array.isArray(r.veinCands) ? r.veinCands.filter((c) => c && !(c.loc.x === w.loc.x && c.loc.y === w.loc.y && c.loc.z === w.loc.z)) : [], r.mBanKey, r.mBanUntil, Date.now()).filter((c) => !isBanned(c.loc, c.typeId ?? null, r.mBanKey, r.mBanUntil, Date.now())); /* 0-D1 (cycle1514): 登録段でも ban 中セルを持ち込まない */ const nbF = filterBanned(nb, r.mBanKey, r.mBanUntil, Date.now()); for (let i = nb.length - 1; i >= 0; i--) if (!nbF.includes(nb[i])) nb.splice(i, 1); const seen = new Set(prev.map((c) => `${c.loc.x},${c.loc.y},${c.loc.z}`)); for (const c of nb) { const k = `${c.loc.x},${c.loc.y},${c.loc.z}`; if (!seen.has(k)) { seen.add(k); prev.push(c); } } r.veinCands = prev.slice(-32); } } catch {} // 0-D1: 鉱脈の6近傍を次候補として保持 (二手分岐の両側を忘れない)
+  try { if (isTrunkType(w.typeId)) { const tnb = treeNeighbors(w.loc, w.typeId, (p) => { try { const bb = bot.dimension.getBlock(p); return bb ? bb.typeId : null; } catch { return null; } }, null); const prevT = filterBanned(Array.isArray(r.treeCands) ? r.treeCands.filter((c) => c && !(c.loc.x === w.loc.x && c.loc.y === w.loc.y && c.loc.z === w.loc.z)) : [], r.mBanKey, r.mBanUntil, Date.now()); r.treeCands = mergeTreeCands(prevT, filterBanned(tnb, r.mBanKey, r.mBanUntil, Date.now())); } } catch {} // 0-D3 R1: 同じ木の接続原木を次候補として保持
   r.work = null;
   return true;
 }
@@ -2415,6 +2417,7 @@ function findMissionTarget(bot, r, scan, step, scanUnknown = false) {
   const tail = String(target || "").split(":").pop();
   if ((step.type === "gather_block" || step.type === "side_collect") && (tail === "log" || tail.endsWith("_log"))) {
     const ids = allowedLogIds(target, LOG_BLOCK_IDS);
+    try { if (Array.isArray(r.treeCands) && r.treeCands.length) { const liveT = []; for (const c of r.treeCands) { let t = null; try { t = bot.dimension.getBlock(c.loc)?.typeId || null; } catch {} if (t && t === c.typeId && ids.includes(t)) liveT.push({ loc: c.loc, typeId: t }); else if (!t) liveT.push(c); } const liveTB = filterBanned(liveT, r.mBanKey, r.mBanUntil, Date.now()); r.treeCands = liveTB.filter((c) => { try { return !!bot.dimension.getBlock(c.loc)?.typeId; } catch { return true; } }); const tp = veinPickNearest(r.treeCands, bot.location); if (tp) return { found: true, kind: "block", loc: tp.loc, typeId: tp.typeId, detail: { state: "present", via: "tree" } }; } } catch {} // 0-D3 R1: 同じ木の継続候補を survey/近傍より優先
     // v0.4.64: 全樹種を1回の走査で確定させる (scanBlocksNear)。どれか1種でも stale なら一括走査し、
     // 全種の状態が必ず揃うため pending は発生しない。unknown (走査失敗過半) の扱いは従来どおり。
     if (ids.some((id) => scanCachePeek(r, id).state === "stale")) scanBlocksNear(bot, r, ids);
@@ -2507,7 +2510,7 @@ function startMission(bot, owner, r, mo, announce = true, opts = {}) {
   }
   const m = createMission(mo, null);
   try { m.baseForbiddenTargets = baseFb579.map((x) => normForbiddenId(x)).filter((x) => typeof x === "string" && x); } catch {} // v0.5.79: base を mission 本体へ保持 (persistMission の JSON に同梱される)
-  r.mission = m; r.missionKills = 0; r.suspendNotified = false; r.mFound = false; r.sideTask = null; r.veinCands = []; // 0-D1: 鉱脈候補は mission 単位 (前 mission の残りを持ち越さない)
+  r.mission = m; r.missionKills = 0; r.suspendNotified = false; r.mFound = false; r.sideTask = null; r.veinCands = []; r.treeCands = []; // 0-D1: 鉱脈候補は mission 単位 (前 mission の残りを持ち越さない) / 0-D3 R1: 木候補も同様
   // POLISH-ANIM-ORDERLOOK-01 feeder: 指示受理の辺で一度だけ発火を記録する (表示層のみ・実機確認待ち)
   try { if (announce && owner) { if (!r.orderlookState) r.orderlookState = createOrderLookState(); const oo = noteOrderAccepted(r.orderlookState, { nowMs: Date.now(), dist: dist(bot.location, owner.location), suppressed: false, danger: false, falling: r.selfFalling === true }); r.orderlookState = oo.state; if (oo.fired) r.lastOrderLook = { at: Date.now() }; } } catch {}
   r.withdrawBlocked = new Set(); r.withdrawCooldownUntil = 0; r.withdrawTargetKey = null; // Phase2 WITHDRAW Step B: 試行済み情報は mission 単位で初期化
