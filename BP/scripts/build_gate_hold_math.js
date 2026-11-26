@@ -44,6 +44,34 @@ export function noteBuildGateHold(state, input) {
   } catch { return { exhausted: false, totalMs: 0, key: null }; }
 }
 
+// BUILD-FLOOR-SELF-01 (cyc2368): 同一 why の GATE_HOLD skip が反復したら全体の異常として数える。
+// 床セルのように移動目標の指定方式そのものが同じ hold を量産する形では、セル単位の45秒 skip が
+// 無進捗時計を延命し、placed=0 のまま「完了」へ進んでしまう (cyc2367 A11 ハーネス9/9で確定)。
+// 汎用層: セル種別・設計図には依存せず、why の連続回数だけを見る。
+export const BUILD_GATE_SKIP_STREAK_LIMIT = 3;
+
+export function createBuildGateSkipStreakState() {
+  return { why: null, count: 0 };
+}
+
+export function noteBuildGateSkipStreak(state, why) {
+  try {
+    if (!state || typeof state !== "object") return { exhausted: false, count: 0, why: null };
+    const w = why || "hold";
+    if (state.why !== w) { state.why = w; state.count = 1; }
+    else state.count = (Number.isFinite(state.count) ? state.count : 0) + 1;
+    return { exhausted: state.count >= BUILD_GATE_SKIP_STREAK_LIMIT, count: state.count, why: state.why };
+  } catch { return { exhausted: false, count: 0, why: null }; }
+}
+
+export function clearBuildGateSkipStreak(state) {
+  try {
+    if (!state || typeof state !== "object") return createBuildGateSkipStreakState();
+    state.why = null; state.count = 0;
+    return state;
+  } catch { return createBuildGateSkipStreakState(); }
+}
+
 export function clearBuildGateHold(state) {
   try {
     if (!state || typeof state !== "object") return createBuildGateHoldState();
