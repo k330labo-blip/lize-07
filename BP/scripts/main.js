@@ -2479,15 +2479,15 @@ function zapEntity(bot, r, e) {
   if (core) {
     let snap = null; try { snap = core.snapshot(); } catch {}
     if (snap && snap.hasGun && d <= snap.gunRange && d >= 2) {
-      try { const sr = core.shootAt({ distance: d, applyDamage: (amt) => e.applyDamage(amt, { cause: "projectile", damagingEntity: bot }) }); r.lastAttack = { ok: !!sr?.ok, reason: sr?.reason || null, at: Date.now() }; try { const norm = fromEquipmentResult(sr, "shootAt"); commitLastAction(r, { act: "ATTACK", ok: !!norm?.ok, reason: norm?.ok ? null : (norm?.reason || null), item: e?.typeId || null, at: Date.now() }); } catch {} if (sr?.ok) { try { sfxAttack(bot.dimension, bot.location); } catch {} } } catch {} // Phase2: ATTACK結果の回収（記録のみ）/ 6-ML ATTACK commit (cyc1939): 銃の小文字 reason は契約語彙へ正規化してから記録する (記録のみ・分岐不変) / POLISH-SND-ATTACK-01 (cycle0841): 射撃成功時のみ攻撃音 (表示層のみ・実機確認待ち)
+      try { const sr = core.shootAt({ distance: d, applyDamage: (amt) => e.applyDamage(amt, { cause: "projectile", damagingEntity: bot }) }); r.lastAttack = { ok: !!sr?.ok, reason: sr?.reason || null, at: Date.now() }; try { const norm = fromEquipmentResult(sr, "shootAt"); commitLastAction(r, { act: "ATTACK", ok: !!norm?.ok, reason: norm?.ok ? null : (norm?.reason || null), item: null, at: Date.now() }); } catch {} if (sr?.ok) { try { sfxAttack(bot.dimension, bot.location); } catch {} } } catch {} // Phase2: ATTACK結果の回収（記録のみ）/ 6-ML ATTACK commit (cyc1939): 銃の小文字 reason は契約語彙へ正規化してから記録する (記録のみ・分岐不変) / POLISH-SND-ATTACK-01 (cycle0841): 射撃成功時のみ攻撃音 (表示層のみ・実機確認待ち)
       return;
     }
   }
   if (Date.now() - (r.zapAt || 0) <= 900) return;
   r.zapAt = Date.now();
   const dmg = core ? core.weaponDamage().damage : 2; // 装備中核の武器ダメージ表（素手2。フォールバックも表と一致させる v0.4.88）
-  try { e.applyDamage(dmg, { cause: "entityAttack", damagingEntity: bot }); } catch {}
-  try { commitLastAction(r, { act: "ATTACK", ok: true, reason: null, item: e?.typeId || null, at: Date.now() }); } catch {} // 6-ML ATTACK commit (cyc1939): 近接も result 軸へ記録する (記録のみ・分岐不変)
+  let meleeOk = true; try { e.applyDamage(dmg, { cause: "entityAttack", damagingEntity: bot }); } catch { meleeOk = false; }
+  try { commitLastAction(r, { act: "ATTACK", ok: meleeOk, reason: meleeOk ? null : "DAMAGE_REJECTED", item: null, at: Date.now() }); } catch {} // 6-ML ATTACK commit (cyc1939): 近接も result 軸へ記録する (記録のみ・分岐不変。applyDamage の例外は失敗として分離し、item は null 固定)
   try { sfxAttack(bot.dimension, bot.location); } catch {} // POLISH-SND-ATTACK-01 (cycle0841): 近接攻撃音 (表示層のみ・実機確認待ち)
 }
 function pickupItemEntity(bot, owner, itemEnt, ctx) {

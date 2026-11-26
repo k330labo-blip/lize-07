@@ -1,11 +1,13 @@
 // tree_cont_math.js — 0-D3 R1 (cycle0583): 同じ木の継続の純粋核。
 // 原木を壊したとき近傍の「同一typeIdかつ許可ID内」の原木だけを次候補として保持する。
 // 葉は辿らないため葉接触の隣木へは渡らない。完全一致なので樹種厳守と両立する。
-// cyc1939 G1: 6近傍→26近傍へ拡張。斜めにずれる横枝と2x2幹 (ダークオーク等) の
+// cyc1939 G1: 6近傍→18近傍へ拡張。斜めにずれる横枝と2x2幹 (ダークオーク等) の
 // 斜め柱が6近傍では候補に入らず同じ木の継続が切れていた。対象は同一typeIdの
 // 原木セルだけなので、葉だけが接触する隣木へは依然として渡らない。
+// 角のみで接する8方向 (|dx|=|dy|=|dz|=1) は含めない (a02 実測: 角接触は隣木の
+// 誤認経路になる一方、斜め枝・斜め幹の利益は辺隣接だけで得られる)。
 // @minecraft/server を import しない。例外を投げない。
-const DIRS = Object.freeze((() => { const out = []; for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) { if (dx || dy || dz) out.push([dx, dy, dz]); } return out; })());
+const DIRS = Object.freeze((() => { const out = []; for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) { if (!dx && !dy && !dz) continue; if (Math.abs(dx) + Math.abs(dy) + Math.abs(dz) === 3) continue; out.push([dx, dy, dz]); } return out; })());
 export function treeNeighbors(pos, brokenTypeId, typeIdAt, allowedIds) {
   try {
     if (!pos || typeof typeIdAt !== "function" || typeof brokenTypeId !== "string") return [];
