@@ -58,3 +58,13 @@ export function pruneWorkBans(state, now) {
     return removed;
   } catch { return 0; }
 }
+
+/** cyc2221 A02 (0-D1): 候補列から workBan 中のものを順序保持で除く純粋関数。
+ * 選定段でのみ使う (候補列そのものへ書き戻さない: 失効後に再提示されるため)。
+ * 不正入力は空配列へ倒す (fail-closed)。 */
+export function filterWorkBanned(candidates, state, now) {
+  try {
+    if (!Array.isArray(candidates) || !validState(state) || !Number.isFinite(now)) return [];
+    return candidates.filter((c) => c && !isWorkBanned(state, c.loc, c.typeId, now));
+  } catch { return []; }
+}

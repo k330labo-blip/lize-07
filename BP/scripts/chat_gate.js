@@ -38,7 +38,12 @@ function isConditionalForm(t) {
 // cyc2134 A02 (0-C1 R4): 熟慮形「〜かどうか＋迷ってる/考えて/検討/聞いて」は意思決定前の
 // 発話であり指令ではない。確認作業そのもの (「かどうか確認して」) は熟慮述語を含まないため対象外。
 function isDeliberating(t) {
-  return /かどうか/.test(t) && /(迷|考え|検討|悩|聞いて|決めてない|決まってない|まだ決め)/.test(t);
+  if (/かどうか/.test(t) && /(迷|考え|検討|悩|聞いて|決めてない|決まってない|まだ決め)/.test(t)) return true;
+  // cyc2221 A15 R-2 (0-C1): 「？」無しの熟慮・許可求めも指令ではない。
+  // 「しようかな/ようかな」「するか迷ってる」は意思決定前、「〜てもいい」は許可求め。
+  if (/(しようかな|ようかな|するか迷|ようか迷|迷って|迷い中)/.test(t)) return true;
+  if (/(てもいい|てもよい|ても大丈夫)[。．]?$/.test(t.trim())) return true;
+  return false;
 }
 // cyc2134 A02 (0-C1 R2/R3): 工場の後置先送り。「〜は…てからにして」(先送り構文) と
 // 明日/後での先送りを条件扱いにする。逐次構文「自動化してから中止して」(てから＋別指令で
@@ -71,6 +76,9 @@ export function gateFactory(text) {
     const t = s(text);
     if (!FACTORY_RE.test(t)) return { fire: false, kind: "none" };
     if (isHypothetical(t)) return { fire: false, kind: "hypothetical" };
+    // cyc2221 A15 R-1 (0-C1): 工場対象＋「やめて」は工場への否定であり開始ではない
+    // (「自動化するのやめて」「鉄の自動化はやめて」「ラインを組むのはやめて」)。
+    if (/(自動化|ライン).{0,20}やめて/.test(t)) return { fire: false, kind: "negation" };
     if (isNegatedDirective(t)) return { fire: false, kind: "negation" };
     // cycle1722 A13 R1: 「自動化の方法を教えて」は説明要求。工場経路は通常解釈より先に呼ばれるため、ここでも howto を止める
     if (isHowToRequest(t)) return { fire: false, kind: "question" };

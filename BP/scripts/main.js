@@ -71,7 +71,7 @@ import { createStepupState, noteStepup as noteStepupState, sampleStepup } from "
 import { banKeyFor, matchesBan, isBanned, filterBanned, isTrunkType } from "./trunk_ban.js"; // queue0-A bug2 (cycle1728, v0.5.19): trunk-unit ban
 import { treeNeighbors, mergeTreeCands } from "./tree_cont_math.js"; // 0-D3 R1 (cycle0583): 同じ木の継続候補
 import { createTakeBanState, recordTakeBan, isTakeBanned, pruneTakeBans } from "./take_ban_math.js"; // TR2136-01 (cycle2200): 回収全量失敗の実行側見切り
-import { createWorkBanState, recordWorkBan, isWorkBanned, pruneWorkBans } from "./work_ban_math.js"; // cycle0832 F5: work層の見切り ban (hold枯渇後に到達不能候補を選び直す無限ループの是正)
+import { createWorkBanState, recordWorkBan, isWorkBanned, pruneWorkBans, filterWorkBanned } from "./work_ban_math.js"; // cycle0832 F5: work層の見切り ban (hold枯渇後に到達不能候補を選び直す無限ループの是正)
 import { createOreSpotState, noteOreSpot, sampleOreSpot } from "./orespot_math.js"; // POLISH-ANIM-ORESPOT-01 (cycle0832): 貴重鉱石への二度見 (表示層のみ・実機確認待ち)
 import { createHomesightState, noteHomesight, sampleHomesight } from "./homesight_math.js"; // POLISH-ANIM-HOMESIGHT-01 (cycle0900): 拠点が見える距離まで帰ってきたときの小さな頷き (表示層のみ・実機確認待ち)
 import { createSleepwatchState, noteSleepwatch, sampleSleepwatch, sleepwatchYawPullDeg } from "./sleepwatch_math.js"; // POLISH-ANIM-SLEEPWATCH-01 (cycle0910): 主人が眠り始めた瞬間に一度だけ頭を向け直す見守り視線 (表示層のみ・実機確認待ち)
@@ -322,6 +322,7 @@ function rt(bot) {
     missionSig: null, mScanMap: null, logScanCursor: 0 });
   const r = bots.get(bot.id);
   if (!r.trace) { try { r.trace = createTrace({ load: () => dp(bot, "cb_trace", ""), save: (v) => dps(bot, "cb_trace", v) }); } catch { r.trace = null; } } // Phase4 cb_trace (v0.4.56): fail/result の記録専用。保存失敗由来の fail は器側で落とす (再帰防止)
+  if (!r.workBan) { try { r.workBan = createWorkBanState(); } catch { r.workBan = null; } } // cyc2232 A02 (0-D1): workBan を初期生成し vein 選定の fail-closed 全滅を防ぐ
   if (!r.failAgg) { try { r.failAgg = createFailAgg(); const rep = restoreFailAggShardsWithReport((k) => dp(bot, k, "")); if (rep && rep.status === "ok") r.failAgg = rep.agg; try { const m = JSON.parse(dp(bot, "cb_failagg", "") || "null"); if (m && Number.isInteger(m.gen)) r.failAggGen = m.gen; } catch {} r.failAggSnap = failAggSnapshot(r); } catch { if (!r.failAgg) r.failAgg = null; } } // Phase4 failAgg: S3b 永続化 (cb_failagg キー分割)。clearPlanRecords へ登録しない
   if (!r.expStore) { try { const rep = restoreExpStore((k) => dp(bot, k, "")); r.expStore = rep.store; try { const m = JSON.parse(dp(bot, "cb_exp", "") || "null"); if (m && Number.isInteger(m.gen)) r.expGen = m.gen; } catch {} r.expSnap = expSnapshot(r); } catch { if (!r.expStore) r.expStore = null; } } // 6-ML (cycle0710): 経験ストア復元。失敗時は null で本体に影響させない
   if (r.mission === undefined) { // DP cb_mission から復元（再召喚・再起動をまたぐ）
@@ -2463,7 +2464,11 @@ function findMissionTarget(bot, r, scan, step, scanUnknown = false) {
   // Step 3b R3 (v0.4.13): unknown は記録だけでなく遮断する (後続 source/直接ID/ドロップへ素通りさせない)
   const noteScanState = (id) => { try { if (scanCachePeek(r, id).state === "unknown") { anyUnknown = true; return true; } } catch {} return false; };
   // 0-D1 (cycle1400): 継続中の鉱脈があれば survey/遠方より優先する (実在を再確認し、消えた候補は捨てる)
-  try { if (Array.isArray(r.veinCands) && r.veinCands.length && sources.some((s) => s.kind === "block")) { const live = []; for (const c of r.veinCands) { let t = null; try { t = bot.dimension.getBlock(c.loc)?.typeId || null; } catch {} if (t && veinSameResource(t, c.typeId) && sources.some((s) => s.kind === "block" && veinSameResource(s.id, t))) live.push({ loc: c.loc, typeId: t }); else if (!t) live.push(c); } const liveB = filterBanned(live, r.mBanKey, r.mBanUntil, Date.now()); r.veinCands = liveB.filter((c) => { try { return bot.dimension.getBlock(c.loc)?.typeId; } catch { return true; } }); const vp = veinPickNearest(liveB.filter((c) => { try { return !!bot.dimension.getBlock(c.loc)?.typeId; } catch { return false; } }), bot.location); /* 0-D1 (cycle1514, a21実測で確定): ban中セルは選定から外し書き戻しでも落とす (従来は最寄りのban中セルが返り続け次点が60〜120秒飢餓し、失効後に同じセルが復活した) */ if (vp) return { found: true, kind: "block", loc: vp.loc, typeId: vp.typeId, detail: { state: "present", via: "vein" } }; } } catch {}
+  try { if (Array.isArray(r.veinCands) && r.veinCands.length && sources.some((s) => s.kind === "block")) { const live = []; for (const c of r.veinCands) { let t = null; try { t = bot.dimension.getBlock(c.loc)?.typeId || null; } catch {} if (t && veinSameResource(t, c.typeId) && sources.some((s) => s.kind === "block" && veinSameResource(s.id, t))) live.push({ loc: c.loc, typeId: t }); else if (!t) live.push(c); } const liveB = filterBanned(live, r.mBanKey, r.mBanUntil, Date.now());
+  r.veinCands = liveB.filter((c) => { try { return bot.dimension.getBlock(c.loc)?.typeId; } catch { return true; } }); // cyc2232 A02 (0-D1): 書き戻しは workBan を含めない (短期 ban 失効後に鉱脈片側を再提示するため)
+  const veinSel = r.workBan ? filterWorkBanned(liveB, r.workBan, Date.now()) : liveB; // cyc2232 A02: workBan 未生成時は fail-closed で vein が全滅する回帰の是正 (呼出側ガード)
+  const vp = veinPickNearest(veinSel.filter((c) => { try { return !!bot.dimension.getBlock(c.loc)?.typeId; } catch { return false; } }), bot.location);
+  if (vp) return { found: true, kind: "block", loc: vp.loc, typeId: vp.typeId, detail: { state: "present", via: "vein" } }; } } catch {}
   { // 0-D1: block 候補は登録順でなく距離優先 (通常/深層は同一資源として横断比較する)
     const blockCands = [];
     for (const s of sources) { if (s.kind !== "block") continue; const loc = scanBlockNear(bot, r, s.id); if (loc) blockCands.push({ loc, typeId: s.id }); else if (noteScanState(s.id)) return { found: false, detail: { state: "unknown" } }; }
@@ -5035,6 +5040,15 @@ function handleChatMessage(p, rawIn) {
   // 質問形・否定形では発火しない (0-C1 ゲートと同作法)。点火が正式版 API で可能かは断定しない。
   if (/(ネザーゲート|ネザーポータル|ポータル|ゲート)/.test(raw) && /(点火|着火|再点火|火をつけ|火を付け|火を点け)/.test(raw) && !/(教えて|方法|どう|？|\?)/.test(raw) && !/(しないで|しない|するな)/.test(raw)) {
     system.run(() => { say(p, bot, "点火は、まだできません。火打ち石で火をつける仕組みが未実装です。枠が既にある場合も、点火だけを代行することはできません", true); try { conv.hear(raw, "portal_ignite_unsupported"); } catch {} });
+    return;
+  }
+  // 0-L/0-M (cyc2232 A18): ブランチマイニング・露天掘りは持続採掘として未実装。知識説明へ流して受理したように見せず、できないことを明示する (0-C7 最低ライン)。質問形・否定形では発火しない。
+  if (/(ブランチマイニング|ブラマイ|魚骨掘り)/.test(raw) && /(して|をして|やって|開始|頼む|お願い)/.test(raw) && !/(教えて|方法|どう|？|\?)/.test(raw) && !/(しないで|しない|するな)/.test(raw)) {
+    system.run(() => { say(p, bot, "ブランチマイニングは、まだできません。持続的に掘り続ける採掘と、満杯時の保管・再開の仕組みが未実装です。個別の鉱石なら、個数を言えば集めます", true); try { conv.hear(raw, "branch_mining_unsupported"); } catch {} });
+    return;
+  }
+  if (/(露天掘り)/.test(raw) && /(して|をして|やって|開始|頼む|お願い)/.test(raw) && !/(教えて|方法|どう|？|\?)/.test(raw) && !/(しないで|しない|するな)/.test(raw)) {
+    system.run(() => { say(p, bot, "露天掘りは、まだできません。範囲を層ごとに掘り下げる持続採掘が未実装です。個別の鉱石なら、個数を言えば集めます", true); try { conv.hear(raw, "open_pit_unsupported"); } catch {} });
     return;
   }
   // ①.45 倉庫 W2 (cyc1939): 整理の依頼は注文パーサーへ流さず倉庫整理へ直結する (質問形・方法の相談は対象外)
