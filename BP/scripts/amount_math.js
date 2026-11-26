@@ -152,7 +152,10 @@ export function amount_parse(segment, ctx = {}) {
     let perRun = total;
     if (rep) {
       const m2 = parseNumberToken(rep[1]);
-      if (m2 != null && m2 > 0) { repeats = m2; total = perRun * repeats; consumedLen += rep[0].length; }
+      // 0-C5 U4 (v0.5.80): 反復0回は「反復なし」ではなく総量0として返す。
+      // 従来は m2>0 の場合だけ repeats を立てたため、3個ずつ0回 が perRun の
+      // まま開始可能な注文に化けていた。0 は既存の 0個ガード (zero) へ合流させる。
+      if (m2 != null && m2 >= 0) { repeats = m2; total = perRun * repeats; consumedLen += rep[0].length; }
     } else if (/^ずつ/.test(cur)) {
       // ずつ のみ: repeats は未指定 (null) のまま保持する
     }

@@ -37,6 +37,7 @@ import { applySummonScanYaw, isSummonScanActive, shouldSummonScan } from "./summ
 import { applyLookbackYaw, isLookbackActive, shouldLookback } from "./lookback_math.js"; // POLISH-ANIM-LOOKBACK-01 (cycle1153): 先行移動中に主人を一度だけ振り返る (表示層のみ)
 import { applySkyglancePitch, isSkyglanceActive, shouldSkyglance } from "./sky_glance_math.js";
 import { createHorizonState, noteHorizon, horizonCurrentOffset } from "./horizon_glance_math.js"; // POLISH-ANIM-HORIZONGLANCE-01 (cycle0320): dawn/dusk horizon glance (display only)
+import { createFullMoonState, noteFullMoon, fullMoonCurrentOffset } from "./fullmoongaze_math.js"; // POLISH-ANIM-FULLMOONGAZE-01: 満月の夜に一度だけ月を見上げる (表示層のみ・実機確認待ち)
 import { pickEscapeBlock, shoreNeedFor, scanShore, lavaStuckStep } from "./env02_math.js"; // ENV-02 (cycle0340): 溶岩足場脱出の知覚・出口の純粋核
 import { createNightwatchState, noteNightwatch, sampleNightwatch, applyNightwatchPitch } from "./nightwatch_math.js";
 import { createDoubletakeState, noteDoubletake, sampleDoubletake } from "./doubletake_math.js"; // POLISH-ANIM-DOUBLETAKE-01 (cycle0403): 主人の急接近への二度見 (表示層のみ) // POLISH-ANIM-NIGHTWATCH-01 (cycle0340): 夜間見回り視線 (表示層のみ)
@@ -564,6 +565,7 @@ function buildContext(bot, owner) {
   noteFlinch(bot, r, flinchCand); // POLISH-ANIM-FLINCH-01 (cycle1051): 出現の辺でのみ発火 (表示層のみ)
   noteSkyglance(r, c.env.isRaining, c.danger && c.danger.count > 0); // POLISH-ANIM-SKYGLANCE-01 (cycle1133)
   noteHorizonGlance(bot, r, c); // POLISH-ANIM-HORIZONGLANCE-01 (cycle0320)
+  noteFullMoonGaze(bot, r, c); // POLISH-ANIM-FULLMOONGAZE-01 (v0.5.80): feeder 接続 (表示層のみ・実機確認待ち)
   noteNightwatchTick(bot, r, c); // POLISH-ANIM-NIGHTWATCH-01 (cycle0340)
   noteDryoff(r, c); // POLISH-ANIM-DRYOFF-01 (cycle1322)
   noteRainshelter(bot, dim, r, c); // POLISH-ANIM-RAINSHELTER-01 (cycle2231)
@@ -3310,6 +3312,19 @@ function noteHorizonGlance(bot, r, c) {
     if (ev?.fired) r.lastHorizonGlance = { at: Date.now(), band: phase };
   } catch {}
 }
+// POLISH-ANIM-FULLMOONGAZE-01 feeder (v0.5.80): 月相は world.getMoonPhase() が取れる場合のみ供給する。
+// 取れない環境では undefined を渡し、純粋核側が UNKNOWN として状態を変えない (満月扱いにしない)。
+// nightKey は world.getDay()。新規走査なし・表示層のみ・実機確認待ち。
+function noteFullMoonGaze(bot, r, c) {
+  try {
+    if (!r) return;
+    if (!r.fullmoonState) r.fullmoonState = createFullMoonState();
+    let phaseIdx; try { const mp = typeof world.getMoonPhase === "function" ? world.getMoonPhase() : undefined; phaseIdx = typeof mp === "number" ? mp : undefined; } catch { phaseIdx = undefined; }
+    let nightKey; try { nightKey = world.getDay(); } catch { nightKey = undefined; }
+    const ev = noteFullMoon(r.fullmoonState, { moonPhaseIndex: phaseIdx, nightKey, isNight: c?.env?.isNight === true, nowMs: Date.now(), danger: !!((c?.danger?.count ?? 0) > 0), combat: !!((c?.danger?.count ?? 0) > 0), falling: r.selfFalling === true, inWater: !!bot.isInWater, isRaining: c?.env?.isRaining === true, hasWorkTarget: !!r.work });
+    if (ev?.fired) r.lastFullMoonGaze = { at: Date.now(), nightKey };
+  } catch {}
+}
 // ENV-02 出口 (cycle0340): lavaStuck 累計は env02_math の純粋核が単独で更新する
 // (移動ループの別経路で消されない)。進捗 = 足場の設置数増加。申告は1回だけ。
 function noteLavaStuck(bot, owner, r, c) {
@@ -4148,6 +4163,7 @@ function applyGaze(bot, owner, ctx, scan) {
     if (rot && r.yieldState) { try { const ys = sampleYield(r.yieldState, Date.now()); if (ys.active) rot = { ...rot, y: rot.y + ys.yawDeg, x: rot.x + ys.gazePitchDeg }; } catch {} } // POLISH-ANIM-YIELD-01 (cycle0153): 重畳の最下位 (表示層のみ・実機確認待ち。lateralOffset は実座標へ流さない)
     if (rot && r.combatendState) { try { const ce = sampleCombatEnd(r.combatendState, Date.now()); if (ce.active) { rot = { ...rot, x: rot.x + ce.pitchDeg }; r.lastCombatEnd = { ...(r.lastCombatEnd || {}), armPitchDeg: ce.armPitchDeg }; } } catch {} } // POLISH-ANIM-COMBATEND-01 (cycle0224): 重畳の最下位 (表示層のみ・実機確認待ち。腕ピッチは記録のみ)
     if (rot && r.horizonState) { try { const ho = horizonCurrentOffset(r.horizonState, Date.now(), rot.y, null); if (ho.active) rot = { ...rot, x: rot.x + ho.pitchDeg }; } catch {} } // POLISH-ANIM-HORIZONGLANCE-01 (cycle0320): pitch-only stage1 (sun yaw unverified), lowest overlay (display only, real-machine check pending)
+    if (rot && r.fullmoonState) { try { const fm = fullMoonCurrentOffset(r.fullmoonState, Date.now()); if (fm.active) rot = { ...rot, x: Math.min(75, Math.max(-60, rot.x + fm.pitchDeg)) }; } catch {} } // POLISH-ANIM-FULLMOONGAZE-01 (v0.5.80): 重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot && r.doubletakeState) { try { const dt2 = sampleDoubletake(r.doubletakeState, Date.now()); if (dt2.active) rot = { ...rot, y: rot.y + dt2.yawDeg, x: rot.x + dt2.pitchDeg }; } catch {} } // POLISH-ANIM-DOUBLETAKE-01 (cycle0403): 重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot && r.darkentryState && darkEntryActive(r.darkentryState, Date.now())) { try { const deo = darkEntryOffset(Date.now() - r.darkentryState.activeFromMs); if (deo) rot = { ...rot, y: rot.y + deo.yawDeg, x: Math.min(75, Math.max(-60, rot.x + deo.pitchDeg)) }; } catch {} } // POLISH-ANIM-DARKENTRY-01 (cycle0423): 重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot && r.nightwatchState) { try { const nw = sampleNightwatch(r.nightwatchState, Date.now()); if (nw.active) rot = { ...rot, y: rot.y + nw.yawDeg, x: applyNightwatchPitch(rot.x, Date.now() - (r.nightwatchState.startedAtMs || Date.now())) }; } catch {} } // POLISH-ANIM-NIGHTWATCH-01 (cycle0340): 重畳の最下位 (表示層のみ・実機確認待ち)
