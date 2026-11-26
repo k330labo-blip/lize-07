@@ -44,6 +44,7 @@ export const SFX_TABLE = Object.freeze({
   candle:         { hit: "hit.candle", break: "dig.candle",       step: "step.cloth" },        // POLISH-SND-CLASS-CANDLE (cycle1134): dig/hit 専用ID確認済み、step は cloth 流用
   honey_block:    { hit: "hit.stone",  break: "dig.honey_block",    step: "step.stone" },        // POLISH-SND-CLASS-R1 (cycle0955): break 専用ID確認済み、hit/step は stone 流用
   lodestone:      { hit: "hit.stone",  break: "dig.lodestone",      step: "step.stone" },        // POLISH-SND-CLASS-R1 (cycle0955): break 専用ID確認済み、hit/step は stone 流用
+  basalt:         { hit: "hit.basalt", break: "dig.basalt",       step: "step.basalt" },       // POLISH-SND-CLASS-BASALT-01 (cycle1514): 3軸とも専用IDを Wiki Bedrock 行で確認済み
 });
 
 // §1.2 で実在確認済みの ID (この表が参照する分 + 汎用分)
@@ -59,6 +60,7 @@ export const CONFIRMED_IDS = new Set([
   "dig.moss", "step.moss", // cycle1058 a07: 専用ID確認済み (break/step)
   "dig.nether_sprouts", "step.nether_sprouts", // cycle1434 a14: 専用ID確認済み (break/step)
   "dig.candle", "hit.candle", // cycle1134 a07: 専用ID確認済み (break/hit)
+  "hit.basalt", "dig.basalt", "step.basalt", // cycle1514 a14: 専用ID確認済み (3軸とも)
   "break.froglight", "step.froglight", // cycle1215 a14: 専用ID確認済み (break/step。dig.froglight/hit.froglight は実在しない)
   "dig.deepslate_bricks", // cycle1256 a16: 専用ID確認済み (break のみ)
   "step.grass", "step.sand", "step.gravel", "step.cloth", "step.wood",
@@ -193,6 +195,7 @@ export function materialOfTypeId(typeId) {
   if (id === "froglight" || id.endsWith("_froglight")) return "froglight"; // cycle1215: froglight 3形+素形を専用カテゴリへ (従来は stone 落ち)
   if (id === "honey_block") return "honey_block"; // cycle0955 R1: 完全一致のみ
   if (id === "lodestone") return "lodestone"; // cycle0955 R1: 完全一致のみ
+  if (id === "basalt" || id === "smooth_basalt") return "basalt"; // cycle1514 BASALT-01: 完全一致2形のみ (polished_basalt は裏取り未実施のため stone のまま)
   if (id === "deepslate_bricks" || id === "cracked_deepslate_bricks" || id === "deepslate_tiles" || id === "cracked_deepslate_tiles") return "deepslate_bricks"; // cycle1256 bricks 2 forms + cycle1455 POLISH-SND-CLASS-DEEPSLATE-TILES-01: tiles 2 forms verified against Bedrock sounds (tiles use the deepslate_bricks sound set); derived slab/stairs/wall forms stay excluded
   if (id === "deepslate_copper_ore") return "deepslate"; // cycle2117: 母岩優先 (深層岩鉱石は母岩が正、copper includes より前)
   if (id.includes("copper") || id.includes("lightning_rod")) return "copper"; // 11 (+a11 避雷針は銅)

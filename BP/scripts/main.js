@@ -64,7 +64,7 @@ import { createEdgepeekState, noteEdgepeek as noteEdgepeekState, sampleEdgepeek 
 import { createIcebalanceState, noteIcebalance as noteIcebalanceState, sampleIcebalance } from "./icebalance_math.js";
 import { createSnowtreadState, noteSnowtread, snowtreadCurrentOffset, applySnowtreadPitch } from "./snowtread_math.js"; // POLISH-ANIM-SNOWTREAD-01 (cycle2333): 雪上歩行の小さな沈み込み (表示層のみ・実機確認待ち)
 import { createStepupState, noteStepup as noteStepupState, sampleStepup } from "./stepup_math.js";
-import { banKeyFor, matchesBan, isBanned } from "./trunk_ban.js"; // queue0-A bug2 (cycle1728, v0.5.19): trunk-unit ban
+import { banKeyFor, matchesBan, isBanned, filterBanned } from "./trunk_ban.js"; // queue0-A bug2 (cycle1728, v0.5.19): trunk-unit ban
 import { createTakeBanState, recordTakeBan, isTakeBanned, pruneTakeBans } from "./take_ban_math.js"; // TR2136-01 (cycle2200): 回収全量失敗の実行側見切り
 import { createWorkBanState, recordWorkBan, isWorkBanned, pruneWorkBans } from "./work_ban_math.js"; // cycle0832 F5: work層の見切り ban (hold枯渇後に到達不能候補を選び直す無限ループの是正)
 import { createOreSpotState, noteOreSpot, sampleOreSpot } from "./orespot_math.js"; // POLISH-ANIM-ORESPOT-01 (cycle0832): 貴重鉱石への二度見 (表示層のみ・実機確認待ち)
@@ -123,7 +123,8 @@ import { createWideScanFails, partitionWideIds, noteWideSuccess, noteWideIdFailu
 import { isAllowedByAllowOnly } from "./allow_only.js"; // 0-C2 reader (cycle1455): allowOnly enforcement // 0-D3: 樹種指定時は対象選択・進捗をその樹種だけに限定する
 import { shouldReplayGaze, GAZE_REPLAY_INTERVAL_TICKS } from "./gaze_cadence_math.js"; // 0-E1 GAZE-CADENCE-01: 視線レイヤーを本体ループから分離する
 import { mergeCaps, capForTarget } from "./cap_guard_math.js"; // 0-C2 読み手 (cycle1337): セッション上限を mission へ届ける
-import { createWarehouseRegistry, serializeWarehouseRegistry, deserializeWarehouseRegistry } from "./warehouse_registry.js"; // 倉庫 W1: 台帳の DP 永続化 (cb_warehouse)
+import { createWarehouseRegistry, serializeWarehouseRegistry, deserializeWarehouseRegistry, addCandidates, warehouseKeyOf } from "./warehouse_registry.js"; // 倉庫 W1: 台帳の DP 永続化 (cb_warehouse)
+import { createStairLookState, noteStairLook, stairLookPitch } from "./stairlook_math.js"; // POLISH-ANIM-STAIRSLOOK-01 (cycle1455): 表示層のみ・実機確認待ち
 import { createOrderLookState, noteOrderAccepted, sampleOrderLook } from "./orderlook_math.js"; // POLISH-ANIM-ORDERLOOK-01: 指示受理直後の「受けました」の頷き (表示層のみ・実機確認待ち)
 import { evalCondition, conditionExpired } from "./condition_math.js"; // 0-C2 読み手 (cycle1337): 条件付き注文の発火判定
 import { detectUnsupportedIntent } from "./unsupported_intent.js"; // 0-C7 (cycle1337): 未対応依頼への明示返答ゲート
@@ -892,7 +893,7 @@ function execTarget(bot, owner, rule, ctx, scan) {
       return { x: c0.x + Math.cos(a) * 5, y: c0.y, z: c0.z + Math.sin(a) * 5 };
     }
     case "return_home": case "go_home": case "rest_at_home": return homeEntryPoint(bot, home) || behind(2);
-    case "deposit": case "chest_alert": return home ? { x: home.x + 0.5, y: home.y + 1, z: home.z + 0.5 } : behind(2);
+    case "deposit": case "chest_alert": return homeEntryPoint(bot, home) || behind(2); // A08-01 (cycle1514, a22ハーネス実測で確定): 次元照合済みの入口を使う (従来は home 無照合で別次元の入庫点を返し続け到達不能ループになった)
     case "deliver_all": case "deliver_food": case "deliver_valuable": return behind(1.5);
     case "pickup_valuable": return scan?.valuableItem?.location || scan?.nearestItem?.location || behind(3);
     case "pickup_food": return scan?.foodItem?.location || scan?.nearestItem?.location || behind(3);
@@ -1260,7 +1261,7 @@ function tickWork(bot, owner, r, ctx) {
     if (takeFromInv(bot, seedId, 1)) { try { b.setType(w.typeId); try { sfxPlace(bot.dimension, { x: w.loc.x + 0.5, y: w.loc.y + 0.5, z: w.loc.z + 0.5 }, w.typeId); } catch {} } catch {} } // POLISH-SND-PLACE-01 残件 (cycle2036): 植え直しへの設置音配線 (表示層のみ)
   }
   r.lastBreak = { act: "BREAK", ok: true, reason: null, item: w.typeId, gained: gain ? gain[1] : 0, at: Date.now() }; commitLastAction(r, r.lastBreak);
-  try { if (String(w.typeId || "").includes("_ore")) { const nb = veinNeighbors(w.loc, w.typeId, (p) => { try { const bb = bot.dimension.getBlock(p); return bb ? bb.typeId : null; } catch { return null; } }); const prev = Array.isArray(r.veinCands) ? r.veinCands.filter((c) => c && !(c.loc.x === w.loc.x && c.loc.y === w.loc.y && c.loc.z === w.loc.z)) : []; const seen = new Set(prev.map((c) => `${c.loc.x},${c.loc.y},${c.loc.z}`)); for (const c of nb) { const k = `${c.loc.x},${c.loc.y},${c.loc.z}`; if (!seen.has(k)) { seen.add(k); prev.push(c); } } r.veinCands = prev.slice(-32); } } catch {} // 0-D1: 鉱脈の6近傍を次候補として保持 (二手分岐の両側を忘れない)
+  try { if (String(w.typeId || "").includes("_ore")) { const nb = veinNeighbors(w.loc, w.typeId, (p) => { try { const bb = bot.dimension.getBlock(p); return bb ? bb.typeId : null; } catch { return null; } }); const prev = filterBanned(Array.isArray(r.veinCands) ? r.veinCands.filter((c) => c && !(c.loc.x === w.loc.x && c.loc.y === w.loc.y && c.loc.z === w.loc.z)) : [], r.mBanKey, r.mBanUntil, Date.now()).filter((c) => !isBanned(c.loc, c.typeId ?? null, r.mBanKey, r.mBanUntil, Date.now())); /* 0-D1 (cycle1514): 登録段でも ban 中セルを持ち込まない */ const nbF = filterBanned(nb, r.mBanKey, r.mBanUntil, Date.now()); for (let i = nb.length - 1; i >= 0; i--) if (!nbF.includes(nb[i])) nb.splice(i, 1); const seen = new Set(prev.map((c) => `${c.loc.x},${c.loc.y},${c.loc.z}`)); for (const c of nb) { const k = `${c.loc.x},${c.loc.y},${c.loc.z}`; if (!seen.has(k)) { seen.add(k); prev.push(c); } } r.veinCands = prev.slice(-32); } } catch {} // 0-D1: 鉱脈の6近傍を次候補として保持 (二手分岐の両側を忘れない)
   r.work = null;
   return true;
 }
@@ -2424,7 +2425,7 @@ function findMissionTarget(bot, r, scan, step, scanUnknown = false) {
   // Step 3b R3 (v0.4.13): unknown は記録だけでなく遮断する (後続 source/直接ID/ドロップへ素通りさせない)
   const noteScanState = (id) => { try { if (scanCachePeek(r, id).state === "unknown") { anyUnknown = true; return true; } } catch {} return false; };
   // 0-D1 (cycle1400): 継続中の鉱脈があれば survey/遠方より優先する (実在を再確認し、消えた候補は捨てる)
-  try { if (Array.isArray(r.veinCands) && r.veinCands.length && sources.some((s) => s.kind === "block")) { const live = []; for (const c of r.veinCands) { let t = null; try { t = bot.dimension.getBlock(c.loc)?.typeId || null; } catch {} if (t && veinSameResource(t, c.typeId) && sources.some((s) => s.kind === "block" && veinSameResource(s.id, t))) live.push({ loc: c.loc, typeId: t }); else if (!t) live.push(c); } r.veinCands = live.filter((c) => { try { return bot.dimension.getBlock(c.loc)?.typeId; } catch { return true; } }); const vp = veinPickNearest(live.filter((c) => { try { return !!bot.dimension.getBlock(c.loc)?.typeId; } catch { return false; } }), bot.location); if (vp) return { found: true, kind: "block", loc: vp.loc, typeId: vp.typeId, detail: { state: "present", via: "vein" } }; } } catch {}
+  try { if (Array.isArray(r.veinCands) && r.veinCands.length && sources.some((s) => s.kind === "block")) { const live = []; for (const c of r.veinCands) { let t = null; try { t = bot.dimension.getBlock(c.loc)?.typeId || null; } catch {} if (t && veinSameResource(t, c.typeId) && sources.some((s) => s.kind === "block" && veinSameResource(s.id, t))) live.push({ loc: c.loc, typeId: t }); else if (!t) live.push(c); } const liveB = filterBanned(live, r.mBanKey, r.mBanUntil, Date.now()); r.veinCands = liveB.filter((c) => { try { return bot.dimension.getBlock(c.loc)?.typeId; } catch { return true; } }); const vp = veinPickNearest(liveB.filter((c) => { try { return !!bot.dimension.getBlock(c.loc)?.typeId; } catch { return false; } }), bot.location); /* 0-D1 (cycle1514, a21実測で確定): ban中セルは選定から外し書き戻しでも落とす (従来は最寄りのban中セルが返り続け次点が60〜120秒飢餓し、失効後に同じセルが復活した) */ if (vp) return { found: true, kind: "block", loc: vp.loc, typeId: vp.typeId, detail: { state: "present", via: "vein" } }; } } catch {}
   { // 0-D1: block 候補は登録順でなく距離優先 (通常/深層は同一資源として横断比較する)
     const blockCands = [];
     for (const s of sources) { if (s.kind !== "block") continue; const loc = scanBlockNear(bot, r, s.id); if (loc) blockCands.push({ loc, typeId: s.id }); else if (noteScanState(s.id)) return { found: false, detail: { state: "unknown" } }; }
@@ -2534,6 +2535,37 @@ function lname(item) { return item === "group:logs" ? "原木" : item === "group
 function saveLongTask(bot, r) { dps(bot, "cb_longtask", r.longtask ? JSON.stringify(r.longtask) : ""); }
 // 倉庫 W1: 台帳の保存はこの1点だけを通す (登録・除外・行き先の変更は台帳を差し替えた後に呼ぶ)
 function saveWarehouse(bot, r) { try { if (r.warehouse) dps(bot, "cb_warehouse", serializeWarehouseRegistry(r.warehouse)); } catch {} }
+// 倉庫 W1 候補スキャン供給 (cycle1514): 新規の世界走査はせず、world_memory が既に知っている
+// コンテナ (knownContainers) だけを台帳の候補へ流す。60秒間引き・次元一致・コンテナ種別のみ。
+// 登録済み/重複/除外の扱いは純粋核 addCandidates と台帳側が担保する (ここでは再実装しない)。
+function refreshWarehouseCandidates(bot, r) {
+  try {
+    if (!bot || !r || !r.warehouse) return 0;
+    const now = Date.now();
+    if (now - (r.whCandAt || 0) < 60000) return 0;
+    r.whCandAt = now;
+    const wm = wmemOf(bot); if (!wm?.knownContainers) return 0;
+    const dimId = bot.dimension?.id; if (!dimId) return 0;
+    const list = [];
+    // a01 §4-E (cycle1514): 除外済み箱の水平隣接セルは候補にしない (ラージチェストの未登録の相方が
+    // 単独で登録されると核の除外優先が届かなくなるため、変換層で安全側に倒す)
+    const excludedCells = [];
+    try { for (const b of r.warehouse.boxes || []) { if (b && b.role === "excluded" && typeof b.key === "string") { const p = b.key.split("|"); const xyz = (p[1] || "").split(",").map(Number); if (p[0] === dimId && xyz.length === 3 && xyz.every(Number.isFinite)) excludedCells.push(xyz); } } } catch {}
+    for (const c of wm.knownContainers(dimId) || []) {
+      try {
+        if (!c || c.dim !== dimId) continue;
+        if (c.k && !isContainerBlock(c.k)) continue;
+        if (excludedCells.some(([ex, ey, ez]) => ey === Math.floor(c.y) && Math.abs(ex - Math.floor(c.x)) + Math.abs(ez - Math.floor(c.z)) === 1)) continue;
+        const key = warehouseKeyOf(c.dim, c.x, c.y, c.z);
+        if (key) list.push({ key, dim: c.dim });
+      } catch {}
+    }
+    if (!list.length) return 0;
+    const res = addCandidates(r.warehouse, list);
+    if (res && res.added > 0) { r.warehouse = res.reg; r.lastWarehouseCandidates = { at: now, added: res.added, total: r.warehouse.candidates.length }; return res.added; }
+    return 0;
+  } catch { return 0; }
+}
 function startLongTask(bot, owner, r, mo, plan, announce = true) {
   const ltName = (plan.target.name && !String(plan.target.name).includes(":")) ? plan.target.name : (mo.name || lname(plan.target.item)); // v0.4.67(外部): ID のまま表示しない
   r.longtask = { target: plan.target.item, name: ltName, amount: plan.target.count, legs: plan.legs, legIdx: 0, phase: "legs", returnTo: mo.returnTo || "owner", hostiles: mo.constraints?.hostiles || "avoid", forbiddenTargets: mo.constraints?.forbiddenTargets || [], startedAt: Date.now() };
@@ -4016,8 +4048,14 @@ function applyGaze(bot, owner, ctx, scan) {
   try { const r0 = rt(bot); if (!r0.ownerreturnState) r0.ownerreturnState = createOwnerReturnState(); const d = ctx?.self?.distOwner; const same = !!owner && !!ctx?.owner?.dimensionSame; let relYaw = 0; try { const gr = gazeRotation(bot.location, { x: owner.location.x, y: owner.location.y + 1.4, z: owner.location.z }); const cur = bot.getRotation(); relYaw = ((gr.y - (cur?.y || 0) + 540) % 360) - 180; } catch {} const rec = noteOwnerReturn(r0.ownerreturnState, { dist: same && Number.isFinite(d) && d < 900 ? d : null, busy: !!r0.work || r0.selfFalling === true, targetYawDeg: relYaw }, Date.now()); if (rec) r0.lastOwnerReturn = r0.ownerreturnState.lastRecord; } catch {}
   try { const r0 = rt(bot); if (!r0.doubletakeState) r0.doubletakeState = createDoubletakeState(); const d = ctx?.self?.distOwner; const same = !!owner && !!ctx?.owner?.dimensionSame; const dres = noteDoubletake(r0.doubletakeState, { ownerPresent: !!owner, dist: same && Number.isFinite(d) ? d : null, sameDimension: same }, Date.now(), !!((ctx?.danger?.count ?? 0) > 0) || r0.selfFalling === true || !!r0.work); if (dres === "fired") r0.lastDoubletake = { at: Date.now() }; } catch {} // POLISH-ANIM-DOUBLETAKE-01 (cycle0403) feeder: 既存観測 ctx.self.distOwner のみ (新規走査なし)。0-C6(c) (cycle1256): r0/d/same を自ブロック内で宣言 (従来は直前 try のスコープ外参照で常時 ReferenceError→空catch 握りつぶしだった)
   try { const r0 = rt(bot); if (!r0.darkentryState) r0.darkentryState = darkEntryInit(); const band = lightBandOf(ctx?.x?.lightLevel); if (band !== null) { const de = noteDarkEntry(r0.darkentryState, { band, nowMs: Date.now(), inCombat: (ctx?.danger?.count ?? 0) > 0, falling: r0.selfFalling === true, inWater: !!bot.isInWater }); r0.darkentryState = de.state; if (de.fired) r0.lastDarkEntry = { at: Date.now(), band }; } } catch {} // POLISH-ANIM-DARKENTRY-01 (cycle0423) feeder: 既存の合成 lightLevel のみ (新規走査なし)
-  // POLISH-ANIM-MUSICNOD-01 feeder (cycle2006): 音楽ブロック近傍滞在を代理条件とする (再生事実は正式版APIで取れない)。2秒間引き＋scanBlockNear のキャッシュ経由で新規走査は増やさない
-  try { const r0 = rt(bot); if (!r0.musicnodState) r0.musicnodState = createMusicnodState(); if (Date.now() - (r0.musicnodCheckAt || 0) >= 2000) { r0.musicnodCheckAt = Date.now(); let near; let src = null; try { const scanUnk = (tid) => { const e = r0.mScanMap?.[tid]; return !!e && (e.failedCells ?? 0) * 2 > (e.totalCells ?? 2601); }; const j = scanBlockNear(bot, r0, "minecraft:jukebox"); const nb = j ? null : scanBlockNear(bot, r0, "minecraft:noteblock"); if (j) { near = true; src = "jukebox"; } else if (nb) { near = true; src = "note_block"; } else if (scanUnk("minecraft:jukebox") || scanUnk("minecraft:noteblock")) near = undefined; else near = false; /* 0-D4 (cycle1256): 音符ブロックの実IDは minecraft:noteblock (アンダースコアなし)。従来の note_block は Java ID で BlockFilter が解決できず常時未検出＋警告だった。記録ラベル src は不変 */ } catch { near = undefined; } const rec = noteMusicnod(r0.musicnodState, { nearMusic: near, source: src, inCombat: (ctx?.danger?.count ?? 0) > 0, falling: r0.selfFalling === true, inWater: !!bot.isInWater, working: !!r0.work, ownerFar: typeof ctx?.self?.distOwner === "number" && ctx.self.distOwner > 16 }, Date.now()); if (rec?.entered) r0.lastMusicNod = { at: Date.now(), source: src, fired: true }; } } catch {}
+  // POLISH-ANIM-MUSICNOD-01 feeder (cycle2006): 音楽ブロック近傍滞在を代理条件とする (再生事実は正式版APIで取れない)。
+  // 0-D4 分離 (cycle1514): 演出側は scanCachePeek の読み取り専用に限定し、scanBlockNear を一切呼ばない。
+  // これにより演出の検索が mScanMap の failedCells (資源探索の失敗カウンタ) へ書き込む経路が消える。
+  // キャッシュが stale/unknown のときは near=undefined (不明) とし、演出のために走査を起こさない。
+  try { const r0 = rt(bot); if (!r0.musicnodState) r0.musicnodState = createMusicnodState(); if (Date.now() - (r0.musicnodCheckAt || 0) >= 2000) { r0.musicnodCheckAt = Date.now(); let near; let src = null; try { const pj = scanCachePeek(r0, "minecraft:jukebox"); const pn = pj.state === "hit" ? null : scanCachePeek(r0, "minecraft:noteblock"); if (pj.state === "hit") { near = true; src = "jukebox"; } else if (pn && pn.state === "hit") { near = true; src = "note_block"; } else if (pj.state === "absent" && pn && pn.state === "absent") near = false; else near = undefined; /* 0-D4 (cycle1256): 音符ブロックの実IDは minecraft:noteblock (アンダースコアなし)。記録ラベル src は不変 */ } catch { near = undefined; } const rec = noteMusicnod(r0.musicnodState, { nearMusic: near, source: src, inCombat: (ctx?.danger?.count ?? 0) > 0, falling: r0.selfFalling === true, inWater: !!bot.isInWater, working: !!r0.work, ownerFar: typeof ctx?.self?.distOwner === "number" && ctx.self.distOwner > 16 }, Date.now()); if (rec?.entered) r0.lastMusicNod = { at: Date.now(), source: src, fired: true }; } } catch {}
+  // POLISH-ANIM-STAIRSLOOK-01 feeder (cycle1514): 足元フロア高の ±1 変化だけを段差として供給する (新規走査なし)。
+  // 飛行中の高度変化と混同しないよう selfFalling/水中/戦闘/作業中は純粋核側の抑制に委ね、ここでは落下中を渡す。
+  try { const r0 = rt(bot); if (!r0.stairlookState) r0.stairlookState = createStairLookState(); const fy = Math.floor(bot.location?.y ?? NaN); if (Number.isFinite(fy)) { if (typeof r0.stairPrevFloorY === "number" && fy !== r0.stairPrevFloorY) { const d = fy - r0.stairPrevFloorY; let flying = false; try { flying = bot.isFlying === true; } catch {} if ((d === 1 || d === -1) && !flying) { const rec = noteStairLook(r0.stairlookState, { stepDir: d, combat: (ctx?.danger?.count ?? 0) > 0, falling: r0.selfFalling === true, inWater: !!bot.isInWater, working: !!r0.work }, Date.now()); if (rec?.fired) r0.lastStairLook = { at: Date.now(), dir: d }; } } r0.stairPrevFloorY = fy; } } catch {}
   let gz = null; try { gz = decideGaze(ctx); } catch {}
   if (!gz) return;
   const r = rt(bot);
@@ -4083,6 +4121,7 @@ function applyGaze(bot, owner, ctx, scan) {
     if (rot && r.loadpostureState) { const lp = sampleLoadPosture(r.loadpostureState, Date.now()); if (lp.active) rot = { ...rot, x: rot.x + lp.pitchDeg }; } // POLISH-ANIM-LOADPOSTURE-01 (cycle1832): ピッチ重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot && r.partnercheckState) { const pc = partnerCheckOffset(r.partnercheckState, Date.now()); if (pc.active) rot = { ...rot, y: rot.y + pc.yawDeg, x: rot.x + pc.pitchDeg }; } if (rot && r.ownerreturnState) { const orc = ownerReturnOffset(r.ownerreturnState, Date.now()); if (orc.active) rot = { ...rot, y: rot.y + orc.yawDeg, x: rot.x + orc.pitchDeg }; } // POLISH-ANIM-OWNERRETURN-01 (cycle1923): 重畳の最下位 (表示層のみ・実機確認待ち) // POLISH-ANIM-PARTNERCHECK-01 (cycle1850): 重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot && r.musicnodState) { const mn = sampleMusicnod(r.musicnodState, Date.now()); if (mn.active) rot = { ...rot, x: rot.x + mn.gazePitchDeg }; } // POLISH-ANIM-MUSICNOD-01 (cycle2006): 重畳の最下位 (表示層のみ・実機確認待ち、近傍滞在が代理条件)
+    if (rot && r.stairlookState) { const sp = stairLookPitch(r.stairlookState, Date.now()); if (sp) rot = { ...rot, x: rot.x + sp }; } // POLISH-ANIM-STAIRSLOOK-01 (cycle1514): 重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot && r.orderlookState) { const ol = sampleOrderLook(r.orderlookState, Date.now()); if (ol.active) rot = { ...rot, x: rot.x + ol.pitchDeg }; } // POLISH-ANIM-ORDERLOOK-01: 重畳の最下位 (表示層のみ・実機確認待ち)。0-E1 の 2tick 視線で 850ms の頷きが複数回サンプリングされる
     if (rot && r.idleState) { const idl = sampleIdle(r.idleState, Date.now()); if (idl.active) rot = { ...rot, y: rot.y + idl.gazeYawRelDeg, x: rot.x + idl.gazePitchDeg }; } // POLISH-ANIM-IDLE-01 (cycle2020): 重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot && r.lookleadSample && (r.lookleadSample.active || r.lookleadSample.completed) && Date.now() - (r.lookleadSampleAt || 0) < 200) rot = { ...rot, y: rot.y + r.lookleadSample.yawDeltaDeg, x: rot.x + r.lookleadSample.pitchDeltaDeg }; // POLISH-ANIM-LOOKLEAD-01 (cycle2036): 重畳の最下位 (表示層のみ・実機確認待ち)
@@ -4265,7 +4304,7 @@ system.runInterval(() => {
 
 // 世界記憶の定期保存（30秒ごと・dirty のときだけ）
 system.runInterval(() => {
-  for (const [id, r] of bots) { try { if (r.wmem && r.wmem.dirty) r.wmem.save(); } catch {} try { if (r.trace && r.trace.dirty) r.trace.flush(); } catch {} try { const b = world.getEntity(id); if (b) flushFailAgg(b, r); } catch {} try { const b = world.getEntity(id); if (b) saveWarehouse(b, r); } catch {} /* 倉庫W1 (cycle1434): 保存発火点を周期 flush へ接続 (従来は定義のみで呼び出し0件だった) */ try { const b = world.getEntity(id); if (b) flushExp(b, r); } catch {} /* 6-ML: 周期 flush 相乗り */ }
+  for (const [id, r] of bots) { try { if (r.wmem && r.wmem.dirty) r.wmem.save(); } catch {} try { if (r.trace && r.trace.dirty) r.trace.flush(); } catch {} try { const b = world.getEntity(id); if (b) flushFailAgg(b, r); } catch {} try { const b = world.getEntity(id); if (b) refreshWarehouseCandidates(b, r); } catch {} /* 倉庫W1 (cycle1514): 候補スキャン供給を周期 flush へ接続 (既知コンテナのみ・新規走査なし) */ try { const b = world.getEntity(id); if (b) saveWarehouse(b, r); } catch {} /* 倉庫W1 (cycle1434): 保存発火点を周期 flush へ接続 (従来は定義のみで呼び出し0件だった) */ try { const b = world.getEntity(id); if (b) flushExp(b, r); } catch {} /* 6-ML: 周期 flush 相乗り */ }
 }, 600);
 world.afterEvents.entityHurt.subscribe((ev) => {
   try {
