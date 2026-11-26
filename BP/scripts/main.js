@@ -25,6 +25,7 @@ import { chooseGoal } from "./planner.js";
 import createWorldMemory from "./world_memory.js";
 import { genSpeech } from "./gen_speech.js";
 import { parseOrder, resumeClarifyOrder, classifyClarifyUnmatched } from "./order_parser.js";
+import { resolveItem } from "./decomposer.js"; // 倉庫 W3-TEACH (cyc2355): 素材名→typeId の単一の正 (注文経路と共用)
 import { isCropMature, CROP_MATURITY_MAX, isCropBlock, cropBreakGate } from "./crop_maturity.js";
 import { resolveWorkAccess, ACCESS } from "./work_access.js"; // 基礎 遮蔽除去 (v0.4.76): 作業アクセス解決の純粋核
 import { evaluateDig } from "./dig_gate.js"; // 要望バッチA (v0.4.88): 掘削の統一ゲート
@@ -62,6 +63,7 @@ import { createYieldState, noteYield, sampleYield } from "./yield_math.js"; // P
 import { extractItemData, applyItemData, normalizeSavedInv } from "./inv_item_data.js"; // 0-C3 (cycle1238): 回収・再召喚で荷物の個別情報 (名前/エンチャント/消耗) を保持する
 import { applyRecallcheckPitch, isRecallcheckActive, shouldRecallcheck } from "./recallcheck_math.js"; // POLISH-ANIM-RECALLCHECK-01 (cycle1238)
 import { createLevelupNodState, noteOwnerLevel, applyLevelupNodPitch, isLevelupNodActive } from "./levelupnod_math.js"; // POLISH-ANIM-LEVELUPNOD-01 (cyc2059 pure core / cyc2122 feeder wiring)
+import { createShiverState, noteShiverSample, applyShiverYaw, isShiverActive } from "./shiver_math.js"; // POLISH-ANIM-SHIVER-01 (cyc2355): 寒冷時の小刻みな震え feeder (表示層のみ・実機確認待ち)
 import { createHeedState, noteHeed as noteHeedState, sampleHeed } from "./heed_math.js";
 import { createThresholdState, noteThreshold as noteThresholdState, sampleThreshold } from "./threshold_math.js"; // POLISH-ANIM-THRESHOLD-01 (cycle1503): くぐり視線 (表示層のみ・実機確認待ち)
 import { createEdgepeekState, noteEdgepeek as noteEdgepeekState, sampleEdgepeek } from "./edgepeek_math.js";
@@ -121,7 +123,7 @@ import { createMission, advance, missionSummary, withdrawKeyOf, STEP_TYPES } fro
 import { selectWithdrawCandidate, candKeyForFirstStep } from "./withdraw_candidate.js"; // Phase3 candKey B1 (v0.4.26): 候補選定・射影の純粋関数
 import { scanOpportunities, noteAttempt, pruneCooldowns } from "./side_tasks.js";
 import { createSideChase, chaseTick, sideChaseRangeFor } from "./side_chase.js"; // SIDE-COOLDOWN-CHASE (cycle1134): 接近保持と終端クールダウン
-import { gateCancel, gateFactory, gateWarehouseSort, isHowToRequest } from "./chat_gate.js"; // 0-C1 (cycle1155): 質問・否定・仮定・部分スコープでは中止/工場/指示を発火しない共通ゲート
+import { gateCancel, gateFactory, gateWarehouseSort, gateTeachItemDest, isHowToRequest } from "./chat_gate.js"; // 0-C1 (cycle1155): 質問・否定・仮定・部分スコープでは中止/工場/指示を発火しない共通ゲート
 import { pickNearest as veinPickNearest, veinNeighbors, sameResource as veinSameResource } from "./vein_math.js"; // 0-D1 (cycle1400): 鉱脈継続・距離優先の純粋核
 import { classifyDescent as d2Classify, createSpiralAnchor as d2CreateAnchor, spiralStepAt as d2StepAt } from "./d2_spiral_math.js"; // 0-D2 (cycle1434): 発見後も螺旋降下
 import { allowedLogIds, countLogsForTarget } from "./tree_species_math.js";
@@ -129,7 +131,7 @@ import { createWideScanFails, partitionWideIds, noteWideSuccess, noteWideIdFailu
 import { isAllowedByAllowOnly, serializeAllowOnly, restoreAllowOnly, clearAllowOnly } from "./allow_only.js"; // 0-C2 reader (cycle1455): allowOnly enforcement // 0-D3: 樹種指定時は対象選択・進捗をその樹種だけに限定する
 import { shouldReplayGaze, GAZE_REPLAY_INTERVAL_TICKS } from "./gaze_cadence_math.js"; // 0-E1 GAZE-CADENCE-01: 視線レイヤーを本体ループから分離する
 import { mergeCaps, capForTarget, serializeCaps, restoreCaps } from "./cap_guard_math.js"; // 0-C2 読み手 (cycle1337): セッション上限を mission へ届ける // cyc2020: caps の DP 永続化 (cb_caps)
-import { createWarehouseRegistry, serializeWarehouseRegistry, deserializeWarehouseRegistry, addCandidates, warehouseKeyOf, registerBox, removeCandidate } from "./warehouse_registry.js"; // 倉庫 W1: 台帳の DP 永続化 (cb_warehouse)
+import { createWarehouseRegistry, serializeWarehouseRegistry, deserializeWarehouseRegistry, addCandidates, warehouseKeyOf, registerBox, removeCandidate, teachItemDest } from "./warehouse_registry.js"; // 倉庫 W1: 台帳の DP 永続化 (cb_warehouse)
 import { WAREHOUSE_CATEGORIES, categoryLabelOf } from "./warehouse_categories.js"; // 倉庫 W1 (cyc1908): 仕分け先カテゴリ語彙の単一の正。UI 登録で category を渡し、仕分け核の category 一致を実運用で発火させる
 import { planSortMoves } from "./warehouse_sort.js"; // 倉庫 W2 (cyc1939): 仕分け計画核を実機経路へ接続
 import { verifyMove } from "./warehouse_exec.js"; // 倉庫 W2 (cyc1939): 移動直前のスロット再確認
@@ -865,6 +867,7 @@ function buildContext(bot, owner) {
   c.x.lastFail = r.lastFail && Date.now() - r.lastFail.at < 60000 ? r.lastFail.where : null;
   c.x.failCount = r.failCount || 0;
   r.scan = scan;
+  noteShiverTick(bot, r, c); // POLISH-ANIM-SHIVER-01 (cyc2355): biome/selfFreezing 設定後に呼ぶ (理由は noteShiverTick のコメント参照)
   return { ctx: c, scan };
 }
 
@@ -4035,6 +4038,20 @@ function catchsightSuppressInput(bot, owner, ctx, gz, r, now) {
     };
   } catch { return { suppressed: true }; }
 }
+// POLISH-ANIM-SHIVER-01 (cyc2355): 寒冷地で待機しているときだけ小さく震える (表示層のみ・実機確認待ち)
+// feeder は既存観測 (c.x.biome / c.x.selfFreezing) だけを使い新規走査なし。移動量は専用 prevPos で測る (warmhands と同方式)。
+// 呼び出し位置は buildContext の return 直前が必須 (biome/selfFreezing は note 群より後に立つ。前に置くと cold が毎回 false で永遠に発火しない)
+function noteShiverTick(bot, r, c) {
+  try {
+    if (!bot || !r) return;
+    if (!r.shiverState) r.shiverState = createShiverState();
+    const now = Date.now(); const p = bot.location;
+    let stepDist = 0; if (r.shiverPrevPos) stepDist = Math.hypot(p.x - r.shiverPrevPos.x, p.z - r.shiverPrevPos.z); r.shiverPrevPos = { x: p.x, z: p.z };
+    let inWater = false; try { inWater = !!bot.isInWater; } catch {}
+    const out = noteShiverSample(r.shiverState, { cold: c?.x?.biome === "snow" || c?.x?.selfFreezing === true, busy: !!r.work || !!r.mission || !!r.longtask || !!r.buildPlan, moving: stepDist > 0.05, suppressed: !!((c?.danger?.count ?? 0) > 0) || r.selfFalling === true || inWater, nowMs: now });
+    if (out?.fired) r.lastShiver = { at: now, fired: true };
+  } catch {}
+}
 // POLISH-ANIM-WARMHANDS-01 (cycle0740): 火のそばで待機中、手をかざして温まる小さな仕草 (表示層のみ・実機確認待ち)
 // feeder: nearHeat は知覚ライト走査の分類 (c.x.nearHeat)、待機は noteToolCheckTick の idleSinceMs、移動量は専用 prevPos で測る (新規走査なし)
 function noteWarmhandsTick(bot, r, c) {
@@ -4242,6 +4259,7 @@ function applyGaze(bot, owner, ctx, scan) {
     if (rot && r.sleepwatchState) { try { const sw2 = sampleSleepwatch(r.sleepwatchState, Date.now()); if (sw2.active) { let yawPull = 0; try { if (owner) { const gr = gazeRotation(bot.location, { x: owner.location.x, y: owner.location.y + 1.4, z: owner.location.z }); yawPull = sleepwatchYawPullDeg(rot.y, gr?.y); } } catch {} rot = { ...rot, y: rot.y + yawPull, x: rot.x + sw2.pitchDeg }; } } catch {} } // POLISH-ANIM-SLEEPWATCH-01 (cycle0910): 重畳の最下位 (表示層のみ・実機確認待ち。体は回さない)
     if (rot && r.mountglanceState) { try { const mg2 = sampleMountglance(r.mountglanceState, Date.now()); if (mg2.active) { let yawPull = 0; try { if (owner) { const gr = gazeRotation(bot.location, { x: owner.location.x, y: owner.location.y + 1.4, z: owner.location.z }); yawPull = mountglanceYawPullDeg(rot.y, gr?.y); } } catch {} rot = { ...rot, y: rot.y + yawPull, x: rot.x + mg2.pitchDeg }; } } catch {} } // POLISH-ANIM-MOUNTGLANCE-01 (cycle0936): 重畳の最下位 (表示層のみ・実機確認待ち。体は回さない)
     if (rot && r.wakegreetState) { try { const wg2 = sampleWakegreet(r.wakegreetState, Date.now()); if (wg2.active) { let yawPull = 0; try { if (owner) { const gr = gazeRotation(bot.location, { x: owner.location.x, y: owner.location.y + 1.4, z: owner.location.z }); yawPull = wakegreetYawPullDeg(rot.y, gr?.y); } } catch {} rot = { ...rot, y: rot.y + yawPull, x: rot.x + wg2.pitchDeg }; } } catch {} } // POLISH-ANIM-WAKEGREET-01 (cyc1939): 重畳の最下位 (表示層のみ・実機確認待ち。体は回さない)
+    if (rot && r.shiverState) { try { const nowS = Date.now(); if (isShiverActive(r.shiverState.startedAtMs, nowS)) rot = { ...rot, y: applyShiverYaw(rot.y, nowS - r.shiverState.startedAtMs) }; } catch {} } // POLISH-ANIM-SHIVER-01 (cyc2355): ヨー重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot) { try { bot.setRotation(rot); } catch {} }
   }
   if (gz.say && !r.gazeReplayCall && Math.random() < 0.4) sayAmbient(owner, bot, gz.say); // 0-E1: 視線再適用 (2tick) では環境発話を繰り返さない
@@ -5050,6 +5068,25 @@ function handleChatMessage(p, rawIn) {
   if (/(露天掘り)/.test(raw) && /(して|をして|やって|開始|頼む|お願い)/.test(raw) && !/(教えて|方法|どう|？|\?)/.test(raw) && !/(しないで|しない|するな)/.test(raw)) {
     system.run(() => { say(p, bot, "露天掘りは、まだできません。範囲を層ごとに掘り下げる持続採掘が未実装です。個別の鉱石なら、個数を言えば集めます", true); try { conv.hear(raw, "open_pit_unsupported"); } catch {} });
     return;
+  }
+  // ①.44 倉庫 W3-TEACH (cyc2355): 「<素材>はこっちに入れて」で行き先を学習する書き手。
+  // 読み手 (adapter→sort 判定順1) と永続化 (cb_warehouse 単一保存点) は既存。ゲートが止めた場合は通常解釈へ流す。
+  // 失敗は受理したように見せず明示返答する (0-C7 原則)。成功時のみ台帳差し替え+saveWarehouse 1回。
+  {
+    const gt = gateTeachItemDest(raw);
+    if (gt.fire) {
+      const itemId = resolveItem(gt.itemName);
+      if (!itemId) { system.run(() => { say(p, bot, `${gt.itemName}は、分かりませんでした。素材の名前を、もう少し正確にどうぞ`, true); try { conv.hear(raw, "warehouse_teach_unknown_item"); } catch {} }); return; }
+      let key = null;
+      try { const vb = p.getBlockFromViewDirection({ maxDistance: 10 }); if (vb && isContainerBlock(vb.block.typeId)) key = warehouseKeyOf(p.dimension.id, vb.block.location.x, vb.block.location.y, vb.block.location.z); } catch {}
+      if (!key) { system.run(() => { say(p, bot, "どの箱か分かりませんでした。入れたい箱を見ながら、もう一度どうぞ", true); try { conv.hear(raw, "warehouse_teach_no_box"); } catch {} }); return; }
+      if (!r.warehouse) r.warehouse = createWarehouseRegistry();
+      const out = teachItemDest(r.warehouse, itemId, key);
+      if (out.ok) { r.warehouse = out.reg; saveWarehouse(bot, r); system.run(() => { say(p, bot, `${gt.itemName}は、その箱に入れるように覚えました`, true); try { conv.hear(raw, "warehouse_teach"); } catch {} }); }
+      else if (out.reason === "excluded_priority") { system.run(() => { say(p, bot, "その箱は除外に設定されているため、行き先にはできませんでした", true); try { conv.hear(raw, "warehouse_teach_excluded"); } catch {} }); }
+      else { system.run(() => { say(p, bot, "その箱は、まだ登録されていません。先にリモコンの倉庫メニューで登録してください", true); try { conv.hear(raw, "warehouse_teach_unregistered"); } catch {} }); }
+      return;
+    }
   }
   // ①.45 倉庫 W2 (cyc1939): 整理の依頼は注文パーサーへ流さず倉庫整理へ直結する
   // cyc2330 0-C1 G6: 判定は chat_gate の gateWarehouseSort へ一本化 (否定・熟慮・条件・質問形では発火しない)

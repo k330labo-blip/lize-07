@@ -154,6 +154,31 @@ export function gateWarehouseSort(text) {
   } catch { return { fire: false, kind: "error" }; }
 }
 
+// 倉庫 W3-TEACH ゲート (cyc2355, cyc2347 A05 案): 「<素材>はこっち/この箱/その箱に入れて」だけを
+// 行き先学習の指令として発火させる。質問・否定・仮定・条件・先送りでは学習しない (0-C1 と同作法)。
+// 素材名の typeId 解決はしない (ハンドラ側の責務)。戻り値は既存ゲートと同形 {fire, kind} + itemName。
+const TEACH_RE = /^(.+?)は(こっち|この箱|その箱)に入れて/;
+export function gateTeachItemDest(text) {
+  try {
+    const t = s(text).trim();
+    const m = TEACH_RE.exec(t);
+    if (!m) return { fire: false, kind: "none" };
+    // 「入れて」の後に続くのは丁寧形・終助詞・句点だけを許す (「入れてほしくない」等は命令形でない)
+    const rest = t.slice(m[0].length);
+    if (!/^(ください|ね|よ)?[。．]?$/.test(rest)) return { fire: false, kind: "none" };
+    if (isHypothetical(t)) return { fire: false, kind: "hypothetical" };
+    // teach 固有の否定 (指令語が中止系でないため共有述語だけでは拾えない。倉庫ゲートの固有否定と同型)
+    if (/(入れて|入れる).{0,8}(ほしくない|ないで)/.test(t) || /(入れないで|入れなくていい|入れるな)/.test(t)) return { fire: false, kind: "negation" };
+    if (isNegatedDirective(t)) return { fire: false, kind: "negation" };
+    if (/(入れ方|入れる方法|どうやって入れる)/.test(t) || isHowToRequest(t)) return { fire: false, kind: "question" };
+    if (isDeliberating(t)) return { fire: false, kind: "question" };
+    if (isQuestionForm(t)) return { fire: false, kind: "question" };
+    if (isConditionalForm(t)) return { fire: false, kind: "conditional" };
+    if (/(入れて).{0,24}(てからにして|明日|後で|あとで|後日)/.test(t)) return { fire: false, kind: "conditional" };
+    return { fire: true, kind: "start", itemName: m[1].trim() };
+  } catch { return { fire: false, kind: "error" }; }
+}
+
 // 「方法を教えて」型: 説明を求める発話。指示として発行しない。
 export function isHowToRequest(text) {
   try {
