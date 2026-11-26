@@ -152,6 +152,10 @@ export function createMission(order, sourcing = null) {
       sideTasks: (Array.isArray(o.sideTasks) ? o.sideTasks : []).filter((t) => !isForbiddenId(t?.target)),
       returnTo: o.returnTo ?? "owner",
       legsOnly: !!o.legsOnly, // v0.4.67: 長期タスクの途中工程か (完了時に「お渡ししました」と言わないため。以前は書き写していなかった)
+      tool: o.tool ?? null, // 0-C4 (cyc2020): 道具指定を mission 本体へ保持する (従来は生成時に脱落し、永続化・復元でも道具指定が消えていた)
+      placement: o.placement ?? null, // 0-C4 (cyc2020): 設置位置 (絶対/相対) も同様に保持する
+      name: o.name ?? null, // 0-C4 (cyc2020): 表示名も保持する
+      gearSet: Array.isArray(o.gearSet) ? [...o.gearSet] : null, // 0-F2 (cyc2020): 防具一式の部位列も保持する
     },
     steps,
     currentStep: 0,

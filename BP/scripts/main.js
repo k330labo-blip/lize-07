@@ -127,7 +127,7 @@ import { allowedLogIds, countLogsForTarget } from "./tree_species_math.js";
 import { createWideScanFails, partitionWideIds, noteWideSuccess, noteWideIdFailure, noteWideGlobalFailure, wideIdBlocked } from "./wide_scan_fails.js"; // 0-D4 Bprime (cycle1455): wide scan failures isolated per typeId
 import { isAllowedByAllowOnly, serializeAllowOnly, restoreAllowOnly, clearAllowOnly } from "./allow_only.js"; // 0-C2 reader (cycle1455): allowOnly enforcement // 0-D3: 樹種指定時は対象選択・進捗をその樹種だけに限定する
 import { shouldReplayGaze, GAZE_REPLAY_INTERVAL_TICKS } from "./gaze_cadence_math.js"; // 0-E1 GAZE-CADENCE-01: 視線レイヤーを本体ループから分離する
-import { mergeCaps, capForTarget } from "./cap_guard_math.js"; // 0-C2 読み手 (cycle1337): セッション上限を mission へ届ける
+import { mergeCaps, capForTarget, serializeCaps, restoreCaps } from "./cap_guard_math.js"; // 0-C2 読み手 (cycle1337): セッション上限を mission へ届ける // cyc2020: caps の DP 永続化 (cb_caps)
 import { createWarehouseRegistry, serializeWarehouseRegistry, deserializeWarehouseRegistry, addCandidates, warehouseKeyOf, registerBox, removeCandidate } from "./warehouse_registry.js"; // 倉庫 W1: 台帳の DP 永続化 (cb_warehouse)
 import { WAREHOUSE_CATEGORIES, categoryLabelOf } from "./warehouse_categories.js"; // 倉庫 W1 (cyc1908): 仕分け先カテゴリ語彙の単一の正。UI 登録で category を渡し、仕分け核の category 一致を実運用で発火させる
 import { planSortMoves } from "./warehouse_sort.js"; // 倉庫 W2 (cyc1939): 仕分け計画核を実機経路へ接続
@@ -334,6 +334,9 @@ function rt(bot) {
   }
   if (r.allowOnly === undefined) { // 0-C2 (cycle1604): allowOnly を DP cb_allowonly から復元 (永続化と解除は同サイクルで導入。壊れた保存は制限なし)
     try { r.allowOnly = restoreAllowOnly(dp(bot, "cb_allowonly", "")); } catch { r.allowOnly = null; }
+  }
+  if (r.caps === undefined) { // 0-C2 (cyc2020): セッション上限を DP cb_caps から復元 (従来は保存自体が無く、再召喚・再起動で上限だけ無言消失していた。壊れた保存は上限なし)
+    try { r.caps = restoreCaps(dp(bot, "cb_caps", "")); } catch { r.caps = []; }
   }
   if (r.warehouse === undefined) { // 倉庫 W1: 台帳を DP cb_warehouse から復元 (壊れた保存は空台帳として開始し、本体を止めない)
     try { const wj = dp(bot, "cb_warehouse", ""); r.warehouse = wj ? deserializeWarehouseRegistry(wj) : createWarehouseRegistry(); } catch { r.warehouse = createWarehouseRegistry(); }
@@ -2526,6 +2529,7 @@ function startMission(bot, owner, r, mo, announce = true, opts = {}) {
   }
   const m = createMission(mo, null);
   try { m.baseForbiddenTargets = baseFb579.map((x) => normForbiddenId(x)).filter((x) => typeof x === "string" && x); } catch {} // v0.5.79: base を mission 本体へ保持 (persistMission の JSON に同梱される)
+  try { r.requestedTool = mo.tool ?? null; } catch {} // 0-C4 (cyc2020): 道具指定を実行側の参照点として保持する (mission.order.tool と二重に残し、装備選択の読み手が参照できるようにする)
   r.mission = m; r.missionKills = 0; r.suspendNotified = false; r.mFound = false; r.sideTask = null; r.veinCands = []; r.treeCands = []; // 0-D1: 鉱脈候補は mission 単位 (前 mission の残りを持ち越さない) / 0-D3 R1: 木候補も同様
   // POLISH-ANIM-ORDERLOOK-01 feeder: 指示受理の辺で一度だけ発火を記録する (表示層のみ・実機確認待ち)
   try { if (announce && owner) { if (!r.orderlookState) r.orderlookState = createOrderLookState(); const oo = noteOrderAccepted(r.orderlookState, { nowMs: Date.now(), dist: dist(bot.location, owner.location), suppressed: false, danger: false, falling: r.selfFalling === true }); r.orderlookState = oo.state; if (oo.fired) r.lastOrderLook = { at: Date.now() }; } } catch {}
@@ -2612,7 +2616,7 @@ function refreshWarehouseCandidates(bot, r) {
 }
 function startLongTask(bot, owner, r, mo, plan, announce = true) {
   const ltName = (plan.target.name && !String(plan.target.name).includes(":")) ? plan.target.name : (mo.name || lname(plan.target.item)); // v0.4.67(外部): ID のまま表示しない
-  r.longtask = { target: plan.target.item, name: ltName, amount: plan.target.count, legs: plan.legs, legIdx: 0, phase: "legs", returnTo: mo.returnTo || "owner", hostiles: mo.constraints?.hostiles || "avoid", forbiddenTargets: mo.constraints?.forbiddenTargets || [], startedAt: Date.now(), baseForbiddenTargets: Array.isArray(mo.baseForbiddenTargets) ? mo.baseForbiddenTargets : null };
+  r.longtask = { target: plan.target.item, name: ltName, amount: plan.target.count, legs: plan.legs, legIdx: 0, phase: "legs", returnTo: mo.returnTo || "owner", hostiles: mo.constraints?.hostiles || "avoid", forbiddenTargets: mo.constraints?.forbiddenTargets || [], startedAt: Date.now(), baseForbiddenTargets: Array.isArray(mo.baseForbiddenTargets) ? mo.baseForbiddenTargets : null, tool: mo.tool ?? null, placement: mo.placement ?? null }; // 0-C4 (cyc2020): 長期タスクでも道具指定・設置位置を保持する (従来は脱落していた)
   r.mission = null; clearPlanRecords(r); r.ltLegActive = false; r.mineLeg = null; r.spiral = null;
   persistMission(bot, r, true); saveLongTask(bot, r);
   dps(bot, "cb_order", JSON.stringify({ ...mo, longtask: true, startedAt: Date.now() }));
@@ -4834,6 +4838,8 @@ function recordSessionForbids(bot, r, o) {
 function forbidTargetName(n) { return n?.target?.name || nameOfItem(n?.target?.item || n?.target?.block || n?.target?.entity || ""); }
 // 0-C2 (cycle1604): allowOnly の代入と DP 保存は必ずこの1点を通す (保存漏れで再召喚時に静かに消える事故の再発防止)
 function setAllowOnly(bot, r, v) { try { r.allowOnly = v; dps(bot, "cb_allowonly", serializeAllowOnly(v)); } catch {} }
+// 0-C2 (cyc2020): caps の代入と DP 保存は必ずこの1点を通す (allowOnly と同型。保存漏れで再召喚時に静かに消える事故の再発防止)
+function setCaps(bot, r, v) { try { r.caps = v; dps(bot, "cb_caps", serializeCaps(v)); } catch {} }
 // 0-C2 (cycle1604): 制限の解除。allowOnly と sessionForbids の両方へ適用し、両 DP キーを保存する。
 // scope:"all" は allowOnly のみ全解除する (禁止の一括解除は誤爆範囲が大きいため対象指定がある場合だけ外す)。
 function releaseRestrictions(bot, r, o) {
@@ -4849,6 +4855,14 @@ function releaseRestrictions(bot, r, o) {
       const res = removeSessionForbids(r.sessionForbids, tid);
       if (res.removed.length) { r.sessionForbids = res.list; dps(bot, "cb_forbids", serializeForbids(res.list)); changed = true; notes.push(`${o.releaseTarget?.name || nameOfItem(tid)}は対象に戻します`); }
     } catch {}
+    try { // 0-C2 (cyc2020): 対象指定の解除はその対象の上限も外す (従来は解除経路自体が無かった)
+      const beforeCaps = Array.isArray(r.caps) ? r.caps : [];
+      const keptCaps = beforeCaps.filter((c) => { const ct = typeof c?.target === "string" ? c.target : (c?.target?.item || c?.target?.block || c?.target?.entity || null); return !ct || normForbiddenId(ct) !== normForbiddenId(tid); });
+      if (keptCaps.length !== beforeCaps.length) { setCaps(bot, r, keptCaps); changed = true; notes.push(`${o.releaseTarget?.name || nameOfItem(tid)}の上限は外しました`); }
+    } catch {}
+  }
+  if (o.releaseScope === "all") { // 0-C2 (cyc2020): 全解除は上限も全て外す (allowOnly の全解除と揃える)
+    try { if (Array.isArray(r.caps) && r.caps.length) { setCaps(bot, r, []); changed = true; notes.push("上限は外しました"); } } catch {}
   }
   return { changed, notes };
 }
@@ -4862,7 +4876,7 @@ function startOrderFromParser(p, bot, r, o) {
   // 0-C2 (cycle1215): 上限だけの発話 (kind:"cap") は禁止として記録せず、上限として保持する。
   if (o.kind === "cap") {
     const list = (o.caps || []).filter((c) => c?.target);
-    try { r.caps = [...(Array.isArray(r.caps) ? r.caps : []), ...list.map((c) => ({ target: c.target?.item || c.target?.block || c.target?.entity || null, cap: c.cap, verb: c.verb ?? null, at: Date.now() }))].slice(-16); } catch {}
+    try { setCaps(bot, r, [...(Array.isArray(r.caps) ? r.caps : []), ...list.map((c) => ({ target: c.target?.item || c.target?.block || c.target?.entity || null, cap: c.cap, verb: c.verb ?? null, at: Date.now() }))].slice(-16)); } catch {}
     if (list.length) say(p, bot, `分かりました。${list.map((c) => `${c.target?.name || ""}は${c.cap}までです`).join("。")}。それ以上はしません`, true);
     else say(p, bot, "分かりました。その上限で止めます", true);
     return;

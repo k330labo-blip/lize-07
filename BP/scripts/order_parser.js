@@ -954,6 +954,21 @@ export function parseOrder(input) {
     }
   } catch { /* 解除として解釈できなければ従来経路へ */ }
 
+  // 0-F1 残件 (cyc2020): 部位語だけ・鎖・ネザライト単品の作製指示は、素材が解決できないまま
+  // 「チェストプレート」内の「チェスト」を block として拾う誤爆 (実測) を防ぐため、開始せず聞き返す。
+  // 鎖防具はバニラでクラフト不可、ネザライトはダイヤ部位への鍛冶強化であり直接クラフトではない。
+  try {
+    if (!/[？?]/.test(text) && !/(何個|いくつ|要る|必要|コスト)/.test(text) && /(作って|作る|ください|欲しい|ちょうだい|お願い)/.test(text)) {
+      const PART_RE = /(チェストプレート|胸当て|ヘルメット|兜|かぶと|レギンス|ブーツ)/;
+      if (PART_RE.test(text)) {
+        const craftableMat = /(ダイヤモンド|ダイヤ|鉄|アイアン|金|ゴールド|革|レザー)/.test(text);
+        if (/鎖|チェーン/.test(text)) return { kind: "clarify", target: null, amount: null, constraints, sideTasks: [], negations: [], unresolved: [{ slot: "material", reason: "chainmail_not_craftable" }], caps: [], returnTo: "owner", raw };
+        if (/ネザライト/.test(text)) return { kind: "clarify", target: null, amount: null, constraints, sideTasks: [], negations: [], unresolved: [{ slot: "material", reason: "netherite_upgrade_only" }], caps: [], returnTo: "owner", raw };
+        if (!craftableMat) return { kind: "clarify", target: null, amount: null, constraints, sideTasks: [], negations: [], unresolved: [{ slot: "material", reason: "armor_part_without_material" }], caps: [], returnTo: "owner", raw };
+      }
+    }
+  } catch { /* 部位の聞き返しとして解釈できなければ従来経路へ */ }
+
   // 0-F2 (cyc2003): 「<素材>フル」「防具一式作って」を防具4部位の作製指示として受ける。
   // 質問形 (コスト質問の一式応答は chat_tools 側の正常例) では発火しない。ネザライトは
   // 鍛冶強化で直接クラフトできないため対象外 (一式のコスト応答が既存の正)。

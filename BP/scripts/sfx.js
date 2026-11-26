@@ -18,6 +18,7 @@ export const SFX_TABLE = Object.freeze({
   cloth:          { hit: "hit.cloth",  break: "dig.cloth",          step: "step.cloth" },        // △✓✓
   wood:           { hit: "hit.wood",   break: "dig.wood",           step: "step.wood" },         // △✓✓
   stem:           { hit: "hit.wood",   break: "dig.stem",           step: "step.nether_wood" },  // ネザー木材: hit は wood 代用
+  fungus:         { hit: "hit.wood",   break: "dig.fungus",         step: "step.nether_wood" },  // POLISH-SND-CLASS-FUNGUS-01 (cyc2020): break のみ専用ID確認済み (DESIGN §1.2)、hit/step は stem 流用
   stone:          { hit: "hit.stone",  break: "dig.stone",          step: "step.stone" },        // ✓✓✓
   deepslate:      { hit: "hit.deepslate", break: "dig.deepslate",   step: "step.deepslate" },    // △✓△ (step 無ければ step.stone)
   deepslate_bricks: { hit: "hit.deepslate", break: "dig.deepslate_bricks", step: "step.deepslate" }, // POLISH-SND-CLASS-DEEPSLATE-BRICKS-01 (cycle1256): break のみ専用ID確認済み、hit/step は deepslate 流用
@@ -55,7 +56,7 @@ export const SFX_TABLE = Object.freeze({
 export const CONFIRMED_IDS = new Set([
   "hit.grass", "hit.stone", "hit.iron",
   "dig.grass", "dig.sand", "dig.gravel", "dig.snow", "dig.powder_snow",
-  "dig.cloth", "dig.wood", "dig.stem", "dig.stone", "dig.deepslate",
+  "dig.cloth", "dig.wood", "dig.stem", "dig.fungus", "dig.stone", "dig.deepslate", // cyc2020: dig.fungus 専用ID確認済み (break のみ)
   "dig.copper", "dig.netherite", "step.netherite", "dig.netherrack", "dig.nether_brick", "dig.nether_gold_ore",
   "dig.nylium", "dig.soul_sand", "dig.soul_soil", "dig.vines", "dig.coral",
   "hit.amethyst_block", "dig.amethyst_block", "step.amethyst_block", // cycle0606 a10: 専用ID確認済み
@@ -219,6 +220,7 @@ export function materialOfTypeId(typeId) {
   if (id.includes("nylium")) return "nylium";                             // 16
   if (id === "soul_sand") return "soul_sand";                             // 17
   if (id === "soul_soil") return "soul_soil";                             // 18
+  if (id === "crimson_fungus" || id === "warped_fungus") return "fungus"; // cyc2020 FUNGUS-01: 菌本体だけ完全一致で stem より前に抜く (endsWith 流用は将来形を巻き込むため不採用)
   // 19: ネザー木材 (幹・菌類・ネザー木の板材/幹)
   if (id.endsWith("_stem") || id.endsWith("_hyphae") || id.endsWith("_fungus")
       || id === "warped_planks" || id === "crimson_planks"

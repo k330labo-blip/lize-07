@@ -58,6 +58,15 @@ export function capForTarget(caps, targetId, verb = null) {
   } catch { return null; }
 }
 
+// 0-C2 (cyc2020): セッション caps の DP 永続化形式。保存は正規化済み配列の JSON、
+// 復元は normalizeCaps を通すため壊れた保存は上限なし (空配列) に倒れる。at 等の付随情報は保存しない。
+export function serializeCaps(caps) {
+  try { return JSON.stringify(normalizeCaps(caps).slice(-16)); } catch { return "[]"; }
+}
+export function restoreCaps(json) {
+  try { if (typeof json !== "string" || !json) return []; return normalizeCaps(JSON.parse(json)); } catch { return []; }
+}
+
 // 狩猟の必要数を上限で clamp する。cap が無い場合は need をそのまま返す。
 export function clampHuntNeed(need, caps, targetId, verb = "hunt") {
   try {
