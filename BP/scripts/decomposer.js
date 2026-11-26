@@ -120,6 +120,16 @@ function directSourceOf(item) {
   return null;
 }
 
+function fillSourceOf(item) {
+  // R-C4-4 S2: 充填 (fill) 品目の判定。先頭ソースが kind:"fill" の場合のみ。
+  // 直接採取 (directSourceOf) には含めない: 容器の調達が前提の工程品として扱う。
+  const entry = findSources(item);
+  if (!entry) return null;
+  const s = entry.sources[0];
+  if (s && s.kind === "fill") return { entry, source: s };
+  return null;
+}
+
 function leafSourceOf(item) {
   // 葉の採取元は sourcing の推奨順先頭（直接ソースと一致する場合はそれが先頭）
   const entry = findSources(item);
@@ -170,6 +180,7 @@ export function decompose(itemOrName, count, opts = {}) {
     pool: {},              // 工程の余り（後続の必要量に充当できる）
     leaves: new Map(),     // itemId -> 必要個数（葉）
     crafts: new Map(),     // itemId -> { item, kind, station, crafts, inputs }
+    fills: new Map(),      // R-C4-4 S2: itemId -> { item, container, medium, mediumKind, fills }
     expanding: new Set(),  // 循環ガード
   };
 
@@ -187,6 +198,18 @@ export function decompose(itemOrName, count, opts = {}) {
   function expand(id, qty) {
     let rest = takeFromStock(id, qty);
     if (rest <= 0) return;
+    // R-C4-4 S2: 充填品目は葉にもレシピ工程にもせず、fill 工程として記録し、
+    // 容器 (バケツ) x 必要数を子として展開する (バケツは既存レシピで鉄へ繋がる)。
+    const fill = fillSourceOf(id);
+    if (fill && !ctx.expanding.has(id)) {
+      const rec = ctx.fills.get(id) || { item: id, container: fill.source.container, medium: fill.source.id, mediumKind: fill.source.mediumKind || null, fills: 0 };
+      rec.fills += rest;
+      ctx.fills.set(id, rec);
+      ctx.expanding.add(id);
+      expand(fill.source.container, rest);
+      ctx.expanding.delete(id);
+      return;
+    }
     const recipe = RECIPES[id];
     const direct = directSourceOf(id);
     // 葉を優先する条件: 直接採取ソースがあり、かつ「圧縮/精錬の産物」でない素の素材であること。
@@ -301,6 +324,18 @@ export function decompose(itemOrName, count, opts = {}) {
     }))
     .sort((a, b) => a.depth - b.depth);
 
+  // --- 充填ステップ (R-C4-4 S2): 容器のクラフトより後に実行する工程として末尾へ。
+  // 実行部は S4 で接続する。それまでは supported:false を正直に出し、警告も添える。
+  const fillSteps = [...ctx.fills.values()].map((rec) => ({
+    type: "fill",
+    item: rec.item, fills: rec.fills,
+    container: rec.container, needContainer: rec.fills,
+    medium: rec.medium, mediumKind: rec.mediumKind,
+    supported: false,
+  }));
+  if (fillSteps.length > 0) warnings.push("充填（バケツへの汲み取り）は実行部が未接続のため、容器の用意までを計画します");
+  const fillOps = fillSteps.reduce((a, s) => a + s.fills, 0);
+
   const craftOps = processSteps.filter((s) => s.type === "craft").reduce((a, s) => a + s.crafts, 0);
   const surplus = Object.fromEntries(Object.entries(ctx.pool).filter(([, n]) => n > 0));
 
@@ -308,10 +343,11 @@ export function decompose(itemOrName, count, opts = {}) {
     target: { item, name: targetEntry?.name || DISPLAY_NAME.get(item) || item, count: total },
     feasible,
     requirements,
-    steps: [...gatherSteps, ...processSteps],
+    steps: [...gatherSteps, ...processSteps, ...fillSteps],
     surplus,
     fuel,
-    totals: { smeltOps, craftOps, gatherActionsMin: gatherMin, gatherActionsMax: gatherMax },
+    // fillOps は充填工程がある場合のみ載せる (0 のときは従来形を保ち、既存の分解結果と等価性を壊さない)
+    totals: { smeltOps, craftOps, gatherActionsMin: gatherMin, gatherActionsMax: gatherMax, ...(fillOps > 0 ? { fillOps } : {}) },
     warnings,
   };
 }

@@ -10,7 +10,7 @@
 //     priority,        // 基幹度 1(最基幹: 木・石・鉄) 〜 5(特殊・ボス級)
 //     sources: [       // 配列順 = 推奨順
 //       {
-//         kind: 'block' | 'entity' | 'craft',
+//         kind: 'block' | 'entity' | 'craft' | 'fill',
 //           block : id は壊すブロック
 //           entity: id は倒す/相手にするエンティティ
 //           craft : id は主原料アイテム（変換・加工・精錬で得る）
@@ -450,6 +450,16 @@ export const SOURCING = {
   "minecraft:bucket": { item: "minecraft:bucket", name: "バケツ", aliases: ["バケツ", "bucket"], priority: 2, sources: [
     { kind: "craft", id: "minecraft:iron_ingot", yield: [1, 1], dropItem: "minecraft:bucket", process: "craft", where: { dim: "overworld", note: "鉄3個" } },
   ] },
+  "minecraft:milk_bucket": { item: "minecraft:milk_bucket", name: "牛乳", aliases: ["牛乳", "ミルク", "milk_bucket"], priority: 2, sources: [
+    { kind: "fill", id: "minecraft:cow", mediumKind: "entity", container: "minecraft:bucket", yield: [1, 1], dropItem: "minecraft:milk_bucket", process: "fill", where: { dim: "overworld", note: "空バケツを牛に使う。牛は殺さない・傷つけない" } },
+    { kind: "fill", id: "minecraft:mooshroom", mediumKind: "entity", container: "minecraft:bucket", yield: [1, 1], dropItem: "minecraft:milk_bucket", process: "fill", where: { dim: "overworld", biome: "mushroom_fields", note: "ムーシュルームからも搾乳できる（代替源・推奨順2位）" } },
+  ] },
+  "minecraft:water_bucket": { item: "minecraft:water_bucket", name: "水入りバケツ", aliases: ["水入りバケツ", "水バケツ", "water_bucket"], priority: 2, sources: [
+    { kind: "fill", id: "minecraft:water", mediumKind: "block", container: "minecraft:bucket", yield: [1, 1], dropItem: "minecraft:water_bucket", process: "fill", where: { dim: "overworld", note: "静止した水源に空バケツを使う。水源ブロックは消費される。流水は不可" } },
+  ] },
+  "minecraft:lava_bucket": { item: "minecraft:lava_bucket", name: "溶岩バケツ", aliases: ["溶岩バケツ", "マグマバケツ", "lava_bucket"], priority: 3, sources: [
+    { kind: "fill", id: "minecraft:lava", mediumKind: "block", container: "minecraft:bucket", yield: [1, 1], dropItem: "minecraft:lava_bucket", process: "fill", where: { dim: "overworld", note: "溶岩源に空バケツを使う。安全ゲート（S5）を満たす場合のみ。流れる溶岩は不可" } },
+  ] },
   // ================= GVC（弾薬類） =================
   // ID出典: brain/compat_gvc.js の貴重品リスト（テキスト参照のみで確認）。
   // ドロップ率はGVC側の未検証情報のため yield は目安、note にその旨を明記。
@@ -556,12 +566,18 @@ export function planFor(itemIdOrAlias, opts = {}) {
   if (w.yRange) dest.push(`Y${w.yRange[0]}〜${w.yRange[1]}`);
   steps.push({ step: "move", to: dest.join(" / ") || "オーバーワールド", dim: w.dim || "overworld", biome: w.biome || null, yRange: w.yRange || null, note: w.note || "", supported: true });
   // 採取
-  const gatherStep = source.kind === "entity" ? "hunt" : source.kind === "craft" ? "gather" : "mine";
+  const gatherStep = source.kind === "fill" ? "fill" : source.kind === "entity" ? "hunt" : source.kind === "craft" ? "gather" : "mine";
   const zeroYield = (source.yield?.[1] ?? 0) <= 0;
-  steps.push({ step: gatherStep, kind: source.kind, target: source.id, dropItem: source.dropItem, yield: source.yield, note: source.kind === "entity" ? "討伐して回収（敵対ポリシーは指示層の指定に従う）" : source.kind === "craft" ? `原料 ${source.id} を必要数集める` : "掘って回収", supported: !zeroYield });
+  // R-C4-4 S2: fill は実行部 (S4) 未接続のため supported:false を正直に出す。
+  // kind 判定を entity/craft より前に置かないと mine へ誤って落ちる (cyc2377_a16 §2)。
+  const stepSupported = source.kind === "fill" ? false : !zeroYield;
+  steps.push({ step: gatherStep, kind: source.kind, target: source.id, dropItem: source.dropItem, yield: source.yield, note: source.kind === "fill" ? "殺さずに充填する（容器を媒体に使う）" : source.kind === "entity" ? "討伐して回収（敵対ポリシーは指示層の指定に従う）" : source.kind === "craft" ? `原料 ${source.id} を必要数集める` : "掘って回収", supported: stepSupported });
   // 工程（精錬/加工）
   let support = zeroYield ? "unsupported" : "full";
-  if (source.process === "smelt") {
+  if (source.process === "fill") {
+    // 充填の実行部は S4 で接続する。それまでは採取可能と偽らない。
+    if (support === "full") support = "gather_only";
+  } else if (source.process === "smelt") {
     steps.push({ step: "smelt", input: source.dropItem, output: entry.item, note: "かまど工程が必要。現行のリゼは精錬未対応のため、この段階で分ける（原料の回収までを保証）", supported: false });
     if (support === "full") support = "gather_only";
   } else if (source.process === "craft") {
