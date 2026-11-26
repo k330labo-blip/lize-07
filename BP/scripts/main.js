@@ -27,6 +27,7 @@ import createWorldMemory from "./world_memory.js";
 import { genSpeech } from "./gen_speech.js";
 import { parseOrder, resumeClarifyOrder, classifyClarifyUnmatched } from "./order_parser.js";
 import { resolveItem } from "./decomposer.js"; // 倉庫 W3-TEACH (cyc2355): 素材名→typeId の単一の正 (注文経路と共用)
+import { resolveRequestedTool, toolItemIdOf } from "./tool_request_math.js"; // 0-C4 R-C4-1 (cyc2375): 道具指定の実行側 reader 純粋核
 import { isCropMature, CROP_MATURITY_MAX, isCropBlock, cropBreakGate } from "./crop_maturity.js";
 import { resolveWorkAccess, ACCESS } from "./work_access.js"; // 基礎 遮蔽除去 (v0.4.76): 作業アクセス解決の純粋核
 import { evaluateDig } from "./dig_gate.js"; // 要望バッチA (v0.4.88): 掘削の統一ゲート
@@ -2639,6 +2640,38 @@ function pickupItemEntity(bot, owner, itemEnt, ctx) {
   else if (rest.amount < stack.amount) { try { itemEnt.remove(); bot.dimension.spawnItem(rest, itemEnt.location); } catch {} recordTake(r, "pickupItemEntity", { ok: true, taken: stack.amount - rest.amount, partial: true, item: stack.typeId }); }
   else { recordTake(r, "pickupItemEntity", { ok: false, reason: "INVENTORY_FULL", item: stack.typeId }); noteTakeFull(bot, r, String(itemEnt.id) + ":" + stack.typeId, stack.typeId); noteTakeBan(r, itemEnt.id, stack.typeId); }
 }
+// 0-C4 R-C4-1 reader (cyc2375): 保持だけされていた道具指定 (mo.tool) を実行へ接続する。
+// equip/already はここで適用し、procure/clarify は呼び出し側 (startMission) が開始可否を決める。
+// 装備適用は既存 equipCore に寄せ、適用後に getEquipped で実測確認する。失敗しても仕事自体は落とさない。
+function applyRequestedTool(bot, owner, r, tool) {
+  let res = null;
+  try {
+    const itemId = toolItemIdOf(tool);
+    if (!itemId) return null;
+    let equipped = null;
+    try { equipped = equipCoreOf(bot, r)?.getEquipped("Mainhand")?.typeId || null; } catch {}
+    const inv = countInv(bot);
+    let feasible = false;
+    if (equipped !== itemId && !(inv[itemId] > 0)) {
+      try { const pl = planLongTask({ target: itemId, amount: 1 }, inv, invDurabilityOf(bot)); feasible = !!(pl && pl.feasible); } catch {}
+    }
+    res = resolveRequestedTool({ tool, invCounts: inv, equippedMainhand: equipped, feasible });
+    if (res.action === "equip") {
+      let okEq = false;
+      try {
+        const core = equipCoreOf(bot, r);
+        const sr = core?.setEquip("Mainhand", { typeId: res.itemId, amount: 1 });
+        okEq = !!(sr && sr.ok);
+        if (okEq) { try { okEq = core.getEquipped("Mainhand")?.typeId === res.itemId; } catch { okEq = false; } }
+      } catch { okEq = false; }
+      r.lastToolRequest = { itemId: res.itemId, action: "equip", ok: okEq, at: Date.now() };
+      if (okEq) r.toolUseNote = `${nameOfItem(res.itemId)}でやります。`;
+      return res;
+    }
+    r.lastToolRequest = { itemId: res.itemId, action: res.action, ok: res.action === "already", at: Date.now() };
+  } catch {}
+  return res;
+}
 function startMission(bot, owner, r, mo, announce = true, opts = {}) {
   // Phase5 読み手R1 (cycle2006): セッション禁止を入口でマージする。主対象自体が禁止なら leg でない注文は立てない (legsOnly は decomposer 側の完全一致除外に任せる)
   const baseFb579 = Array.isArray(mo.constraints?.forbiddenTargets) ? [...mo.constraints.forbiddenTargets] : []; // v0.5.79: 注文由来の禁止 (base) を merge 前に固定。セッション由来分は毎tick再計算で出し入れする
@@ -2658,6 +2691,18 @@ function startMission(bot, owner, r, mo, announce = true, opts = {}) {
     if (!(ltPlan && ltPlan.feasible) && typeof mo.target === "string" && !mo.target.includes(":")) { try { const p2 = planLongTask({ ...mo, target: "minecraft:" + mo.target }, countInv(bot), invDurabilityOf(bot)); if (p2 && p2.feasible) { ltPlan = p2; mo = { ...mo, target: "minecraft:" + mo.target }; } } catch {} }
     if (ltPlan && ltPlan.feasible) { try { mo.baseForbiddenTargets = baseFb579; } catch {} startLongTask(bot, owner, r, mo, ltPlan, announce); return null; }
   }
+  // 0-C4 R-C4-1 reader (cyc2375): 道具指定の開始ゲート。未所持・作製不能なら黙って別道具で始めず明示して開始しない。
+  // 未所持・作製可能なら指定道具の調達を先行させ、完了後に本来の注文へつなぐ (pendingAfterTool、finishMission/completeLongTask で消費)。
+  if (!mo.legsOnly && mo.tool) {
+    const tr = applyRequestedTool(bot, owner, r, mo.tool);
+    if (tr && tr.action === "clarify") { if (announce && owner) say(owner, bot, `${nameOfItem(tr.itemId)}は持っていなくて、今は作れません。別の道具でよければ言ってください`, true); return null; }
+    if (tr && tr.action === "procure") {
+      if (announce && owner) say(owner, bot, `${nameOfItem(tr.itemId)}を持っていないので、先に用意します`, true);
+      r.pendingAfterTool = mo;
+      startMission(bot, owner, r, { kind: "gather", target: tr.itemId, amount: 1, constraints: { hostiles: "avoid", forbiddenTargets: [] }, sideTasks: [], returnTo: "owner", name: null, tool: null, placement: null }, false);
+      return null;
+    }
+  }
   const m = createMission(mo, null);
   try { m.baseForbiddenTargets = baseFb579.map((x) => normForbiddenId(x)).filter((x) => typeof x === "string" && x); } catch {} // v0.5.79: base を mission 本体へ保持 (persistMission の JSON に同梱される)
   try { r.requestedTool = mo.tool ?? null; } catch {} // 0-C4 (cyc2020): 道具指定を実行側の参照点として保持する (mission.order.tool と二重に残し、装備選択の読み手が参照できるようにする)
@@ -2673,6 +2718,7 @@ function startMission(bot, owner, r, mo, announce = true, opts = {}) {
     const ht = h === "ignore" ? "敵は無視して進みます。" : h === "fight" ? "敵は倒しながら行きます。" : "敵は避けて通ります。";
     const sides = (mo.sideTasks || []).map((s) => nameOfItem(s.target)).join("、");
     let line = `承知しました。${nameOfItem(mo.target)}を${mo.amount}個、集めます。${ht}${sides ? `途中で${sides}も集めながら行きます。` : ""}${mo.returnTo === "home" ? "集めたら拠点へ入庫します。" : ""}`;
+    if (r.toolUseNote) { line += r.toolUseNote; r.toolUseNote = null; } // R-C4-1: 指定道具を装備できた場合のみ受理発話へ足す
     if (plan?.support === "gather_only") line += "精錬の工程は未対応です。原料の回収まで行います。";
     if (plan?.support === "unsupported") line += "……その素材は、私では採取できません。別の方法を考えてください。";
     say(owner, bot, line, true);
@@ -2683,6 +2729,18 @@ function startMission(bot, owner, r, mo, announce = true, opts = {}) {
 function clearPlanRecords(r) { try { r.planRunner?.cancelCurrent("superseded"); } catch {} try { r.toolNeed = null; r.lastPlan = null; r.lastPlanGate = null; r.lastPlanGateP3 = null; r.lastPlanRevalP4 = null; r.lastPlanGateUnified = null; r.lastPlanRevalFull = null; r.lastPlanRevalAdopt = null; r.lastPlanRevalFullAdopt = null; r.lastPlanGateUnifiedAdopt = null; r.lastGoal = null; r.lastPlanInspect = null; r.lastPlanAt = 0; r.planAdoptSeen = null; r.planAdoptShieldUsedFor = null; r.lastPlanAdoptEffect = null; r.tracePlanSeen = null; r.traceActSeen = null; } catch {} }
 function finishMission(bot, owner, r) {
   r.mission = null; clearPlanRecords(r);
+  try { r.requestedTool = null; } catch {} // R-C4-1: 道具指定は mission 単位。残留を仕様にしない
+  // 0-C4 R-C4-1 (cyc2375): 先行調達した指定道具が揃ったら、本来の注文を開始する (揃わなければ繋がない)
+  try {
+    if (r.pendingAfterTool && owner) {
+      const next = r.pendingAfterTool; r.pendingAfterTool = null;
+      const tid = toolItemIdOf(next.tool);
+      let haveTool = false;
+      try { haveTool = !!tid && ((countInv(bot)[tid] || 0) > 0 || equipCoreOf(bot, r)?.getEquipped("Mainhand")?.typeId === tid); } catch {}
+      if (haveTool) { startMission(bot, owner, r, next); return; }
+      r.lastToolRequest = { itemId: tid, action: "procure", ok: false, at: Date.now() };
+    }
+  } catch {}
   // 0-F2 (cyc2003): 防具一式の残り部位があれば次を開始する (完了した部位は再開しない)
   try {
     if (Array.isArray(r.pendingGearSet) && r.pendingGearSet.length && owner) {
@@ -2749,9 +2807,10 @@ function startLongTask(bot, owner, r, mo, plan, announce = true) {
   const ltName = (plan.target.name && !String(plan.target.name).includes(":")) ? plan.target.name : (mo.name || lname(plan.target.item)); // v0.4.67(外部): ID のまま表示しない
   r.longtask = { target: plan.target.item, name: ltName, amount: plan.target.count, legs: plan.legs, legIdx: 0, phase: "legs", returnTo: mo.returnTo || "owner", hostiles: mo.constraints?.hostiles || "avoid", forbiddenTargets: mo.constraints?.forbiddenTargets || [], startedAt: Date.now(), baseForbiddenTargets: Array.isArray(mo.baseForbiddenTargets) ? mo.baseForbiddenTargets : null, tool: mo.tool ?? null, placement: mo.placement ?? null }; // 0-C4 (cyc2020): 長期タスクでも道具指定・設置位置を保持する (従来は脱落していた)
   r.mission = null; clearPlanRecords(r); r.ltLegActive = false; r.mineLeg = null; r.spiral = null;
+  try { if (mo.tool) applyRequestedTool(bot, owner, r, mo.tool); } catch {} // R-C4-1: 長期タスクでも指定道具を装備へ接続する (調達は plan の工程に任せ、ここでは装備のみ)
   persistMission(bot, r, true); saveLongTask(bot, r);
   dps(bot, "cb_order", JSON.stringify({ ...mo, longtask: true, startedAt: Date.now() }));
-  if (announce) say(owner, bot, `承知しました。${ltName}を${plan.target.count}個ですね。手段は私が組み立てます。全${plan.legs.length}工程、まず「${legLabel(plan.legs[0], lname)}」から始めます。遠くへ行くかもしれませんが、呼び戻せば戻ります`, true);
+  if (announce) { const tn = r.toolUseNote || ""; r.toolUseNote = null; say(owner, bot, `承知しました。${ltName}を${plan.target.count}個ですね。手段は私が組み立てます。全${plan.legs.length}工程、まず「${legLabel(plan.legs[0], lname)}」から始めます。遠くへ行くかもしれませんが、呼び戻せば戻ります${tn ? `。${tn}` : ""}`, true); }
 }
 function completeLongTask(bot, owner, r, ok = true, note = "", msg = null) {
   const lt = r.longtask;
@@ -2759,6 +2818,17 @@ function completeLongTask(bot, owner, r, ok = true, note = "", msg = null) {
   else if (ok) say(owner, bot, `長期タスク、完了しました。${lt.name}を${lt.amount}個、${lt.returnTo === "home" ? "拠点へ入庫しました" : "お渡ししました"}${note}`, true);
   else say(owner, bot, `長期タスクは揃えたのですが、納品できませんでした。${note}`, true);
   r.longtask = null; r.mineLeg = null; r.spiral = null; r.ltLegActive = false;
+  try { r.requestedTool = null; } catch {} // R-C4-1: 掃除
+  // 0-C4 R-C4-1 (cyc2375): 指定道具の調達が長期タスクで完了した場合、本来の注文へつなぐ
+  try {
+    if (ok && r.pendingAfterTool && owner) {
+      const next = r.pendingAfterTool; r.pendingAfterTool = null;
+      const tid = toolItemIdOf(next.tool);
+      let haveTool = false;
+      try { haveTool = !!tid && ((countInv(bot)[tid] || 0) > 0 || equipCoreOf(bot, r)?.getEquipped("Mainhand")?.typeId === tid); } catch {}
+      if (haveTool) startMission(bot, owner, r, next);
+    } else if (r.pendingAfterTool) { r.pendingAfterTool = null; }
+  } catch {}
   saveLongTask(bot, r);
   dps(bot, "cb_order", "");
 }
@@ -3123,6 +3193,8 @@ function tickToolPrepPromote(bot, owner, r) {
 }
 function tickLongTask(bot, owner, r, ctx) {
   const lt = r.longtask; if (!lt) return false;
+  // R-C4-1 (cyc2375): leg が切り替わるたびに指定道具の装備を再適用する読み手 (工程中の持ち替えで外れた場合の復帰)
+  try { if (lt.tool && r.toolAppliedLegIdx !== lt.legIdx) { r.toolAppliedLegIdx = lt.legIdx; applyRequestedTool(bot, owner, r, lt.tool); if (r.toolUseNote) r.toolUseNote = null; } } catch {}
   let fbIds = Array.isArray(lt.forbiddenTargets) ? [...lt.forbiddenTargets] : []; try { if (!Array.isArray(lt.baseForbiddenTargets)) lt.baseForbiddenTargets = deriveBaseForbiddenIds(lt.forbiddenTargets, r.sessionForbids, "gather"); fbIds = recomputeForbiddenIds(lt.baseForbiddenTargets, r.sessionForbids, "gather"); lt.forbiddenTargets = fbIds; } catch {} // v0.5.79: 和集合の単調増加を置換へ (解除が実行中タスクへ反映される) // cycle0117 G6-b: lt スナップショットと現行セッション禁止の和集合 (開始後の禁止も拾う)。断片ハーネス等で純粋核が無い環境ではスナップショットへ fail-safe
   if (lt.phase === "deliver") {
     // LT-DELIVER-NOEXIT (cycle1322, a01): deliver 相の終了保証。従来は上限が無く、入庫常時失敗/未到達で
