@@ -618,6 +618,15 @@ from = idx + marker.length;
 if (claimedCorrIdx.has(idx)) continue;
 claimedCorrIdx.add(idx);
 const hit = nearestHitBefore(hits.filter((h) =>!done.has(h)), idx);
+// cyc1924 0-C5: 数量訂正 (「10個じゃなくて3個」) は対象訂正ではない。前方に数量があり
+// 訂正辞の後に新しい対象が無く数量だけが続く場合は、対象否定として隔離しない
+// (最終組立の数量訂正パスが後勝ちで反映する)。対象訂正 (「鉄じゃなくて銅」) は後に hit があるため従来どおり。
+if (hit && !nearestHitAfter(hits.filter((h) =>!done.has(h)), idx + marker.length)
+  && /(?:個|スタック|本|枚|組|[0-9０-９]|[一二三四五六七八九十])\s*$/.test(text.slice(Math.max(0, idx - 12), idx).replace(/\s+$/, ""))
+  && (/^\s*[、,]?\s*に?\s*(?:[0-9０-９]+|[一二三四五六七八九十百]+)\s*(?:個|スタック|本|枚|つ|組)/.test(text.slice(idx + marker.length, idx + marker.length + 16))
+    || (text.slice(idx + marker.length).trim() === "" && ci + 1 < clauseList.length && /^\s*(?:[0-9０-９]+|[一二三四五六七八九十百]+)\s*(?:個|スタック|本|枚|つ|組)/.test(String(clauseList[ci + 1] ?? ""))))) {
+  continue;
+}
 if (hit) {
 for (const ch of parallelChainBefore(hits.filter((h) =>!done.has(h)), hit, text)) {
 if (isGenericHostile(ch)) hostileNegated = true;

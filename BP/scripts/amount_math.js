@@ -212,7 +212,7 @@ export function amount_parse(segment, ctx = {}) {
     // cyc1810 (a11ファズ実測): 巨大桁数で total が Infinity になり startable:true で
     // 素通りしていた。非有限の総量は開始可能な注文にしない (too_large)。
     if (!Number.isFinite(total)) {
-      return { ...emptyResult(sizeInfo), reason: "too_large", corrected, repeats, perRun: null };
+      return { ...emptyResult(sizeInfo), reason: "too_large", corrected, repeats: Number.isFinite(repeats) ? repeats : null, perRun: null }; // cyc1924 F-1: too_large 時に repeats=Infinity が残らないよう有限化
     }
     const isZero = total === 0;
     return {
