@@ -116,6 +116,9 @@ import { selectWithdrawCandidate, candKeyForFirstStep } from "./withdraw_candida
 import { scanOpportunities, noteAttempt, pruneCooldowns } from "./side_tasks.js";
 import { createSideChase, chaseTick, sideChaseRangeFor } from "./side_chase.js"; // SIDE-COOLDOWN-CHASE (cycle1134): 接近保持と終端クールダウン
 import { gateCancel, gateFactory, isHowToRequest } from "./chat_gate.js"; // 0-C1 (cycle1155): 質問・否定・仮定・部分スコープでは中止/工場/指示を発火しない共通ゲート
+import { mergeCaps, capForTarget } from "./cap_guard_math.js"; // 0-C2 読み手 (cycle1337): セッション上限を mission へ届ける
+import { evalCondition, conditionExpired } from "./condition_math.js"; // 0-C2 読み手 (cycle1337): 条件付き注文の発火判定
+import { detectUnsupportedIntent } from "./unsupported_intent.js"; // 0-C7 (cycle1337): 未対応依頼への明示返答ゲート
 import { BLUEPRINTS, buildOrderOf, materialsSummaryOf, resolveMaterialItem } from "./blueprints.js";
 import { designFactory, GOAL_ALIASES } from "./factory_design.js";
 import { simulate } from "./factory_sim.js";
@@ -2444,6 +2447,8 @@ function pickupItemEntity(bot, owner, itemEnt, ctx) {
 function startMission(bot, owner, r, mo, announce = true, opts = {}) {
   // Phase5 読み手R1 (cycle2006): セッション禁止を入口でマージする。主対象自体が禁止なら leg でない注文は立てない (legsOnly は decomposer 側の完全一致除外に任せる)
   try { const mg = mergeSessionForbids(r.sessionForbids, mo); if (mg.mo) mo = mg.mo; if (mg.blocked) { if (announce || mo.legsOnly) say(owner, bot, `その対象は、しないと約束しています。${nameOfItem(mo.target)}は対象にしません`, true); return null; } } catch {} // cycle0117 G2: legsOnly も入口で止める (出口は呼び出し側A/Bに配線済み)
+  // 0-C2 読み手 (cycle1337): セッション上限 (r.caps) を mission 制約へ届け、狩猟量を上限で clamp する
+  try { const mergedCaps = mergeCaps(mo.constraints?.caps, r.caps); if (mergedCaps.length) { mo = { ...mo, constraints: { ...(mo.constraints || {}), caps: mergedCaps } }; if (mo.kind === "hunt") { const cp = capForTarget(mergedCaps, mo.target, "hunt"); if (cp !== null && (mo.amount ?? 1) > cp) mo = { ...mo, amount: cp }; } } } catch {}
   if (!mo.legsOnly) r.toolPrepTotal = 0; // キュー0副次 R1 (cycle1421): 道具準備の通算上限は新規注文ごとに数え直す (leg 子ミッションでは消さない)
   // 工程（クラフト/精錬/ツール自作）が要る注文は、長期自律タスクとして自分で手段を組み立てる
   if (!opts.noLongTask && !mo.legsOnly) {
@@ -3334,6 +3339,27 @@ function missionTargetValid(bot, r) {
   if (r.mTargetEntity) { try { return typeof r.mTargetEntity.isValid === "function" ? !!r.mTargetEntity.isValid() : !!r.mTargetEntity.isValid; } catch { return false; } }
   return true;
 }
+// 0-C2 読み手 (cycle1337): 条件付き注文の発火側。保留は行き止まりにせず、条件成立で1回だけ開始する。
+// 発火前に保留を消すことで二重発火を防ぎ、期限切れは取り下げて出口を保証する。評価は condition_math の三状態で、fire の時だけ動く。
+function tickPendingCondition(bot, owner, r, ctx) {
+  try {
+    const pend = r.pendingConditionOrder; if (!pend) return false;
+    const now = Date.now();
+    if (conditionExpired(pend.at, now)) { r.pendingConditionOrder = null; try { say(owner, bot, "条件の指示は、時間が経ったので取り下げました", true); } catch {} return false; }
+    if ((r.mission && r.mission.status === "active") || r.longtask || r.buildPlan) return false;
+    if (now - (r.pendingConditionCheckAt || 0) < 3000) return false;
+    r.pendingConditionCheckAt = now;
+    const o = pend.order; const cond = o?.constraints?.condition;
+    if (!cond) { r.pendingConditionOrder = null; return false; }
+    const verdict = evalCondition(cond, { isRaining: ctx?.env?.isRaining === true, isNight: ctx?.env?.isNight === true, isDawn: ctx?.env?.isDawn === true, ownerHunger: typeof ctx?.owner?.hunger === "number" ? ctx.owner.hunger : undefined });
+    if (verdict !== "fire") return false;
+    r.pendingConditionOrder = null;
+    const fireOrder = { ...o, constraints: { ...(o.constraints || {}), condition: null } };
+    try { say(owner, bot, `条件が来ました。${o.target?.name || "その対象"}の指示を始めます`, true); } catch {}
+    startOrderFromParser(owner, bot, r, fireOrder);
+    return true;
+  } catch { return false; }
+}
 function tickMission(bot, owner, ctx, scan) {
   const r = rt(bot); const m = r.mission;
   if (!m || m.status !== "active") return false;
@@ -3375,6 +3401,8 @@ function tickMission(bot, owner, ctx, scan) {
     } catch {}
   }
   const step = m.steps[m.currentStep];
+  // 0-C2 読み手 (cycle1337): 実行中に記録された上限も狩猟ステップへ届ける (need を上限へ寄せれば advance が通常経路で完了させる)
+  try { if (step && step.type === "hunt_entity") { const cpNow = capForTarget(mergeCaps(m.order?.constraints?.caps, r.caps), step.target, "hunt"); if (cpNow !== null && step.need > cpNow) step.need = cpNow; } } catch {}
   let ft = { found: false };
   if (step && (step.type === "gather_block" || step.type === "hunt_entity" || step.type === "side_collect")) {
     // 進捗が増えたら見切りタイマーをリセット。45秒進捗なしの対象は60秒避けて探し直す（到達不能な1個に固着しない）
@@ -4133,6 +4161,7 @@ system.runInterval(() => {
     }
     // キュー0副次 R1 (cycle1421): 単発ミッションの toolNeed は昇格接続が消費の入口になる (実装は tickLongTask 内の1か所のまま)
     if (!consumed && !r.longtask && r.toolNeed && tickToolPrepPromote(bot, p, r)) consumed = true;
+    if (!consumed && tickPendingCondition(bot, p, r, ctx)) consumed = true; // 0-C2 読み手 (cycle1337): 条件成立で保留注文を開始する
     if (r.longtask && tickLongTask(bot, p, r, ctx)) consumed = true;
     if (!consumed && r.buildPlan && r.buildPlan.stage === "gather" && tickGatherNoProgress(bot, p, r)) consumed = true; // GATHER-NOEXIT: suspended でも評価されるよう active ゲートの外・前
     if (r.mission && r.mission.status === "active") {
@@ -4520,7 +4549,7 @@ function startOrderFromParser(p, bot, r, o) {
   // 0-C2 (cycle1215): 条件付き注文は即時発行しない。条件を保持して保留し、その旨を返す。
   if (o.constraints?.condition) {
     try { r.pendingConditionOrder = { order: o, at: Date.now() }; } catch {}
-    say(p, bot, `分かりました。${o.constraints.condition.raw}、${o.target?.name || "その対象"}${o.amount ? o.amount + "個" : ""}の指示を始めます。今はまだ始めません`, true);
+    say(p, bot, `分かりました。${o.constraints.condition.raw}、${o.target?.name || "その対象"}${o.amount ? o.amount + "個" : ""}の指示を始めます。それまでは保留します`, true);
     return;
   }
   // 0-C2 (cycle1215): 上限だけの発話 (kind:"cap") は禁止として記録せず、上限として保持する。
@@ -4667,6 +4696,9 @@ function handleChatMessage(p, rawIn) {
   // ③ 提案収集
   const proposals = [];
   let parsed = null; try { parsed = parseOrder(und?.normalized || raw); } catch {}
+  // 0-C7 (cycle1337): 未対応の依頼は知識・計算・別作業へ流さず、その場で「できないこと」を返す (調停より前)
+  const uns = (() => { try { return detectUnsupportedIntent(raw, { parsedKind: parsed?.kind ?? null, hasTarget: !!parsed?.target }); } catch { return null; } })();
+  if (uns) { system.run(() => { say(p, bot, uns.reply, true); try { conv.hear(raw, "unsupported_" + uns.kind); } catch {} }); return; }
   const ordProp = isHowToRequest(raw) ? null : adaptOrder(parsed); if (ordProp) proposals.push(ordProp);
   let latest = null; try { latest = detectLatestTopic(raw); } catch {}
   if (latest) {

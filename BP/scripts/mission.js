@@ -36,6 +36,8 @@
 //     target?: 対象（座標/ステップ対象/探索サークル等）, reason?: string,
 //     step?: 現在ステップの type, missionStatus?: mission.status }
 
+import { normalizeCaps, clampHuntNeed } from "./cap_guard_math.js"; // 0-C2 読み手 (cycle1337): 上限の保持と狩猟 need の clamp
+
 export const STEP_TYPES = ["goto_area", "gather_block", "hunt_entity", "side_collect", "return", "deliver", "report"];
 export const MISSION_STATUS = ["active", "done", "failed", "suspended"];
 
@@ -125,9 +127,11 @@ export function createMission(order, sourcing = null) {
   const normForbiddenId = (x) => (typeof x === "string" && x && !x.includes(":") ? `minecraft:${x}` : x);
   const forbiddenEarly = Array.isArray(o.constraints?.forbiddenTargets) ? [...new Set(o.constraints.forbiddenTargets.filter((x) => typeof x === "string" && x).map(normForbiddenId))] : [];
   const isForbiddenId = (id) => typeof id === "string" && forbiddenEarly.includes(id);
+  const capsNorm = normalizeCaps(o.constraints?.caps); // 0-C2 読み手 (cycle1337): 上限を mission 制約へ保持する (従来は生成時に脱落していた)
+  const amountEff = o.kind === "hunt" ? clampHuntNeed(num(o.amount, 1), capsNorm, o.target ?? null, "hunt") : Math.max(1, num(o.amount, 1));
   const area = sourcing?.area || o.area || null;
   if (area) steps.push({ type: "goto_area", kind: "goto", target: area, need: 0, have: 0, base: null, status: "pending", searchStage: 0, searchObs: 0, stallObs: 0, lastHave: 0 });
-  steps.push(stepFor(o, false));
+  steps.push(stepFor({ ...o, amount: amountEff }, false));
   for (const side of Array.isArray(o.sideTasks) ? o.sideTasks : []) { if (isForbiddenId(side?.target)) continue; steps.push(stepFor(side, true)); }
   // legsOnly: 長期タスクの1工程として使う場合、帰還・納品・報告は付けない（親タスクが担う）
   if (!o.legsOnly) {
@@ -143,8 +147,8 @@ export function createMission(order, sourcing = null) {
     order: {
       kind: o.kind || "gather",
       target: o.target ?? null,
-      amount: Math.max(1, num(o.amount, 1)),
-      constraints: { hostiles, forbiddenTargets },
+      amount: amountEff,
+      constraints: { hostiles, forbiddenTargets, caps: capsNorm },
       sideTasks: (Array.isArray(o.sideTasks) ? o.sideTasks : []).filter((t) => !isForbiddenId(t?.target)),
       returnTo: o.returnTo ?? "owner",
       legsOnly: !!o.legsOnly, // v0.4.67: 長期タスクの途中工程か (完了時に「お渡ししました」と言わないため。以前は書き写していなかった)
