@@ -118,7 +118,9 @@ import { createSideChase, chaseTick, sideChaseRangeFor } from "./side_chase.js";
 import { gateCancel, gateFactory, isHowToRequest } from "./chat_gate.js"; // 0-C1 (cycle1155): 質問・否定・仮定・部分スコープでは中止/工場/指示を発火しない共通ゲート
 import { pickNearest as veinPickNearest, veinNeighbors, sameResource as veinSameResource } from "./vein_math.js"; // 0-D1 (cycle1400): 鉱脈継続・距離優先の純粋核
 import { classifyDescent as d2Classify, createSpiralAnchor as d2CreateAnchor, spiralStepAt as d2StepAt } from "./d2_spiral_math.js"; // 0-D2 (cycle1434): 発見後も螺旋降下
-import { allowedLogIds, countLogsForTarget } from "./tree_species_math.js"; // 0-D3: 樹種指定時は対象選択・進捗をその樹種だけに限定する
+import { allowedLogIds, countLogsForTarget } from "./tree_species_math.js";
+import { createWideScanFails, partitionWideIds, noteWideSuccess, noteWideIdFailure, noteWideGlobalFailure, wideIdBlocked } from "./wide_scan_fails.js"; // 0-D4 Bprime (cycle1455): wide scan failures isolated per typeId
+import { isAllowedByAllowOnly } from "./allow_only.js"; // 0-C2 reader (cycle1455): allowOnly enforcement // 0-D3: 樹種指定時は対象選択・進捗をその樹種だけに限定する
 import { shouldReplayGaze, GAZE_REPLAY_INTERVAL_TICKS } from "./gaze_cadence_math.js"; // 0-E1 GAZE-CADENCE-01: 視線レイヤーを本体ループから分離する
 import { mergeCaps, capForTarget } from "./cap_guard_math.js"; // 0-C2 読み手 (cycle1337): セッション上限を mission へ届ける
 import { createWarehouseRegistry, serializeWarehouseRegistry, deserializeWarehouseRegistry } from "./warehouse_registry.js"; // 倉庫 W1: 台帳の DP 永続化 (cb_warehouse)
@@ -1879,18 +1881,18 @@ function splitVolume(a, b) {
 }
 const warnedOnce = new Set();
 function warnOnce(key, msg) { if (warnedOnce.has(key)) return; warnedOnce.add(key); console.warn(msg); }
-let wideScanFails = 0; // getBlocks の連続失敗回数。WIDE_SCAN_MAX_FAILS 回続いたら以後は従来走査
-const WIDE_SCAN_MAX_FAILS = 5;
+const wideScanState = createWideScanFails(5); // 0-D4 Bprime: failures isolated per typeId; only infra failures are global
 function wideQuery(bot, typeIds) {
   // 戻り値: { ok, best: { typeId: {x,y,z}|null } }。ok=false は「測れなかった」(呼び出し側が従来走査へ)
   const best = {}; for (const id of typeIds) best[id] = null;
-  if (wideScanFails >= WIDE_SCAN_MAX_FAILS) return { ok: false, best };
+  const part1455 = partitionWideIds(wideScanState, typeIds); const typeIdsQ = part1455.usable;
+  if (!typeIdsQ.length) return { ok: false, best };
   const BV = mcServer.BlockVolume;
   const dim = bot.dimension;
-  if (!BV || typeof dim.getBlocks !== "function") { wideScanFails = WIDE_SCAN_MAX_FAILS; return { ok: false, best }; }
+  if (!BV || typeof dim.getBlocks !== "function") { noteWideGlobalFailure(wideScanState); wideScanState.global = wideScanState.maxFails; return { ok: false, best }; }
   let minY = -64, maxY = 319; try { minY = dim.heightRange.min; maxY = dim.heightRange.max - 1; } catch {}
   const bx = Math.floor(bot.location.x), by = Math.floor(bot.location.y), bz = Math.floor(bot.location.z);
-  const want = new Set(typeIds);
+  const want = new Set(typeIdsQ);
   const bd = {};
   // 1 つの範囲・ID 群を問い合わせ、見つかった位置で best を更新する。例外はそのまま投げる
   const queryRing = (ring, ids) => {
@@ -1912,21 +1914,21 @@ function wideQuery(bot, typeIds) {
     }
     return any;
   };
-  let okAny = false, lastErr = null;
+  let okAny = false, lastErr = null; const failedIds1455 = new Set();
   for (const ring of SCAN_RINGS) {
     let any = false;
-    try { any = queryRing(ring, typeIds); okAny = true; }
+    try { any = queryRing(ring, typeIdsQ); okAny = true; }
     catch (err) {
-      // 存在しない ID が混ざると一括の問い合わせが失敗しうる。ID ごとに試し直し、通るものだけ使う
       lastErr = err;
-      warnOnce("wide:" + String(err).slice(0, 60), `[LIZE] wide scan error (ring ${ring.h}): ${err}`); // 最初の 1 回からログに出す
-      if (typeIds.length > 1) for (const id of typeIds) { try { if (queryRing(ring, [id])) any = true; okAny = true; } catch (e2) { lastErr = e2; } }
+      warnOnce("wide:" + String(err).slice(0, 60), `[LIZE] wide scan error (ring ${ring.h}): ${err}`);
+      if (typeIdsQ.length > 1) for (const id of typeIdsQ) { try { if (queryRing(ring, [id])) any = true; okAny = true; } catch (e2) { lastErr = e2; failedIds1455.add(id); } }
+      else failedIds1455.add(typeIdsQ[0]);
     }
-    if (any) break; // 近い範囲で見つかったら、それより遠くは見ない
+    if (any) break;
   }
-  if (okAny) { wideScanFails = 0; return { ok: true, best }; }
-  wideScanFails++;
-  if (LIZE_DEBUG || wideScanFails === WIDE_SCAN_MAX_FAILS) console.warn(`[LIZE] wide scan failed (${wideScanFails}/${WIDE_SCAN_MAX_FAILS}): ${lastErr}`);
+  if (okAny) { noteWideSuccess(wideScanState, typeIdsQ.filter((id) => !failedIds1455.has(id))); for (const id of failedIds1455) noteWideIdFailure(wideScanState, id); return { ok: true, best }; }
+  for (const id of (failedIds1455.size ? [...failedIds1455] : typeIdsQ)) noteWideIdFailure(wideScanState, id);
+  if (LIZE_DEBUG) console.warn(`[LIZE] wide scan failed (per-id): ${lastErr}`);
   return { ok: false, best };
 }
 // (旧 SCAN_SPECIES_PER_TICK は v0.4.64 で廃止: 樹種別分割走査が pending 固着の原因だったため一括走査へ)
@@ -1977,7 +1979,7 @@ function scanBlockNear(bot, r, typeId, ttlJitter = 0) {
 function scanBlocksNear(bot, r, typeIds) {
   const now = Date.now();
   if (!r.mScanMap) r.mScanMap = {};
-  const want = new Set(typeIds);
+  const want = new Set(typeIdsQ);
   const best = {}, bd = {};
   for (const id of typeIds) { best[id] = null; bd[id] = Infinity; }
   const pt = r.percTargets || {};
@@ -2475,6 +2477,8 @@ function pickupItemEntity(bot, owner, itemEnt, ctx) {
 function startMission(bot, owner, r, mo, announce = true, opts = {}) {
   // Phase5 読み手R1 (cycle2006): セッション禁止を入口でマージする。主対象自体が禁止なら leg でない注文は立てない (legsOnly は decomposer 側の完全一致除外に任せる)
   try { const mg = mergeSessionForbids(r.sessionForbids, mo); if (mg.mo) mo = mg.mo; if (mg.blocked) { if (announce || mo.legsOnly) say(owner, bot, `その対象は、しないと約束しています。${nameOfItem(mo.target)}は対象にしません`, true); return null; } } catch {} // cycle0117 G2: legsOnly も入口で止める (出口は呼び出し側A/Bに配線済み)
+  // 0-C2 reader (cycle1455): allowOnly was stored but never read; gate non-leg hunt/gather missions to the allowed target only (legs are means, not targets).
+  try { if (!mo.legsOnly && r.allowOnly && mo.target && (mo.kind === "hunt" || mo.kind === "gather")) { const tid1455 = typeof mo.target === "string" ? mo.target : (mo.target?.item || mo.target?.block || mo.target?.entity || null); if (tid1455 && !isAllowedByAllowOnly(r.allowOnly, tid1455, mo.kind)) { if (announce) say(owner, bot, `その対象は対象外です。許可されている対象だけにします`, true); return null; } } } catch {}
   // 0-C2 読み手 (cycle1337): セッション上限 (r.caps) を mission 制約へ届け、狩猟量を上限で clamp する
   try { const mergedCaps = mergeCaps(mo.constraints?.caps, r.caps); if (mergedCaps.length) { mo = { ...mo, constraints: { ...(mo.constraints || {}), caps: mergedCaps } }; if (mo.kind === "hunt") { const cp = capForTarget(mergedCaps, mo.target, "hunt"); if (cp !== null && (mo.amount ?? 1) > cp) mo = { ...mo, amount: cp }; } } } catch {}
   if (!mo.legsOnly) r.toolPrepTotal = 0; // キュー0副次 R1 (cycle1421): 道具準備の通算上限は新規注文ごとに数え直す (leg 子ミッションでは消さない)

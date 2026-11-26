@@ -193,7 +193,7 @@ export function materialOfTypeId(typeId) {
   if (id === "froglight" || id.endsWith("_froglight")) return "froglight"; // cycle1215: froglight 3形+素形を専用カテゴリへ (従来は stone 落ち)
   if (id === "honey_block") return "honey_block"; // cycle0955 R1: 完全一致のみ
   if (id === "lodestone") return "lodestone"; // cycle0955 R1: 完全一致のみ
-  if (id === "deepslate_bricks" || id === "cracked_deepslate_bricks") return "deepslate_bricks"; // cycle1256: 完全一致2形のみ (deepslate_tiles は未照合のため巻き込まない)
+  if (id === "deepslate_bricks" || id === "cracked_deepslate_bricks" || id === "deepslate_tiles" || id === "cracked_deepslate_tiles") return "deepslate_bricks"; // cycle1256 bricks 2 forms + cycle1455 POLISH-SND-CLASS-DEEPSLATE-TILES-01: tiles 2 forms verified against Bedrock sounds (tiles use the deepslate_bricks sound set); derived slab/stairs/wall forms stay excluded
   if (id === "deepslate_copper_ore") return "deepslate"; // cycle2117: 母岩優先 (深層岩鉱石は母岩が正、copper includes より前)
   if (id.includes("copper") || id.includes("lightning_rod")) return "copper"; // 11 (+a11 避雷針は銅)
   if (id.includes("deepslate")) return "deepslate";                       // 12: 深層岩鉱石は母岩優先
