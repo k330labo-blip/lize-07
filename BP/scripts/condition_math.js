@@ -8,6 +8,17 @@ export const CONDITION_TTL_MS = 6 * 60 * 60 * 1000;
 // 満腹の閾値 (主人の hunger は 0..20)。実測できない場合は unknown に倒す。
 export const SATIETY_FIRE_HUNGER = 18;
 
+// R-C2-2 (cyc2372): 受理時点で評価可能な条件か。評価方法が無い条件 (custom 等) を
+// 「保留します」と受けてしまうと、発火口が無く TTL 取り下げまで受理したように見える。
+// 受理側はこれが false の条件を保留にせず、その場で明示返答する (0-C7 の原則)。
+export const EVALUABLE_CONDITION_KINDS = ["rain", "night", "morning", "satiety"];
+export function isEvaluableCondition(condition) {
+  try {
+    const kind = condition?.kind;
+    return typeof kind === "string" && EVALUABLE_CONDITION_KINDS.includes(kind);
+  } catch { return false; }
+}
+
 // env: { isRaining, isNight, isDawn, ownerHunger } — いずれも boolean / number で測れた値だけを渡すこと。
 // 戻り値: "fire" | "wait" | "unknown"
 export function evalCondition(condition, env) {

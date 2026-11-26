@@ -143,7 +143,7 @@ import { itemSnapshotOf, boxSnapshotOf, buildSortInput, summarizeSort } from "./
 import { createStairLookState, noteStairLook, stairLookPitch } from "./stairlook_math.js"; // POLISH-ANIM-STAIRSLOOK-01 (cycle1455): 表示層のみ・実機確認待ち
 import { createOrderLookState, noteOrderAccepted, sampleOrderLook } from "./orderlook_math.js"; // POLISH-ANIM-ORDERLOOK-01: 指示受理直後の「受けました」の頷き (表示層のみ・実機確認待ち)
 import { createHomebowState, noteHomeArrival, sampleHomebow } from "./homebow_math.js"; // POLISH-ANIM-HOMEBOW-01 (cyc1908): 拠点入庫完了直後の小さな一礼 (表示層のみ・実機確認待ち)
-import { evalCondition, conditionExpired } from "./condition_math.js"; // 0-C2 読み手 (cycle1337): 条件付き注文の発火判定
+import { evalCondition, conditionExpired, isEvaluableCondition } from "./condition_math.js"; // 0-C2 読み手 (cycle1337): 条件付き注文の発火判定
 import { serializePendingCondition, deserializePendingCondition, normalizePendingCondition } from "./pending_condition_math.js"; // E-01 (cycle1722): 条件保留を DP cb_pending_condition へ永続化し、再起動・回収・死亡での無言消失を防ぐ
 import { detectUnsupportedIntent } from "./unsupported_intent.js"; // 0-C7 (cycle1337): 未対応依頼への明示返答ゲート
 import { BLUEPRINTS, buildOrderOf, materialsSummaryOf, resolveMaterialItem } from "./blueprints.js";
@@ -5039,6 +5039,12 @@ function releaseRestrictions(bot, r, o) {
 function startOrderFromParser(p, bot, r, o) {
   // 0-C2 (cycle1215): 条件付き注文は即時発行しない。条件を保持して保留し、その旨を返す。
   if (o.constraints?.condition) {
+    // R-C2-2 (cyc2372): 評価方法が無い条件 (custom 等) は発火口が無いため保留にしない。
+    // 「保留します」と受理したように見せず、その場で何ができないかを明示する (0-C7)。
+    if (!isEvaluableCondition(o.constraints.condition)) {
+      say(p, bot, `その条件「${o.constraints.condition.raw || "その条件"}」は、私では判定できません。条件が来ても自動では始められないので、この指示は受けていません。条件なしで頼むか、条件が来たときに声をかけてください`, true);
+      return;
+    }
     try { setPendingCondition(bot, r, { order: o, at: Date.now(), ownerId: p?.id ?? null }); } catch {}
     say(p, bot, `分かりました。${o.constraints.condition.raw}、${o.target?.name || "その対象"}${o.amount ? o.amount + "個" : ""}の指示を始めます。それまでは保留します`, true);
     return;
