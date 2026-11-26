@@ -56,6 +56,7 @@ export const SFX_TABLE = Object.freeze({
   pointed_dripstone: { hit: "hit.pointed_dripstone", break: "break.pointed_dripstone", step: "step.pointed_dripstone" }, // POLISH-SND-CLASS-DRIPSTONE-01 (cyc2248): pointed は別ID群のため dripstone_block と分ける
   mud:            { hit: "hit.mud",   break: "dig.mud",           step: "step.mud" },          // POLISH-SND-CLASS-MUD-01 (cyc2313): 3軸とも専用ID (Bedrock の mud 音群)。従来は GRASS_IDS 経由で grass 落ち。完全一致 mud のみ、packed_mud/muddy_mangrove_roots は巻き込まない
   sculk_catalyst: { hit: "hit.sculk_catalyst", break: "break.sculk_catalyst", step: "step.sculk_catalyst" }, // POLISH-SND-CLASS-SCULK-CATALYST-01 (cyc2330): 3軸とも専用ID確認済み (Bedrock Wiki 1.21.70)。dig.sculk_catalyst は実在しないため break.* 命名 (sculk 本体と同型)
+  nether_wart:    { hit: "hit.grass", break: "dig.nether_wart", step: "step.nether_wart" }, // POLISH-SND-CLASS-NETHERWART-01 (cyc2347): break/step 専用ID確認済み (DESIGN §1.2)、hit は専用ID未確認のため grass 流用
 });
 
 // §1.2 で実在確認済みの ID (この表が参照する分 + 汎用分)
@@ -81,6 +82,7 @@ export const CONFIRMED_IDS = new Set([
   "hit.dripstone_block", "break.dripstone_block", "step.dripstone_block", "hit.pointed_dripstone", "break.pointed_dripstone", "step.pointed_dripstone", // cyc2248 A17: 専用ID確認済み (dig.* は実在しない)
   "hit.mud", "dig.mud", "step.mud", // cyc2313 MUD-01: 専用ID (mud 音群、実機確認待ち)
   "hit.sculk_catalyst", "break.sculk_catalyst", "step.sculk_catalyst", // cyc2330 SCULK-CATALYST-01: 専用ID確認済み (dig.sculk_catalyst は実在しない)
+  "dig.nether_wart", "step.nether_wart", // cyc2347 NETHERWART-01: 専用ID確認済み (break/step。hit.nether_wart は実在しない)
   "break.froglight", "step.froglight", // cycle1215 a14: 専用ID確認済み (break/step。dig.froglight/hit.froglight は実在しない)
   "dig.deepslate_bricks", // cycle1256 a16: 専用ID確認済み (break のみ)
   "step.grass", "step.sand", "step.gravel", "step.cloth", "step.wood",
@@ -198,6 +200,7 @@ export function materialOfTypeId(typeId) {
   if (GRASS_IDS.has(id)) return "grass";                                 // 5: 土は grass グループ
   if (id === "moss_block" || id === "moss_carpet") return "moss"; // cycle1058 R2: PLANT_IDS (5b) より前に完全一致で抜く (pale_moss 系は巻き込まない)
   if (id === "nether_sprouts") return "nether_sprouts"; // cycle1434: PLANT_IDS (5b) より前に完全一致で抜く (warped_roots 等は grass のまま)
+  if (id === "nether_wart") return "nether_wart"; // cyc2347 NETHERWART-01: 完全一致のみ (nether_wart_block 等の wart 族は stem のまま巻き込まない)
   // 5b (cycle0922): 植物は grass。flower_pot は土器なので _flower の対象外に明示する
   if (id !== "flower_pot" && (PLANT_IDS.has(id) || id === "sapling" || id === "flower" || id === "tallgrass" || id === "mushroom" || id.endsWith("_sapling") || id.endsWith("_flower") || id.endsWith("_mushroom"))) return "grass"; // cycle0832 a11 A1: レガシー素形 sapling/flower/tallgrass/mushroom
   if (id === "sand" || id === "red_sand" || id === "suspicious_sand"
