@@ -18,6 +18,11 @@ const HELD_RE = /手持ち|持っている|持ってる/;
 const HANDOVER_RE = /渡して|渡す|ちょうだい|頂戴/;
 const GUIDE_RE = /案内して|案内し|連れて行って|連れてって|連れていって/;
 const GUIDE_DEST_RE = /まで|拠点|家|座標|村|入口|出口/;
+// 0-C7 追加 (cycle1532, A05 実測確定): 「<容器>から<品目>を持ってきて」は parseOrder が
+// 容器自体を主対象にする誤受理になる。役割の組 (容器+から+後段の品目句+運搬動詞) で
+// 前段ゲートにする。質問形・仮定形は 0-C1 の領分として対象外。
+const FETCH_VERB_RE = /持ってきて|持って来て|持ってくる|持って来る|取ってきて|取り出して|取出して/;
+const SOURCE_FROM_RE = /(?:チェスト|トラップチェスト|倉庫|樽|バレル|シュルカー(?:ボックス)?)から(.+)/;
 
 export function detectUnsupportedIntent(text, opts = {}) {
   try {
@@ -30,6 +35,17 @@ export function detectUnsupportedIntent(text, opts = {}) {
     // 手持ちの受け渡し: parseOrder が採集に化けるため、注文成立でも優先して止める
     if (HELD_RE.test(t) && HANDOVER_RE.test(t)) {
       return { kind: "hand_over_held", missing: "手持ちの物を渡す指定", reply: "それはまだできません。手持ちの物を渡す指定は、文字指示では未対応です" };
+    }
+    // 出典容器からの取り出し (cycle1532): 注文が「成立」してしまうため hasOrder より前に止める。
+    // 条件: 容器直後の「から」、後段に品目句 (を/数量を含む句)、同一句内の運搬動詞、質問・仮定でないこと
+    {
+      const m = SOURCE_FROM_RE.exec(t);
+      if (m && FETCH_VERB_RE.test(t) && !/[？?]/.test(t) && !/たら|れば|なら/.test(t)) {
+        const rest = m[1];
+        if (/(を|個|スタック|本|枚|粒|匹)/.test(rest) || rest.replace(/を|持って.+|取って.+|取り出して|取出して/g, "").length >= 1) {
+          return { kind: "chest_transfer", missing: "チェストの出し入れ", reply: "それはまだできません。チェストの出し入れは、文字指示では未対応です。集めた物の入庫は自動で行います" };
+        }
+      }
     }
     // 案内 (先導): escort (追随) として受理されてしまうため、注文成立でも止める
     if (GUIDE_RE.test(t) && GUIDE_DEST_RE.test(t)) {

@@ -45,6 +45,7 @@ export const SFX_TABLE = Object.freeze({
   honey_block:    { hit: "hit.stone",  break: "dig.honey_block",    step: "step.stone" },        // POLISH-SND-CLASS-R1 (cycle0955): break 専用ID確認済み、hit/step は stone 流用
   lodestone:      { hit: "hit.stone",  break: "dig.lodestone",      step: "step.stone" },        // POLISH-SND-CLASS-R1 (cycle0955): break 専用ID確認済み、hit/step は stone 流用
   basalt:         { hit: "hit.basalt", break: "dig.basalt",       step: "step.basalt" },       // POLISH-SND-CLASS-BASALT-01 (cycle1514): 3軸とも専用IDを Wiki Bedrock 行で確認済み
+  azalea_leaves:  { hit: "hit.azalea_leaves", break: "dig.azalea_leaves", step: "step.azalea_leaves" }, // POLISH-SND-CLASS-AZALEA-LEAVES-01 (cycle1532): 3軸とも専用ID確認済み (Bedrock Wiki 1.21.70)。低木 azalea 本体は対象外
 });
 
 // §1.2 で実在確認済みの ID (この表が参照する分 + 汎用分)
@@ -61,6 +62,7 @@ export const CONFIRMED_IDS = new Set([
   "dig.nether_sprouts", "step.nether_sprouts", // cycle1434 a14: 専用ID確認済み (break/step)
   "dig.candle", "hit.candle", // cycle1134 a07: 専用ID確認済み (break/hit)
   "hit.basalt", "dig.basalt", "step.basalt", // cycle1514 a14: 専用ID確認済み (3軸とも)
+  "hit.azalea_leaves", "dig.azalea_leaves", "step.azalea_leaves", // cycle1532 a18: 専用ID確認済み (3軸とも)
   "break.froglight", "step.froglight", // cycle1215 a14: 専用ID確認済み (break/step。dig.froglight/hit.froglight は実在しない)
   "dig.deepslate_bricks", // cycle1256 a16: 専用ID確認済み (break のみ)
   "step.grass", "step.sand", "step.gravel", "step.cloth", "step.wood",
@@ -170,6 +172,7 @@ export function materialOfTypeId(typeId) {
   if (id === "web" || id === "cobweb" || id === "fire" || id === "soul_fire" || id === "portal" || id === "end_portal" || id === "end_gateway" || id === "bubble_column" || id === "structure_void") return null; // 2b (cycle0537 a08 N1): 無音であるべき形が stone へ落ちていた是正 (完全一致のみ)
   if (id.includes("glass")) return "glass";                               // 3
   if (GLASSLIKE_IDS.has(id)) return "glass";                              // 3b (a11): 発光ガラス系
+  if (id === "azalea_leaves" || id === "flowering_azalea_leaves") return "azalea_leaves"; // 3c (cycle1532): ツツジの葉だけ専用音 (完全一致のみ。azalea_leaves_flowered は PLANT 側の grass を維持)
   if (id.endsWith("_leaves") || id === "leaves" || id === "leaves2") return "grass"; // 4: 葉は草系 (cycle0832 a11 A1: レガシー素形 leaves/leaves2 も同素材)
   if (GRASS_IDS.has(id)) return "grass";                                 // 5: 土は grass グループ
   if (id === "moss_block" || id === "moss_carpet") return "moss"; // cycle1058 R2: PLANT_IDS (5b) より前に完全一致で抜く (pale_moss 系は巻き込まない)

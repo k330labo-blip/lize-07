@@ -41,6 +41,7 @@ import { pickEscapeBlock, shoreNeedFor, scanShore, lavaStuckStep } from "./env02
 import { createNightwatchState, noteNightwatch, sampleNightwatch, applyNightwatchPitch } from "./nightwatch_math.js";
 import { createDoubletakeState, noteDoubletake, sampleDoubletake } from "./doubletake_math.js"; // POLISH-ANIM-DOUBLETAKE-01 (cycle0403): 主人の急接近への二度見 (表示層のみ) // POLISH-ANIM-NIGHTWATCH-01 (cycle0340): 夜間見回り視線 (表示層のみ)
 import { darkEntryInit, noteDarkEntry, darkEntryOffset, darkEntryActive, lightBandOf } from "./darkentry_math.js"; // POLISH-ANIM-DARKENTRY-01 (cycle0423): 暗所入場時の見回し (表示層のみ)
+import { createTorchPassState, noteTorchPass } from "./torchpass_math.js"; // POLISH-ANIM-TORCHPASS-01 (cycle1532): feeder 第1段は記録のみ (peek-only・新規走査なし)
 import { applyDryoffYaw, isDryoffActive, noteDryoff as noteDryoffState } from "./dryoff_math.js"; // POLISH-ANIM-DRYOFF-01 (cycle1322): 雨上がりに水を払う (表示層のみ・実機確認待ち)
 import { noteBreathCold } from "./breath_cold_math.js"; // POLISH-FX-BREATHCOLD-01 (cycle1343): 寒冷地での白い排気 (表示層のみ・粒子ID未照合のため記録のみ・実機確認待ち)
 import { fromCraftResult } from "./actions_contract.js"; // 6-ML (cycle1322): CRAFT/SMELT 実行結果の正規化 (記録専用) // POLISH-ANIM-SKYGLANCE-01 (cycle1133): 雨の降り始めに空を見上げる (表示層のみ) // POLISH-ANIM-SUMMONSCAN-01 (cycle1110): 召喚・復元直後の見回し (表示層のみ)
@@ -3030,10 +3031,13 @@ function tickLongTask(bot, owner, r, ctx) {
         if (sres === "resumed") return false;
       } else {
         // cycle0033 F1: mineLeg resume is gated by f1ResumeDecision (progress-less resumes are cut off)
-        if (r.mineLeg) {
-          if (f1ResumeDecision(bot, r) === "terminate") { noteFail(bot, "longtask:suspend_no_progress_exhausted", new Error(`${r.mission.suspendReason || ""}:${r.mission.suspendCount || 0}`)); }
-          else { r.mission.status = "active"; r.mission.suspendReason = null; persistMission(bot, r, true); return false; }
-        }
+        // LT-SUSPEND 是正 (cycle1532, A01 実測確定): mineLeg は揮発性で DP 復元されず、再計算点 (leg 開始時) は
+        // suspended 分岐より後ろにあるため、再起動後は r.mineLeg===null のまま再開ゲートで落ちて即終端していた。
+        // cannot_recover と同じく「再開可否を mineLeg の有無で決めない」形へ揃え、判定は F1 (進捗なし再開の打ち切り) のみで行う。
+        // mineLeg は再開時に現在 leg から再計算して潜行の継続に使う。
+        if (!r.mineLeg) { try { const cl = r.longtask?.legs?.[r.longtask.legIdx]; if (cl) r.mineLeg = mineLegForLeg(cl, bot); } catch {} }
+        if (f1ResumeDecision(bot, r) === "terminate") { noteFail(bot, "longtask:suspend_no_progress_exhausted", new Error(`${r.mission.suspendReason || ""}:${r.mission.suspendCount || 0}`)); }
+        else { r.mission.status = "active"; r.mission.suspendReason = null; persistMission(bot, r, true); return false; }
       }
       { say(owner, bot, `長期タスクを中断しました。${SUSPEND_JP[r.mission.suspendReason] || "進めなくなりました"}`, true); r.mission = null; clearPlanRecords(r); persistMission(bot, r, true); r.longtask = null; r.mineLeg = null; r.spiral = null; saveLongTask(bot, r); return true; }
     }
@@ -4056,6 +4060,10 @@ function applyGaze(bot, owner, ctx, scan) {
   // POLISH-ANIM-STAIRSLOOK-01 feeder (cycle1514): 足元フロア高の ±1 変化だけを段差として供給する (新規走査なし)。
   // 飛行中の高度変化と混同しないよう selfFalling/水中/戦闘/作業中は純粋核側の抑制に委ね、ここでは落下中を渡す。
   try { const r0 = rt(bot); if (!r0.stairlookState) r0.stairlookState = createStairLookState(); const fy = Math.floor(bot.location?.y ?? NaN); if (Number.isFinite(fy)) { if (typeof r0.stairPrevFloorY === "number" && fy !== r0.stairPrevFloorY) { const d = fy - r0.stairPrevFloorY; let flying = false; try { flying = bot.isFlying === true; } catch {} if ((d === 1 || d === -1) && !flying) { const rec = noteStairLook(r0.stairlookState, { stepDir: d, combat: (ctx?.danger?.count ?? 0) > 0, falling: r0.selfFalling === true, inWater: !!bot.isInWater, working: !!r0.work }, Date.now()); if (rec?.fired) r0.lastStairLook = { at: Date.now(), dir: d }; } } r0.stairPrevFloorY = fy; } } catch {}
+  // POLISH-ANIM-TORCHPASS-01 feeder 第1段 (cycle1532): 候補は scanCachePeek の読み取り専用のみ (0-D4 分離の作法。新規走査なし)。
+  // 発火は r.lastTorchPass への記録のみで視線へは重畳しない。頻度を実機ログで見てから第2段 (重畳) を判断する。
+  // flying/hurt は渡さない (ホバー既定で flying を渡すと恒常抑制になり永遠に発火しない。A04 監査)。
+  try { const r0 = rt(bot); if (!r0.torchpassState) r0.torchpassState = createTorchPassState(); if (!r0.gazeReplayCall && Date.now() - (r0.torchpassCheckAt || 0) >= 1000) { r0.torchpassCheckAt = Date.now(); const TP_IDS = [["minecraft:torch", "torch"], ["minecraft:wall_torch", "torch"], ["minecraft:soul_torch", "torch"], ["minecraft:soul_wall_torch", "torch"], ["minecraft:lantern", "lantern"], ["minecraft:soul_lantern", "lantern"], ["minecraft:glowstone", "glowstone"], ["minecraft:lit_redstone_lamp", "lamp_lit"]]; let best = null; for (const [tid, cat] of TP_IDS) { const pk = scanCachePeek(r0, tid); if (pk.state === "hit" && pk.loc) { const dd = dist(bot.location, pk.loc); if (Number.isFinite(dd) && (!best || dd < best.dist)) best = { loc: pk.loc, cat, dist: dd }; } } const sample = { lightLevel: ctx?.x?.lightLevel, combat: (ctx?.danger?.count ?? 0) > 0, working: !!r0.work, falling: r0.selfFalling === true, inWater: !!bot.isInWater }; if (best) { sample.category = best.cat; sample.clusterKey = `tp:${best.loc.x},${best.loc.y},${best.loc.z}`; sample.dist = best.dist; try { const gr = gazeRotation(bot.location, { x: best.loc.x + 0.5, y: best.loc.y + 0.5, z: best.loc.z + 0.5 }); const cur = bot.getRotation(); sample.bearingDeg = ((gr.y - (cur?.y || 0) + 540) % 360) - 180; } catch {} } const rec = noteTorchPass(r0.torchpassState, sample, Date.now()); if (rec?.fired) r0.lastTorchPass = { at: Date.now(), category: best?.cat || null, clusterKey: best ? `tp:${best.loc.x},${best.loc.y},${best.loc.z}` : null }; } } catch {}
   let gz = null; try { gz = decideGaze(ctx); } catch {}
   if (!gz) return;
   const r = rt(bot);
