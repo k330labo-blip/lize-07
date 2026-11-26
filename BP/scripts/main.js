@@ -127,8 +127,10 @@ import { isAllowedByAllowOnly, serializeAllowOnly, restoreAllowOnly, clearAllowO
 import { shouldReplayGaze, GAZE_REPLAY_INTERVAL_TICKS } from "./gaze_cadence_math.js"; // 0-E1 GAZE-CADENCE-01: 視線レイヤーを本体ループから分離する
 import { mergeCaps, capForTarget } from "./cap_guard_math.js"; // 0-C2 読み手 (cycle1337): セッション上限を mission へ届ける
 import { createWarehouseRegistry, serializeWarehouseRegistry, deserializeWarehouseRegistry, addCandidates, warehouseKeyOf, registerBox, removeCandidate } from "./warehouse_registry.js"; // 倉庫 W1: 台帳の DP 永続化 (cb_warehouse)
+import { WAREHOUSE_CATEGORIES, categoryLabelOf } from "./warehouse_categories.js"; // 倉庫 W1 (cyc1908): 仕分け先カテゴリ語彙の単一の正。UI 登録で category を渡し、仕分け核の category 一致を実運用で発火させる
 import { createStairLookState, noteStairLook, stairLookPitch } from "./stairlook_math.js"; // POLISH-ANIM-STAIRSLOOK-01 (cycle1455): 表示層のみ・実機確認待ち
 import { createOrderLookState, noteOrderAccepted, sampleOrderLook } from "./orderlook_math.js"; // POLISH-ANIM-ORDERLOOK-01: 指示受理直後の「受けました」の頷き (表示層のみ・実機確認待ち)
+import { createHomebowState, noteHomeArrival, sampleHomebow } from "./homebow_math.js"; // POLISH-ANIM-HOMEBOW-01 (cyc1908): 拠点入庫完了直後の小さな一礼 (表示層のみ・実機確認待ち)
 import { evalCondition, conditionExpired } from "./condition_math.js"; // 0-C2 読み手 (cycle1337): 条件付き注文の発火判定
 import { serializePendingCondition, deserializePendingCondition, normalizePendingCondition } from "./pending_condition_math.js"; // E-01 (cycle1722): 条件保留を DP cb_pending_condition へ永続化し、再起動・回収・死亡での無言消失を防ぐ
 import { detectUnsupportedIntent } from "./unsupported_intent.js"; // 0-C7 (cycle1337): 未対応依頼への明示返答ゲート
@@ -3140,6 +3142,7 @@ function handleMissionSay(bot, owner, r, d) {
     if (!m.order.legsOnly) {
       if (r.deliverFail) say(owner, bot, `集めたのですが、${m.order.returnTo === "home" ? "拠点へ入庫できませんでした" : "お渡しできませんでした"}。相手側の空きがないか、チェストが見つかりませんでした`, true);
       else say(owner, bot, `指示、完了しました。${nameOfItem(m.order.target)}を${m.order.amount}個、${m.order.returnTo === "home" ? "拠点へ入庫しました" : "お渡ししました"}`, true);
+      if (!r.deliverFail && m.order.returnTo === "home") { try { if (!r.homebowState) r.homebowState = createHomebowState(); const hb = noteHomeArrival(r.homebowState, { nowMs: Date.now(), deposited: true, danger: false, falling: r.selfFalling === true }); r.homebowState = hb.state; if (hb.fired) r.lastHomebow = { at: Date.now() }; } catch {} } // POLISH-ANIM-HOMEBOW-01 feeder (表示層のみ・実機確認待ち)
     }
     r.deliverFail = false;
     finishMission(bot, owner, r);
@@ -4162,6 +4165,7 @@ function applyGaze(bot, owner, ctx, scan) {
     if (rot && r.musicnodState) { const mn = sampleMusicnod(r.musicnodState, Date.now()); if (mn.active) rot = { ...rot, x: rot.x + mn.gazePitchDeg }; } // POLISH-ANIM-MUSICNOD-01 (cycle2006): 重畳の最下位 (表示層のみ・実機確認待ち、近傍滞在が代理条件)
     if (rot && r.stairlookState) { const sp = stairLookPitch(r.stairlookState, Date.now()); if (sp) rot = { ...rot, x: rot.x + sp }; } // POLISH-ANIM-STAIRSLOOK-01 (cycle1514): 重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot && r.orderlookState) { const ol = sampleOrderLook(r.orderlookState, Date.now()); if (ol.active) rot = { ...rot, x: rot.x + ol.pitchDeg }; } // POLISH-ANIM-ORDERLOOK-01: 重畳の最下位 (表示層のみ・実機確認待ち)。0-E1 の 2tick 視線で 850ms の頷きが複数回サンプリングされる
+    if (rot && r.homebowState) { const hb2 = sampleHomebow(r.homebowState, Date.now()); if (hb2.active) rot = { ...rot, x: rot.x + hb2.pitchDeg }; } // POLISH-ANIM-HOMEBOW-01 (cyc1908): 重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot && r.idleState) { const idl = sampleIdle(r.idleState, Date.now()); if (idl.active) rot = { ...rot, y: rot.y + idl.gazeYawRelDeg, x: rot.x + idl.gazePitchDeg }; } // POLISH-ANIM-IDLE-01 (cycle2020): 重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot && r.lookleadSample && (r.lookleadSample.active || r.lookleadSample.completed) && Date.now() - (r.lookleadSampleAt || 0) < 200) rot = { ...rot, y: rot.y + r.lookleadSample.yawDeltaDeg, x: rot.x + r.lookleadSample.pitchDeltaDeg }; // POLISH-ANIM-LOOKLEAD-01 (cycle2036): 重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot && r.catchsightState) { const cs = sampleCatchsight(r.catchsightState, Date.now(), catchsightSuppressInput(bot, owner, ctx, gz, r, Date.now())); if (cs.active) rot = { ...rot, y: rot.y + cs.yawDeg, x: rot.x + cs.pitchDeg }; } // POLISH-ANIM-CATCHSIGHT-01 (cycle2200): 重畳の最下位 (表示層のみ・実機確認待ち)
@@ -4549,28 +4553,33 @@ function openWarehouseMenu(p, bot) {
   const boxes = Array.isArray(reg.boxes) ? reg.boxes : [];
   const cands = Array.isArray(reg.candidates) ? reg.candidates : [];
   const roleName = { intake: "投入口", dest: "仕分け先", source: "整理対象", excluded: "除外", unclassified: "未分類" };
-  const lines = boxes.slice(0, 8).map((b) => `登録: ${roleName[b.role] || b.role}${b.needsRecheck ? "（再確認が必要）" : ""} ${b.key}`);
+  const lines = boxes.slice(0, 8).map((b) => `登録: ${roleName[b.role] || b.role}${b.category ? `（${categoryLabelOf(b.category) || b.category}）` : ""}${b.needsRecheck ? "（再確認が必要）" : ""} ${b.key}`);
   const candLines = cands.slice(0, 8).map((c) => `候補: ${c.key}`);
   const form = new ActionFormData();
   form.title("倉庫の登録・確認");
   form.body(`登録済み ${boxes.length}件 / 候補 ${cands.length}件\n${[...lines, ...candLines].join("\n") || "まだ何もありません。チェストを置いて開けると、候補に上がります"}`);
-  form.button("候補を仕分け先に登録", "textures/items/lize_remote");
+  // cyc1908: 仕分け先はカテゴリ別ボタンで登録し、category を台帳へ渡す (従来は category 無しで仕分け核の category 一致が発火しなかった)
+  for (const cat of WAREHOUSE_CATEGORIES) form.button(`候補を仕分け先（${cat.label}）に登録`, "textures/items/lize_remote");
+  form.button("候補を仕分け先（カテゴリなし）に登録", "textures/items/lize_remote");
   form.button("候補を除外する", "textures/items/lize_remote");
   form.button("候補を消す（登録しない）", "textures/items/lize_remote");
   form.button("閉じる", "textures/items/lize_remote");
+  const catCount = WAREHOUSE_CATEGORIES.length;
+  const selExcluded = catCount + 1, selClear = catCount + 2, selClose = catCount + 3;
   form.show(p).then((res) => {
-    if (res.canceled || res.selection === 3) return;
+    if (res.canceled || res.selection === selClose) return;
     const rr = rt(bot); if (!rr.warehouse) rr.warehouse = createWarehouseRegistry();
     const cur = (Array.isArray(rr.warehouse.candidates) ? rr.warehouse.candidates : []).slice();
     if (!cur.length) { say(p, bot, "候補は、今はありません", true); return; }
-    if (res.selection === 2) { let w = rr.warehouse; for (const c of cur) w = removeCandidate(w, c.key); rr.warehouse = w; saveWarehouse(bot, rr); say(p, bot, `候補${cur.length}件を消しました。登録はしていません`, true); return; }
-    const role = res.selection === 0 ? "dest" : "excluded";
+    if (res.selection === selClear) { let w = rr.warehouse; for (const c of cur) w = removeCandidate(w, c.key); rr.warehouse = w; saveWarehouse(bot, rr); say(p, bot, `候補${cur.length}件を消しました。登録はしていません`, true); return; }
+    const role = res.selection === selExcluded ? "excluded" : "dest";
+    const category = role === "dest" && res.selection < catCount ? WAREHOUSE_CATEGORIES[res.selection].id : null;
     // ラージチェスト推定: 同じ次元・同じ y で水平に隣接する候補同士を組にする
     const pairOf = (c) => { try { const [dim, xyz] = c.key.split("|"); const [x, y, z] = xyz.split(",").map(Number); const mate = cur.find((o) => { if (o.key === c.key) return false; const [d2, xyz2] = o.key.split("|"); if (d2 !== dim) return false; const [x2, y2, z2] = xyz2.split(",").map(Number); return y2 === y && Math.abs(x2 - x) + Math.abs(z2 - z) === 1; }); return mate ? mate.key : null; } catch { return null; } };
     let w = rr.warehouse; let okCount = 0;
-    for (const c of cur) { const out = registerBox(w, { key: c.key, dim: c.dim, role, pairKey: pairOf(c) }); if (out && out.ok) { w = out.reg; okCount++; } }
+    for (const c of cur) { const out = registerBox(w, { key: c.key, dim: c.dim, role, category, pairKey: pairOf(c) }); if (out && out.ok) { w = out.reg; okCount++; } }
     rr.warehouse = w; saveWarehouse(bot, rr);
-    say(p, bot, role === "dest" ? `候補${okCount}件を仕分け先に登録しました` : `候補${okCount}件を除外に登録しました。今後、仕分け先には使いません`, true);
+    say(p, bot, role === "dest" ? `候補${okCount}件を仕分け先${category ? `（${categoryLabelOf(category) || category}）` : ""}に登録しました` : `候補${okCount}件を除外に登録しました。今後、仕分け先には使いません`, true);
   }).catch(() => {});
 }
 

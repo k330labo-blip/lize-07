@@ -81,7 +81,7 @@ export function registerBox(reg, box) {
       key,
       dim: typeof box.dim === "string" ? box.dim : key.split("|")[0],
       role: box.role,
-      category: typeof box.category === "string" ? box.category : null,
+      category: typeof box.category === "string" ? box.category : (existing?.category ?? null), // cyc1908: 再登録でカテゴリを引き継ぐ (pairKey と同じ扱い。従来は null に戻る潜在事故)
       pairKey: typeof box.pairKey === "string" && box.pairKey ? box.pairKey : (existing?.pairKey ?? null),
       verifiedAt: typeof box.verifiedAt === "number" && Number.isFinite(box.verifiedAt) ? box.verifiedAt : Date.now(),
       needsRecheck: box.role === "excluded" ? false : !!box.needsRecheck,

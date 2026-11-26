@@ -2,12 +2,12 @@
   "format_version": 2,
   "header": {
     "name": "リゼ (LIZE-07) / RP",
-    "description": "Companion LIZE-07 v0.5.86",
+    "description": "Companion LIZE-07 v0.5.87",
     "uuid": "eea159df-01a6-4ff3-9ebc-b711e962cd96",
     "version": [
       0,
       5,
-      86
+      87
     ],
     "min_engine_version": [
       1,
@@ -22,7 +22,7 @@
       "version": [
         0,
         5,
-        86
+        87
       ]
     }
   ],
@@ -32,7 +32,7 @@
       "version": [
         0,
         5,
-        86
+        87
       ]
     }
   ]
