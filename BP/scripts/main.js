@@ -2346,7 +2346,7 @@ function surveyChunk(sv, idx) {
 system.runInterval(() => {
   if (!surveyAvailable() || Date.now() < surveySlowUntil) return;
   const queue = [];
-  for (const v of surveys.values()) if (surveyFresh(v) && v.doneMask !== 0xffff && Date.now() - (v.wantAt || 0) < 10000 && !(v.quarantinedUntil > Date.now())) queue.push(v); // cycle0628: 隔離中の区画は選ばない (隔離は当該区画だけ・全体は止めない)
+  for (const v of surveys.values()) if (surveyFresh(v) && v.doneMask !== 0xffff && Date.now() - (v.wantAt || 0) < 10000 && !(v.quarantinedUntil > Date.now()) && !(v.unloadedUntil > Date.now())) queue.push(v); // cycle0628: 隔離中の区画は選ばない (隔離は当該区画だけ・全体は止めない) / cyc2369 SURVEY-UNLOADED-NOEXIT-01: unloaded 一時除外中も選ばない
   if (!queue.length) return;
   queue.sort((a, b) => (b.prio || 0) - (a.prio || 0) || (b.wantAt || 0) - (a.wantAt || 0));
   // 偶数 tick は最優先 (今いる区画)、奇数 tick は残りを順番に。今いる区画が終わっていれば隣だけを進める
@@ -2361,9 +2361,10 @@ system.runInterval(() => {
     const ms = Date.now() - t0;
     if (ms > 25) surveySlowUntil = Date.now() + ms * 2; // 処理落ち防止: 重かった分だけ次を遅らせる
     sv.nextIdx = (idx + 1) % 16;
-    if (res === "done") { sv.fails = 0; sv.doneMask |= (1 << idx); sv.at = Date.now(); sv.wantAt = sv.at; if (sv.doneMask === 0xffff && sv.doneAt == null) sv.doneAt = sv.at; } // cyc2367 SURVEY-WANTAT-FREEZE-01: 進捗が wantAt 窓も供給する
-    else if (res === "partial") { sv.fails = 0; sv.at = Date.now(); sv.wantAt = sv.at; } // cyc2367 SURVEY-WANTAT-FREEZE-01 // B-prime: progress refreshes freshness only / cycle0628: 進捗で fails リセット (survey_broken.js の nextFails と同義。断片抽出ハーネスと両立させるため実行部は自己完結形で書く)
+    if (res === "done") { sv.fails = 0; sv.unloadedStreak = 0; sv.doneMask |= (1 << idx); sv.at = Date.now(); sv.wantAt = sv.at; if (sv.doneMask === 0xffff && sv.doneAt == null) sv.doneAt = sv.at; } // cyc2367 SURVEY-WANTAT-FREEZE-01: 進捗が wantAt 窓も供給する
+    else if (res === "partial") { sv.fails = 0; sv.unloadedStreak = 0; sv.at = Date.now(); sv.wantAt = sv.at; } // cyc2367 SURVEY-WANTAT-FREEZE-01 // B-prime: progress refreshes freshness only / cycle0628: 進捗で fails リセット (survey_broken.js の nextFails と同義。断片抽出ハーネスと両立させるため実行部は自己完結形で書く)
     else if (res === "error") { sv.fails++; if (sv.fails > 40) { sv.quarantinedUntil = Date.now() + 900000; sv.fails = 0; /* cycle0659: reset fails on quarantine */ try { surveyGlobalEvents = pruneGlobalErrorEvents([...surveyGlobalEvents, { key: surveyKeyOf(sv.dim, sv.rx, sv.rz), at: Date.now() }], Date.now()); if (shouldTripGlobalLatch(surveyGlobalEvents, Date.now())) { surveyLatch = tripSurveyLatch(surveyLatch, Date.now()); console.warn("[LIZE] chunk survey paused (failures spread across regions, cooldown recovery)"); } } catch {} } } // cycle0628: 単一区画の失敗では全体を止めず当該区画だけ15分隔離。全体停止は複数区画への拡散時のみ＋5分クールダウンで回復 (恒久ラッチ surveyBroken は廃止)
+    else if (res === "unloaded") { sv.unloadedStreak = (sv.unloadedStreak || 0) + 1; if (sv.unloadedStreak >= 32) { sv.unloadedUntil = Date.now() + 60000; sv.unloadedStreak = 0; } } // cyc2369 SURVEY-UNLOADED-NOEXIT-01: 失敗でも進捗でもないので fails には載せず、専用カウンタ32回(2巡)で60秒の一時除外にする
 // unloaded は次の tick に別のチャンクを試す (リゼが近づけば読み込まれる)
     break;
   }

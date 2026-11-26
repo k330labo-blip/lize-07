@@ -7,7 +7,8 @@ export function surveyEvictTier(sv, now, ttlMs = SURVEY_TTL_MS_EVICT) {
   const done = sv.doneMask === 0xffff && sv.doneAt != null;
   const fresh = typeof sv.at === "number" && now - sv.at < ttlMs;
   const hasHits = !!sv.hits && typeof sv.hits === "object" && Object.values(sv.hits).some((a) => Array.isArray(a) && a.length > 0);
-  if (!fresh && !done && !hasHits) return 0; // S3 (cycle2006敵対監査): ヒット持ちは陳腐でも真っ先に消さない
+  const progress = typeof sv.doneMask === "number" ? (sv.doneMask & 0xffff).toString(2).split("1").length - 1 : 0;
+  if (!fresh && !done && !hasHits && progress < 8) return 0; // S3 (cycle2006敵対監査): ヒット持ちは陳腐でも真っ先に消さない / cyc2369 SURVEY-EVICT-PROGRESS-01: 進捗1/2以上もヒット持ちと同格に保護する
   if (!done) return 1;
   return 2;
 }
