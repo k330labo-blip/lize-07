@@ -113,6 +113,7 @@ import { createMission, advance, missionSummary, withdrawKeyOf, STEP_TYPES } fro
 import { selectWithdrawCandidate, candKeyForFirstStep } from "./withdraw_candidate.js"; // Phase3 candKey B1 (v0.4.26): 候補選定・射影の純粋関数
 import { scanOpportunities, noteAttempt, pruneCooldowns } from "./side_tasks.js";
 import { createSideChase, chaseTick, sideChaseRangeFor } from "./side_chase.js"; // SIDE-COOLDOWN-CHASE (cycle1134): 接近保持と終端クールダウン
+import { gateCancel, gateFactory, isHowToRequest } from "./chat_gate.js"; // 0-C1 (cycle1155): 質問・否定・仮定・部分スコープでは中止/工場/指示を発火しない共通ゲート
 import { BLUEPRINTS, buildOrderOf, materialsSummaryOf, resolveMaterialItem } from "./blueprints.js";
 import { designFactory, GOAL_ALIASES } from "./factory_design.js";
 import { simulate } from "./factory_sim.js";
@@ -680,7 +681,7 @@ function buildContext(bot, owner) {
     for (let dx = -3; dx <= 3; dx++) for (let dy = -2; dy <= 2; dy++) for (let dz = -3; dz <= 3; dz++) {
       let b = null; try { b = dim.getBlock({ x: bx + dx, y: by + dy, z: bz + dz }); } catch {}
       if (!b) { pc.failedCells++; continue; } const tid = b.typeId; const dd = Math.hypot(dx, dy, dz);
-      if (tid.includes("_log") || tid.includes("_wood") || tid.includes("_stem")) { if (pc.tree < 0 || dd < pc.tree) pc.tree = dd; if (!forbT(tid) && !wbanned(b.location, tid) && (selD.tree < 0 || dd < selD.tree)) { selD.tree = dd; r.percTargets.tree = { x: b.location.x, y: b.location.y, z: b.location.z, typeId: tid }; } }
+      if (tid.includes("_log") || tid.includes("_wood") || (tid.endsWith("_stem") && /(crimson|warped)/.test(tid))) { if (pc.tree < 0 || dd < pc.tree) pc.tree = dd; if (!forbT(tid) && !wbanned(b.location, tid) && (selD.tree < 0 || dd < selD.tree)) { selD.tree = dd; r.percTargets.tree = { x: b.location.x, y: b.location.y, z: b.location.z, typeId: tid }; } }
       else if (tid.includes("_ore") || tid === "minecraft:ancient_debris") { if (VALUABLE_ORES.has(tid)) pc.oreValuable = true; if (pc.ore < 0 || dd < pc.ore) pc.ore = dd; if (!forbT(tid) && !wbanned(b.location, tid) && (selD.ore < 0 || dd < selD.ore)) { selD.ore = dd; r.percTargets.ore = { x: b.location.x, y: b.location.y, z: b.location.z, typeId: tid }; } }
       else if (NATURAL_STONE.has(tid)) { if (pc.stone < 0 || dd < pc.stone) pc.stone = dd; if (!forbT(tid) && !wbanned(b.location, tid) && (selD.stone < 0 || dd < selD.stone)) { selD.stone = dd; r.percTargets.stone = { x: b.location.x, y: b.location.y, z: b.location.z, typeId: tid }; } }
       else if (Object.prototype.hasOwnProperty.call(CROP_MATURITY_MAX, tid)) {
@@ -693,7 +694,7 @@ function buildContext(bot, owner) {
       if (tid === "minecraft:campfire" || tid === "minecraft:soul_campfire" || tid === "minecraft:lit_furnace" || tid === "minecraft:lit_blast_furnace" || tid === "minecraft:lit_smoker") pc.nearHeat = true; // cycle0740 WARMHANDS feeder: 点火中熱源のみ (分類1分岐・新規走査なし)
       if (/furnace|smoker/.test(tid)) { pc.nearFurnace = true; try { if (wm?.recordWorkstation) wm.recordWorkstation(b.location, dim.id, tid); } catch {} }
       if (tid.startsWith("orbital_foundry:")) pc.nearMachine = true;
-      if (tid.includes("bed")) { pc.nearBed = true; try { if (wm?.recordBed) wm.recordBed(b.location, dim.id); } catch {} }
+      if (tid.endsWith(":bed") || tid.endsWith("_bed")) { pc.nearBed = true; try { if (wm?.recordBed) wm.recordBed(b.location, dim.id); } catch {} }
       if (isContainerBlock(tid)) { try { if (wm?.recordContainer) wm.recordContainer(b.location, dim.id, { kind: tid, source: "scan", confidence: 0.9 }); } catch {} }
       if (tid === "minecraft:sculk_shrieker") pc.shrieker = true;
     }
@@ -999,10 +1000,11 @@ const dropOfWorkTarget = (typeId) => { try { const c = CROP_DROPS[typeId]; if (c
 const NATURAL_STONE = new Set(["minecraft:stone", "minecraft:deepslate", "minecraft:andesite", "minecraft:diorite", "minecraft:granite", "minecraft:tuff", "minecraft:calcite", "minecraft:cobblestone", "minecraft:mossy_cobblestone", "minecraft:netherrack", "minecraft:basalt", "minecraft:smooth_basalt", "minecraft:blackstone", "minecraft:end_stone"]);
 const VALUABLE_ORES = new Set(["minecraft:diamond_ore", "minecraft:deepslate_diamond_ore", "minecraft:emerald_ore", "minecraft:deepslate_emerald_ore", "minecraft:ancient_debris"]);
 const GATHER_TARGETS = { gather_wood: "tree", mine_ore: "ore", farm_crops: "crop", gather_stone: "stone" }; // 自律Goal→知覚スロットの汎用表（tickAutonomy）
-const ARTIFICIAL_HINTS = ["planks", "door", "glass", "chest", "bed", "furnace", "crafting_table", "bookshelf", "lantern", "sign", "ladder", "fence", "stairs", "slab", "wool", "carpet", "concrete", "terracotta", "brick", "anvil", "enchanting", "brewing", "shulker", "barrel", "tnt", "beacon", "hopper", "orbital_foundry:"]; // v0.4.76 a22 V6: barrel/tnt/beacon/hopper の欠落を是正 (データ追加)
+const ARTIFICIAL_HINTS = ["planks", "door", "glass", "chest", "furnace", "crafting_table", "bookshelf", "lantern", "sign", "ladder", "fence", "stairs", "slab", "wool", "carpet", "concrete", "terracotta", "brick", "anvil", "enchanting", "brewing", "shulker", "barrel", "tnt", "beacon", "hopper", "orbital_foundry:"]; // v0.4.76 a22 V6: barrel/tnt/beacon/hopper の欠落を是正 (データ追加) / 0-C6(b) cycle1155: "bed" の部分一致が minecraft:bedrock に一致する誤判定を是正し、ベッド判定は isArtificialId の末尾一致へ分離
+function isArtificialId(id) { try { if (typeof id !== "string") return false; if (id.endsWith(":bed") || id.endsWith("_bed")) return true; return ARTIFICIAL_HINTS.some((h) => id.includes(h)); } catch { return false; } }
 function structureGuard(dim, loc) {
   for (const [dx, dy, dz] of [[1,0,0],[-1,0,0],[0,0,1],[0,0,-1],[0,1,0],[0,-1,0]]) {
-    try { const b = dim.getBlock({ x: loc.x + dx, y: loc.y + dy, z: loc.z + dz }); if (b && ARTIFICIAL_HINTS.some((h) => b.typeId.includes(h))) return true; } catch {}
+    try { const b = dim.getBlock({ x: loc.x + dx, y: loc.y + dy, z: loc.z + dz }); if (b && isArtificialId(b.typeId)) return true; } catch {}
   }
   return false;
 }
@@ -1618,7 +1620,7 @@ function pathBlockDrop(id) {
 function canBreakForPath(bot, c, b) {
   const id = b.typeId;
   if (id === "minecraft:air" || b.isLiquid || id === "minecraft:bedrock" || id.includes("lava")) return false;
-  if (ARTIFICIAL_HINTS.some((h) => id.includes(h)) || isContainerBlock(id)) return false;
+  if (isArtificialId(id) || isContainerBlock(id)) return false;
   if (structureGuard(bot.dimension, c)) return false;
   if (requiredPickLevel(id) > bestPickLevel(bot)) return false;
   if (lavaNear(bot.dimension, c)) return false;
@@ -2566,7 +2568,7 @@ function ensureStation(bot, r, leg) {
     let cell = null; try { cell = dim.getBlock(c); } catch {}
     if (!cell || cell.typeId === "minecraft:air" || cell.isLiquid || cell.typeId === "minecraft:bedrock") continue;
     const id = cell.typeId;
-    if (/_ore$|ancient_debris/.test(id) || ARTIFICIAL_HINTS.some((h) => id.includes(h)) || isContainerBlock(id)) continue; // 鉱石・人工物・入れ物は壊さない
+    if (/_ore$|ancient_debris/.test(id) || isArtificialId(id) || isContainerBlock(id)) continue; // 鉱石・人工物・入れ物は壊さない
     if (requiredPickLevel(id) > bestPickLevel(bot) || lavaNear(dim, c)) continue;
     // cycle1832 GAP-4 (案B+): carve も掘削ゲートと構造物ガードを通す (従来は無検査で直接置換していた)
     if (structureGuard(dim, c)) continue;
@@ -3692,7 +3694,7 @@ function tickBuild(bot, owner, r, ctx) {
 }
 // ---------- 工場設計の提示 ----------
 function tryFactoryRequest(p, bot, r, rawText) {
-  if (!/自動化|ラインを組|ライン化/.test(rawText)) return false;
+  if (!gateFactory(rawText).fire) return false;
   let goalItem = null;
   try { const o = parseOrder(rawText); if (o?.target?.item) goalItem = o.target.item; } catch {}
   if (!goalItem) for (const [alias, id] of Object.entries(GOAL_ALIASES)) { if (rawText.includes(alias)) { goalItem = id; break; } }
@@ -4603,7 +4605,7 @@ function handleChatMessage(p, rawIn) {
 
   // ① ミッション操作コマンド（調停より優先）
   if (r.mission && r.mission.status === "active") {
-    if (/やめて|中止|キャンセル|止めて/.test(raw)) { system.run(() => { cancelMission(bot, p, r); try { conv.hear(raw, "mission_cancel"); } catch {} }); return; }
+    if (gateCancel(raw).fire) { system.run(() => { cancelMission(bot, p, r); try { conv.hear(raw, "mission_cancel"); } catch {} }); return; }
     if (/進捗|どうなってる|状況は/.test(raw)) {
       const s = missionSummary(r.mission); const cs = s?.currentStep;
       system.run(() => { say(p, bot, `進捗です。${nameOfItem(s.target)}${cs ? ` ${cs.have}/${cs.need}` : ""}。段階は ${s.stepsDone}/${s.stepsTotal} まで進んでいます`, true); try { conv.hear(raw, "mission_status"); } catch {} });
@@ -4640,7 +4642,7 @@ function handleChatMessage(p, rawIn) {
   // ③ 提案収集
   const proposals = [];
   let parsed = null; try { parsed = parseOrder(und?.normalized || raw); } catch {}
-  const ordProp = adaptOrder(parsed); if (ordProp) proposals.push(ordProp);
+  const ordProp = isHowToRequest(raw) ? null : adaptOrder(parsed); if (ordProp) proposals.push(ordProp);
   let latest = null; try { latest = detectLatestTopic(raw); } catch {}
   if (latest) {
     let line = null; try { line = pickHonestyLine(latest, r.usedHonesty || []); } catch {}

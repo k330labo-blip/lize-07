@@ -44,9 +44,9 @@ export function cellKey(loc) {
   return `${Math.floor(loc.x)},${Math.floor(loc.y)},${Math.floor(loc.z)}`;
 }
 
-/** startWork の最下段寄せ対象と同一条件か (原木/幹) */
+/** startWork の最下段寄せ対象と同一条件か (原木/幹)。0-C6(a) cycle1155: _stem の部分一致が melon_stem/pumpkin_stem を幹と誤認するため、正規の幹 (crimson/warped 系) のみに限定 */
 export function isTrunkType(typeId) {
-  return typeof typeId === "string" && (typeId.includes("_log") || typeId.includes("_stem"));
+  return typeof typeId === "string" && (typeId.includes("_log") || (typeId.endsWith("_stem") && /(crimson|warped)/.test(typeId)));
 }
 
 /** 幹キー: y を含めない "trunk:<typeId>@<x>,<z>" */
