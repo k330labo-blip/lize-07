@@ -69,6 +69,13 @@ export function restoreCaps(json) {
 
 // 狩猟の必要数を上限で clamp する。cap が無い場合は need をそのまま返す。
 export function clampHuntNeed(need, caps, targetId, verb = "hunt") {
+  return clampNeed(need, caps, targetId, verb);
+}
+
+// 0-C2 読み手 (cyc2043): verb 汎用の need clamp。採取 (gather) の上限も狩猟と同じ規約で効かせる
+// (従来は hunt だけが clamp され、「石炭を10個以上は集めないで」の上限が採取注文へ届かなかった)。
+// verb 一致の cap と verb 未指定の cap だけが対象 (capForTarget の規約)。cap が無ければ need をそのまま返す。
+export function clampNeed(need, caps, targetId, verb = null) {
   try {
     const n = typeof need === "number" && Number.isFinite(need) ? Math.max(1, Math.floor(need)) : 1;
     const cap = capForTarget(caps, targetId, verb);

@@ -36,7 +36,7 @@
 //     target?: 対象（座標/ステップ対象/探索サークル等）, reason?: string,
 //     step?: 現在ステップの type, missionStatus?: mission.status }
 
-import { normalizeCaps, clampHuntNeed } from "./cap_guard_math.js"; // 0-C2 読み手 (cycle1337): 上限の保持と狩猟 need の clamp
+import { normalizeCaps, clampHuntNeed, clampNeed } from "./cap_guard_math.js"; // 0-C2 読み手 (cycle1337): 上限の保持と狩猟 need の clamp / cyc2043: 採取 clamp
 
 export const STEP_TYPES = ["goto_area", "gather_block", "hunt_entity", "side_collect", "return", "deliver", "report"];
 export const MISSION_STATUS = ["active", "done", "failed", "suspended"];
@@ -128,7 +128,7 @@ export function createMission(order, sourcing = null) {
   const forbiddenEarly = Array.isArray(o.constraints?.forbiddenTargets) ? [...new Set(o.constraints.forbiddenTargets.filter((x) => typeof x === "string" && x).map(normForbiddenId))] : [];
   const isForbiddenId = (id) => typeof id === "string" && forbiddenEarly.includes(id);
   const capsNorm = normalizeCaps(o.constraints?.caps); // 0-C2 読み手 (cycle1337): 上限を mission 制約へ保持する (従来は生成時に脱落していた)
-  const amountEff = o.kind === "hunt" ? clampHuntNeed(num(o.amount, 1), capsNorm, o.target ?? null, "hunt") : Math.max(1, num(o.amount, 1));
+  const amountEff = o.kind === "hunt" ? clampHuntNeed(num(o.amount, 1), capsNorm, o.target ?? null, "hunt") : clampNeed(num(o.amount, 1), capsNorm, o.target ?? null, "gather"); // 0-C2 (cyc2043): 採取も上限で clamp
   const area = sourcing?.area || o.area || null;
   if (area) steps.push({ type: "goto_area", kind: "goto", target: area, need: 0, have: 0, base: null, status: "pending", searchStage: 0, searchObs: 0, stallObs: 0, lastHave: 0 });
   steps.push(stepFor({ ...o, amount: amountEff }, false));
