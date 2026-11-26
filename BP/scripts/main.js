@@ -56,6 +56,8 @@ import { createInspectAgg, recordInspectEval, summarizeInspectAgg, formatInspect
 import { stashWorkProgress, takeStashedLeft, clearStashFor } from "./work_stash_math.js"; // A06-03 (cycle0224): r.work 差替で失われる掘削進捗の退避/復元 (純粋核)
 import { createCombatEndState, noteCombatEnd, sampleCombatEnd } from "./combatend_math.js"; // POLISH-ANIM-COMBATEND-01 (cycle0224): 戦闘終了確定時の息継ぎ (表示層のみ・実機確認待ち)
 import { createYieldState, noteYield, sampleYield } from "./yield_math.js"; // POLISH-ANIM-YIELD-01 (cycle0153): 狭い通路での半歩の譲り (表示層のみ・実機確認待ち) // POLISH-ANIM-ROUTECHECK-01 (cycle0117): 長距離移動中の進路確認 (表示層のみ・実機確認待ち) // POLISH-ANIM-FALLLAND-01 (cycle0057): 落下ポーズ+着地クッション (表示層のみ・実機確認待ち)
+import { extractItemData, applyItemData, normalizeSavedInv } from "./inv_item_data.js"; // 0-C3 (cycle1238): 回収・再召喚で荷物の個別情報 (名前/エンチャント/消耗) を保持する
+import { applyRecallcheckPitch, isRecallcheckActive, shouldRecallcheck } from "./recallcheck_math.js"; // POLISH-ANIM-RECALLCHECK-01 (cycle1238)
 import { createHeedState, noteHeed as noteHeedState, sampleHeed } from "./heed_math.js";
 import { createThresholdState, noteThreshold as noteThresholdState, sampleThreshold } from "./threshold_math.js"; // POLISH-ANIM-THRESHOLD-01 (cycle1503): くぐり視線 (表示層のみ・実機確認待ち)
 import { createEdgepeekState, noteEdgepeek as noteEdgepeekState, sampleEdgepeek } from "./edgepeek_math.js";
@@ -3974,6 +3976,7 @@ function applyGaze(bot, owner, ctx, scan) {
     // POLISH-ANIM-INSPECT-01 (cycle1003): 検分中はピッチへ見下ろしオフセットを重畳する (消費点はここ1箇所)
     if (rot && isInspectActive(r.inspectAnimAt, Date.now())) rot = { ...rot, x: applyInspectPitch(rot.x, Date.now() - r.inspectAnimAt) };
     if (rot && isNodActive(r.nodAnimAt, Date.now())) rot = { ...rot, x: applyNodPitch(rot.x, Date.now() - r.nodAnimAt) };
+    if (rot && isRecallcheckActive(r.recallcheckAnimAt, Date.now())) rot = { ...rot, x: applyRecallcheckPitch(rot.x, Date.now() - r.recallcheckAnimAt) }; // POLISH-ANIM-RECALLCHECK-01 (cycle1238): 再召喚で荷物が戻った直後の手元確認 (表示層のみ・実機確認待ち)
     // POLISH-ANIM-SETTLE-01 feeder (cycle2058): lastAction の BREAK 成功 (seq変化) の辺でのみ発火記録 (表示層のみ・実機確認待ち)
     try { const la = r.lastAction; if (la && la.act === "BREAK" && la.ok && la.seq !== r.settleSeenSeq) { r.settleSeenSeq = la.seq; if (shouldSettle({ broke: true, suppressed: ((ctx?.danger?.count ?? 0) > 0) || r.selfFalling === true || !!bot.isInWater, lastFiredMs: r.settleLastAt ?? null, nowMs: Date.now() })) { r.settleAnimAt = la.at || Date.now(); r.settleLastAt = r.settleAnimAt; r.lastSettle = { at: r.settleAnimAt, item: la.item || null }; } } } catch {}
     if (rot && isSettleActive(r.settleAnimAt, Date.now())) rot = { ...rot, x: applySettlePitch(rot.x, Date.now() - r.settleAnimAt) }; // POLISH-ANIM-SETTLE-01 (cycle2058): 重畳 (表示層のみ・実機確認待ち)
@@ -4228,7 +4231,7 @@ world.afterEvents.itemUse.subscribe((ev) => {
     try {
       const saved = JSON.parse(wdp(`cb_savedinv:${p.id}`, "[]"));
       const cont = invOf(bot);
-      if (cont && saved.length) { for (const s of saved) { try { cont.addItem(new ItemStack(s.t, s.a)); } catch {} } wdps(`cb_savedinv:${p.id}`, "[]"); }
+      if (cont && saved.length) { const norm = normalizeSavedInv(saved); for (const s of norm) { try { const st = new ItemStack(s.t, s.a); applyItemData(st, s); cont.addItem(st); } catch {} } wdps(`cb_savedinv:${p.id}`, "[]"); try { const rr = rt(bot); if (shouldRecallcheck({ restoredCount: norm.length, lastFiredMs: rr.recallcheckLastAt ?? null, nowMs: Date.now() })) { rr.recallcheckAnimAt = Date.now(); rr.recallcheckLastAt = rr.recallcheckAnimAt; } } catch {} }
     } catch {}
     // 装備の復元: 退避しておいた装備状態を新個体の cb_equip へ渡し、初回の equipCoreOf で restore() させる
     try {
@@ -4256,7 +4259,7 @@ function resetPlaceState(bot, r) {
 }
 function serializeInv(bot) {
   const cont = invOf(bot); const out = [];
-  if (cont) for (let i = 0; i < cont.size; i++) { const it = cont.getItem(i); if (it) out.push({ t: it.typeId, a: it.amount }); }
+  if (cont) for (let i = 0; i < cont.size; i++) { const it = cont.getItem(i); if (it) { const rec = extractItemData(it); if (rec) out.push(rec); } }
   return out;
 }
 
