@@ -48,7 +48,7 @@
 export const SURVEY_FAIL_LIMIT = 40; // current threshold: fails > 40 (main.js:2104)
 export const SURVEY_BROKEN_COOLDOWN_MS = 5 * 60 * 1000; // REPORT §5-2 example: 5 min
 export const SURVEY_RECORD_QUARANTINE_MS = 15 * 60 * 1000; // = SURVEY_TTL_MS: re-request ban for a cut-off record
-export const SURVEY_GLOBAL_WINDOW_MS = 60 * 1000; // "short time" window for §5-1 global trip
+export const SURVEY_GLOBAL_WINDOW_MS = 900 * 1000; // cycle0955 SURVEY-GLOBAL-WINDOW-STAGGER: 60秒窓では間隔30秒以上の拡散で窓内最大2件となり全体停止が構造的に発動しなかった。隔離期間 (15分) と同値へ広げる
 export const SURVEY_GLOBAL_MIN_REGIONS = 3; // distinct records required to trip the global latch
 
 const isFiniteNum = (v) => typeof v === "number" && Number.isFinite(v);

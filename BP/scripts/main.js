@@ -151,11 +151,12 @@ const dps = (e, k, v) => { try { e.setDynamicProperty(k, v); } catch (err) { not
 // 失敗の可視化（v0.4.1）: 握り潰す代わりに記録する。本人の文脈（c.x.lastFail）と状態表示に戻し、
 // 開発中は [LIZE DEBUG] ログも残す（同じ失敗は初回3回＋20回ごとだけ出してログを埋めない）。
 const failStats = { total: 0, byWhere: {} };
+// cycle0955 (Phase4): fail 文脈 snap 受け渡し (記録のみ、x は材料が無いため null のまま)
 function noteFail(bot, where, err, opts) {
   failStats.total++; failStats.byWhere[where] = (failStats.byWhere[where] || 0) + 1;
   const msg = err && err.message ? String(err.message).slice(0, 120) : String(err || "");
   const r = bot ? bots.get(bot.id) : null;
-  if (r) { r.failCount = (r.failCount || 0) + 1; r.lastFail = { where, msg, at: Date.now() }; (r.failLog = r.failLog || []).push(r.lastFail); if (r.failLog.length > 20) r.failLog.shift(); try { r.trace?.recordFail({ where, msg }); } catch {} try { if (r.failAgg) recordNote(r.failAgg, where, msg, Date.now()); } catch {} try { if (r.expStore && !opts?.expDone) { const er = buildExpFromNoteFail(where, msg, { at: Date.now(), pack: VERSION }); if (er) addExpRecord(r.expStore, er); } } catch {} } // 6-ML: fail軸の記録 (内部キーはモジュール側で落ちる)
+  if (r) { r.failCount = (r.failCount || 0) + 1; r.lastFail = { where, msg, at: Date.now() }; (r.failLog = r.failLog || []).push(r.lastFail); if (r.failLog.length > 20) r.failLog.shift(); try { r.trace?.recordFail({ where, msg }, { g: r.goal ?? null, p: mapPlanEvent(r.lastPlan, r.lastGoal)?.p ?? null, a: r.lastAction?.act ?? null }); } catch {} try { if (r.failAgg) recordNote(r.failAgg, where, msg, Date.now()); } catch {} try { if (r.expStore && !opts?.expDone) { const er = buildExpFromNoteFail(where, msg, { at: Date.now(), pack: VERSION }); if (er) addExpRecord(r.expStore, er); } } catch {} } // 6-ML: fail軸の記録 (内部キーはモジュール側で落ちる)
   if (LIZE_DEBUG) { const n = failStats.byWhere[where]; if (n <= 3 || n % 20 === 0) console.warn(`[LIZE DEBUG] v${VERSION} ${where} failed (${n}): ${msg}`); }
 }
 // Phase2 BTS記録 (v0.4.7): BREAK/TAKE/STORE の結果を契約形で r.last* へ記録する (記録のみ、挙動不変)。
@@ -2244,6 +2245,8 @@ function isUnderground(bot, loc) {
   } catch { return false; }
 }
 function shouldTunnel(bot, r, loc) {
+  // H0900-T1 (cycle0955): 地表作物は tunnel 適格外 (work 経路固定)。継続判定より先に置き、誤発動した tunnel も作物対象では継続しない
+  try { const tb = bot.dimension.getBlock(loc); if (tb && isCropBlock(tb.typeId)) return false; } catch {}
   const eye = { x: bot.location.x, y: bot.location.y + 1.6, z: bot.location.z };
   if (dist(eye, { x: loc.x + 0.5, y: loc.y + 0.5, z: loc.z + 0.5 }) <= WORK_REACH) return false; // 手が届くなら普通に掘る
   if (r.tunnel && r.tunnel.key === `${loc.x},${loc.y},${loc.z}`) return true;                       // 掘り始めたら続ける
