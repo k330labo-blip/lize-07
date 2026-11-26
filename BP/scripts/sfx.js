@@ -36,6 +36,7 @@ export const SFX_TABLE = Object.freeze({
   vines:          { hit: "hit.grass",  break: "dig.vines",          step: "step.grass" },        // POLISH-SND-TIER3-VINES (cycle1322): hit/step は grass 代用
   coral:          { hit: "hit.stone",  break: "dig.coral",          step: "step.stone" },        // POLISH-SND-TIER3-CORAL (cycle1322): hit/step は stone 代用
   amethyst:       { hit: "hit.amethyst_block", break: "dig.amethyst_block", step: "step.amethyst_block" }, // POLISH-SND-AMETHYST-01 (cycle0606, a10監査で専用ID確認済み): アメジスト系が stone へ落ちていた誤分類の是正
+  shroomlight:    { hit: "hit.stone",  break: "dig.shroomlight",    step: "step.stone" },        // POLISH-SND-CLASS-A4 (cycle0936): break のみ専用ID確認済み、hit/step は stone 流用
 });
 
 // §1.2 で実在確認済みの ID (この表が参照する分 + 汎用分)
@@ -46,6 +47,7 @@ export const CONFIRMED_IDS = new Set([
   "dig.copper", "dig.netherite", "step.netherite", "dig.netherrack", "dig.nether_brick", "dig.nether_gold_ore",
   "dig.nylium", "dig.soul_sand", "dig.soul_soil", "dig.vines", "dig.coral",
   "hit.amethyst_block", "dig.amethyst_block", "step.amethyst_block", // cycle0606 a10: 専用ID確認済み
+  "dig.shroomlight", // cycle0936 a08: 専用ID確認済み (break のみ)
   "step.grass", "step.sand", "step.gravel", "step.cloth", "step.wood",
   "step.nether_wood", "step.stone", "step.netherrack", "step.nether_brick",
   "step.nether_gold_ore", "step.nylium", "step.iron",
@@ -172,6 +174,7 @@ export function materialOfTypeId(typeId) {
   if (id.includes("vines")) return "vines";                               // 11c (cycle1322): 複数形のみ。単数 vine は grass のまま (PLANT 側に "vines" を含む ID は無い)
   if (id.includes("coral")) return "coral";                               // 11d (cycle1322): 生死・形状の全数形を拾う (copper の後・既定の前)
   if (AMETHYST_IDS.has(id)) return "amethyst"; // cycle0606: 専用カテゴリ (stone 既定より前)
+  if (id === "shroomlight") return "shroomlight"; // cycle0936: 完全一致のみ (froglight 4形は巻き込まない)
   if (id === "deepslate_copper_ore") return "deepslate"; // cycle2117: 母岩優先 (深層岩鉱石は母岩が正、copper includes より前)
   if (id.includes("copper") || id.includes("lightning_rod")) return "copper"; // 11 (+a11 避雷針は銅)
   if (id.includes("deepslate")) return "deepslate";                       // 12: 深層岩鉱石は母岩優先

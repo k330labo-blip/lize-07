@@ -486,7 +486,7 @@ export const NEGATION_PATTERNS = [
   { kind: "correction",  markers: ["じゃなくて", "ではなくて", "じゃなく", "ではなく", "でなく", "じゃなし", "じゃない"] },
   { kind: "prohibition", markers: ["ないで"] },
   { kind: "exclusion",   markers: ["以外"] },
-  { kind: "unwanted",    markers: ["要らない", "いらない", "欲しくない", "不要"] },
+  { kind: "unwanted",    markers: ["要らない", "いらない", "欲しくない", "不要", "なくてもいい", "なくてもよい", "なくていい", "なくてよい", "無くてもいい", "無くてもよい", "無くていい", "無くてよい"] },
 ];
 
 // Detection kind -> order_parser kind (§2.2). Exported for the §2.2 cycle so
@@ -507,6 +507,9 @@ const CONSTRAINT_PREFIX = /戦わ$/;
 // Weak-affirmation frames: Xわけじゃない / Xこともない / Xなくはない — the
 // じゃない there negates the frame, not the preceding mention.
 const WEAK_AFFIRM_PREFIX = /(わけ|ことも|なくは)$/;
+// N-1 (cycle0936): 「少なくていい」等の量表現は免除ではない。なくて/無くて 系マーカーの
+// 直前が「少」の場合は占有だけして発火させない (order_parser 側の gap ゲートと対)。
+const DISPENSATION_PREFIX = /少$/;
 
 function detectNegations(normalized) {
   const s = String(normalized ?? "");
@@ -524,6 +527,7 @@ function detectNegations(normalized) {
     // Sentence-final じゃない with no following clause — confirmation.
     if (marker === "じゃない" && mEnd >= s.length) { blocked(); return; }
     if (WEAK_AFFIRM_PREFIX.test(s.slice(Math.max(0, mStart - 4), mStart))) { blocked(); return; }
+    if (/^(なくて|無くて)/.test(marker) && DISPENSATION_PREFIX.test(s.slice(Math.max(0, mStart - 1), mStart))) { blocked(); return; }
     taken.push([mStart, mEnd]);
     const start = clauseStart(mStart);
     out.push({ kind, text: s.slice(start, mEnd), span: [start, mEnd] });

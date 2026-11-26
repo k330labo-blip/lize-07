@@ -68,6 +68,7 @@ import { createWorkBanState, recordWorkBan, isWorkBanned, pruneWorkBans } from "
 import { createOreSpotState, noteOreSpot, sampleOreSpot } from "./orespot_math.js"; // POLISH-ANIM-ORESPOT-01 (cycle0832): 貴重鉱石への二度見 (表示層のみ・実機確認待ち)
 import { createHomesightState, noteHomesight, sampleHomesight } from "./homesight_math.js"; // POLISH-ANIM-HOMESIGHT-01 (cycle0900): 拠点が見える距離まで帰ってきたときの小さな頷き (表示層のみ・実機確認待ち)
 import { createSleepwatchState, noteSleepwatch, sampleSleepwatch, sleepwatchYawPullDeg } from "./sleepwatch_math.js"; // POLISH-ANIM-SLEEPWATCH-01 (cycle0910): 主人が眠り始めた瞬間に一度だけ頭を向け直す見守り視線 (表示層のみ・実機確認待ち)
+import { createMountglanceState, noteMountglance, sampleMountglance, mountglanceYawPullDeg } from "./mountglance_math.js"; // POLISH-ANIM-MOUNTGLANCE-01 (cycle0936): 主人が乗り物に跨った瞬間に一度だけ頭を向け直す出発の見届け視線 (表示層のみ・実機確認待ち)
 import { createWorkglanceState, noteWorkglance, sampleWorkglance } from "./workglance_math.js"; // POLISH-ANIM-WORKGLANCE-01 (cycle1728, v0.5.19)
 import { createCatchsightState, noteCatchsight, sampleCatchsight } from "./catchsight_math.js";
 import { createRainShelterState, noteRainShelter, sampleRainShelter } from "./rainshelter_math.js"; // POLISH-ANIM-RAINSHELTER-01 (cycle2231): 持続雨の待機中に屋根方向へ視線を寄せる (表示層のみ・実機確認待ち) // POLISH-ANIM-CATCHSIGHT-01 (cycle2200): 主人が投げた物の追視 (表示層のみ・実機確認待ち)
@@ -714,6 +715,7 @@ function buildContext(bot, owner) {
     try { if (r.torchDone && Date.now() - r.torchDone.at < 10 * 60 * 1000 && r.torchDone.dim === bot.dimension.id) { c.x.torchDoneAt = r.torchDone.at; c.x.torchDoneCell = r.torchDone.cell; } } catch {}
   }
   try { c.x.ownerFlying = !!owner.isFlying; c.x.ownerRiding = !!owner.getComponent("minecraft:riding"); } catch {}
+  noteMountglanceTick(bot, r, c); // POLISH-ANIM-MOUNTGLANCE-01 (cycle0936): ownerRiding はこの行で初めて立つため、feeder は必ずここ (設定直後) で呼ぶ。前に置くと毎回 undefined で永遠に発火しない (SLEEPWATCH と同型の教訓)
   c.x.fastMove = c.owner.sprinting || c.x.ownerFlying;
   // --- 主人の落下知覚 (BASICS-02-Rest Step B): ownerRt に空中区間の最高点 fallPeakY と次元 fallDim を保持し、落下距離を供給する。次元は owner.dimension.id (生id) で持つ (c.x.dimension はリゼ自身の変換済み値で別物)。例外時は両フィールドとも未設定=UNKNOWN で状態も進めない ---
   try {
@@ -1140,6 +1142,18 @@ function tickWork(bot, owner, r, ctx) {
     const cg = cropBreakGate(w.typeId, g);
     if (cg && !cg.ok) {
       r.lastBreak = { act: "BREAK", ok: false, reason: cg.reason, item: w.typeId, at: Date.now() }; commitLastAction(r, r.lastBreak);
+      if (r.mTargetLoc && r.mTargetLoc.x === w.loc.x && r.mTargetLoc.y === w.loc.y && r.mTargetLoc.z === w.loc.z) r.mTargetLoc = null;
+      r.work = null; return false;
+    }
+  }
+  // forbids 実行直前ゲート B案 (cycle0936, G6-a 部分解消): 上流を経ない経路・作業開始後に
+  // 記録された禁止・mission 開始時スナップショットに無い禁止を、掘進直前で fail-closed に塞ぐ。
+  // 照合は純粋核 isForbiddenWorkTarget (gather 意味論)。呼び出し側の例外は blocked=true へ倒す。
+  {
+    let fbBlocked = false;
+    try { fbBlocked = isForbiddenWorkTarget(r.sessionForbids, w.typeId, dropOfWorkTarget) === true; } catch { fbBlocked = true; }
+    if (fbBlocked) {
+      r.lastBreak = { act: "BREAK", ok: false, reason: "FORBIDDEN", item: w.typeId, at: Date.now() }; commitLastAction(r, r.lastBreak);
       if (r.mTargetLoc && r.mTargetLoc.x === w.loc.x && r.mTargetLoc.y === w.loc.y && r.mTargetLoc.z === w.loc.z) r.mTargetLoc = null;
       r.work = null; return false;
     }
@@ -3873,6 +3887,19 @@ function noteSleepwatchTick(bot, r, c) {
     if (out?.fired) r.lastSleepWatch = { at: Date.now(), dist: typeof d === "number" ? d : null };
   } catch {}
 }
+// POLISH-ANIM-MOUNTGLANCE-01 (cycle0936): feeder は既存観測 (c.x.ownerRiding / c.self.distOwner / c.owner.dimensionSame) だけを使い新規走査なし。
+function noteMountglanceTick(bot, r, c) {
+  try {
+    if (!bot || !r) return;
+    if (!r.mountglanceState) r.mountglanceState = createMountglanceState();
+    let inWater = false; try { inWater = !!bot.isInWater; } catch {}
+    const suppressed = !!((c?.danger?.count ?? 0) > 0) || r.selfFalling === true || inWater || !!r.work;
+    const d = c?.self?.distOwner;
+    const out = noteMountglance(r.mountglanceState, { nowMs: Date.now(), ownerRiding: c?.x?.ownerRiding === true, ownerDist: typeof d === "number" && Number.isFinite(d) && d < 900 ? d : null, sameDimension: c?.owner?.dimensionSame === true, suppressed });
+    r.mountglanceState = out.state;
+    if (out?.fired) r.lastMountGlance = { at: Date.now(), dist: typeof d === "number" ? d : null };
+  } catch {}
+}
 // POLISH-ANIM-HOMESIGHT-01 (cycle0900): feeder は既存 ctx.home (dist/registered/dimensionSame) だけを使い新規走査なし
 function noteHomesightTick(bot, r, c) {
   try {
@@ -3976,6 +4003,7 @@ function applyGaze(bot, owner, ctx, scan) {
     if (rot && r.orespotState) { try { const os2 = sampleOreSpot(r.orespotState, Date.now()); if (os2.active) rot = { ...rot, y: rot.y + os2.yawDeg, x: rot.x + os2.pitchDeg }; } catch {} } // POLISH-ANIM-ORESPOT-01 (cycle0832): 重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot && r.homesightState) { try { const hs2 = sampleHomesight(r.homesightState, Date.now()); if (hs2.active) rot = { ...rot, x: rot.x + hs2.pitchDeg }; } catch {} } // POLISH-ANIM-HOMESIGHT-01 (cycle0900): 重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot && r.sleepwatchState) { try { const sw2 = sampleSleepwatch(r.sleepwatchState, Date.now()); if (sw2.active) { let yawPull = 0; try { if (owner) { const gr = gazeRotation(bot.location, { x: owner.location.x, y: owner.location.y + 1.4, z: owner.location.z }); yawPull = sleepwatchYawPullDeg(rot.y, gr?.y); } } catch {} rot = { ...rot, y: rot.y + yawPull, x: rot.x + sw2.pitchDeg }; } } catch {} } // POLISH-ANIM-SLEEPWATCH-01 (cycle0910): 重畳の最下位 (表示層のみ・実機確認待ち。体は回さない)
+    if (rot && r.mountglanceState) { try { const mg2 = sampleMountglance(r.mountglanceState, Date.now()); if (mg2.active) { let yawPull = 0; try { if (owner) { const gr = gazeRotation(bot.location, { x: owner.location.x, y: owner.location.y + 1.4, z: owner.location.z }); yawPull = mountglanceYawPullDeg(rot.y, gr?.y); } } catch {} rot = { ...rot, y: rot.y + yawPull, x: rot.x + mg2.pitchDeg }; } } catch {} } // POLISH-ANIM-MOUNTGLANCE-01 (cycle0936): 重畳の最下位 (表示層のみ・実機確認待ち。体は回さない)
     if (rot) { try { bot.setRotation(rot); } catch {} }
   }
   if (gz.say && Math.random() < 0.4) sayAmbient(owner, bot, gz.say);

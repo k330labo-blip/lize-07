@@ -43,7 +43,7 @@ const MATERIAL_DEFS = [
   ["glowstone", "block", "グロウストーン", ["グロウストーン"]],
   ["glowstone_dust", "item", "グロウストーンダスト", ["グロウストーンダスト"]],
   // 木材
-  ["log", "block", "原木", ["原木"]],
+  ["log", "block", "原木", ["原木", "木"]],
   ["oak_log", "block", "オークの原木", ["オークの原木", "オーク原木"]],
   ["spruce_log", "block", "トウヒの原木", ["トウヒの原木", "トウヒ原木"]],
   ["birch_log", "block", "シラカバの原木", ["シラカバの原木", "シラカバ原木"]],
@@ -99,6 +99,7 @@ const MATERIAL_DEFS = [
   ["paper", "item", "紙", ["紙"]],
   ["book", "item", "本", ["本"]],
   ["sugar_cane", "block", "サトウキビ", ["サトウキビ"]],
+  ["short_grass", "block", "草", ["草", "雑草"]],
   ["bamboo", "block", "竹", ["竹"]],
   ["kelp", "item", "昆布", ["昆布"]],
   ["sponge", "block", "スポンジ", ["スポンジ", "海綿"]],
@@ -376,6 +377,9 @@ correctionMarkers: ["じゃなくて", "ではなく", "じゃなく", "じゃ�
 exclusionMarker: "以外",
 unwantedMarkers: ["要らない", "いらない", "不要", "欲しくない"],
 deliverNegationRe: /持って(?:こないで|くるな|来ないで)/,
+// N-1 (cycle0936): 免除・不要形「〜なくて(も)いい/よい」。意味は N5 unwanted と同族で、
+// 産出は N5 と同じ pendingUnwanted 経路へ合流させる。形態素形としての汎用パターン。
+dispensationRe: /なくて(?:も)?(?:いい|よい)(?:です)?/g,
 referenceWords: ["それ", "これ", "あれ"],
 });
 
@@ -494,7 +498,37 @@ return hits;
 } catch { return null; }
 }
 
-function extractNegations(clauses, hitsPerClause) {
+// N-1 (cycle0936): 免除形の gap ゲート (N5 の n5GapOk に対応)。対象 hit とマーカーの間は
+// 助詞・数量・動詞句 (未然形) だけで構成される場合のみ免除と認める。量表現 (「は少」等) は
+// 動詞句として成立しないため落ちる。語幹が取れなければ verb:null で対象だけ隔離する。
+function dispensationRestVerb(rest) {
+  if (rest === "") return { ok: true, verb: null };
+  if (rest === "要ら" || rest === "無") return { ok: true, verb: null };
+  if (/^持って(?:こ|来)$/.test(rest) || /^持ってき$/.test(rest)) return { ok: true, verb: "deliver" };
+  for (const [cls, stems] of VERB_STEMS) {
+    for (const stem of stems) {
+      const forms = [stem];
+      if (stem.length > 1 && /[\u4e00-\u9fff]/.test(stem[0])) forms.push(stem[0]);
+      for (const form of forms) {
+        const i = rest.indexOf(form);
+        if (i >= 0 && /(?:ら|え|か|さ|た|ま|わ|い|き|し|せ|れ|め|げ|べ|ぺ)$/.test(rest)) return { ok: true, verb: cls };
+      }
+    }
+  }
+  return { ok: false, verb: null };
+}
+function dispensationGapVerb(text, hit, markerIdx) {
+  try {
+    const gap = text.slice(hit.end, markerIdx);
+    const rest = gap
+      .replace(/^(?:は|が|を|も)/, "")
+      .replace(/^(?:(?:\d+|[一二三四五六七八九十]+)\s*(?:個|本|枚|つ|体|匹|スタック|組|セット|箱)|半スタック)/, "")
+      .replace(/^(?:は|が|を|も)/, "");
+    return dispensationRestVerb(rest);
+  } catch { return { ok: false, verb: null }; }
+}
+
+function extractNegations(clauses, hitsPerClause, opts = {}) {
 const negations = [];
 const quarantinedHits = new Set();
 const unresolved = [];
@@ -593,6 +627,37 @@ for (const ch of carriedHits[ci] ?? []) { if (done.has(ch)) continue; if (isGene
 const restB2 = (text.slice(0, idx) + text.slice(idx + marker.length)).trim();
 if (/^(?:どちらも|どちら|全部|全員|みんな|は|が|も)*$/.test(restB2)) {
 for (const ch of carriedHits[ci]) { if (done.has(ch)) continue; if (isGenericHostile(ch)) hostileNegated = true; const neg = pushNeg("not", ch, null, marker); pendingUnwanted.push({ neg, hit: ch}); }
+}
+}
+}
+}
+
+// N7 免除 (N-1, cycle0936): M + [助詞/数量/動詞句] + なくて(も)いい/よい。
+// 意味は N5 不要と同族: 正対象があれば not、無ければ pendingUnwanted 経由で forbid へ昇格。
+// 義務形 (なくてはならない等) は dispensationRe が元々一致しない (なくての直後に いい/よい を要求)。
+if (!/なくては(?:いけない|ならない)/.test(text)) {
+NEGATION_PATTERNS.dispensationRe.lastIndex = 0;
+let dm;
+while ((dm = NEGATION_PATTERNS.dispensationRe.exec(text)) !== null) {
+const idx = dm.index;
+const marker = dm[0].replace(/です$/, "");
+// 質問ガード: 疑問符つき文で節末がマーカーで終わる場合は許可確認の質問として扱い発動しない
+if (opts?.hasQuestionMark && text.slice(idx + dm[0].length).trim() === "") continue;
+const hit = nearestHitBefore(hits.filter((h) =>!done.has(h)), idx);
+if (hit) {
+const gate = dispensationGapVerb(text, hit, idx);
+if (!gate.ok) continue;
+for (const ch of parallelChainBefore(hits.filter((h) =>!done.has(h)), hit, text)) {
+if (isGenericHostile(ch)) hostileNegated = true;
+const neg = pushNeg("not", ch, gate.verb, marker);
+pendingUnwanted.push({ neg, hit: ch});
+}
+for (const ch of carriedHits[ci] ?? []) { if (done.has(ch)) continue; if (isGenericHostile(ch)) hostileNegated = true; const neg = pushNeg("not", ch, gate.verb, marker); pendingUnwanted.push({ neg, hit: ch}); }
+} else if ((carriedHits[ci] ?? []).length > 0 && hits.filter((h) =>!done.has(h)).length === 0) {
+// 単位B 亜型: 「鉄と銅は、掘らなくていい」のように動詞句だけの節は運ばれた hit をアンカーにする
+const gate = dispensationRestVerb(text.slice(0, idx).trim());
+if (gate.ok) {
+for (const ch of carriedHits[ci]) { if (done.has(ch)) continue; if (isGenericHostile(ch)) hostileNegated = true; const neg = pushNeg("not", ch, gate.verb, marker); pendingUnwanted.push({ neg, hit: ch}); }
 }
 }
 }
@@ -743,7 +808,7 @@ export function parseOrder(input) {
   // Phase 5: 否定抽出を候補決定の前に置く（手順3）。失敗時は否定なしで従来経路へ。
   const hitsPerClause = clauses.map((c) => scanMentions(c, [MATERIAL_INDEX, ENTITY_INDEX, STRUCTURE_INDEX]));
   let negResult = { negations: [], quarantinedHits: new Set(), hostileNegated: false, unresolved: [] };
-  try { negResult = extractNegations(clauses, hitsPerClause); } catch { /* 否定なしとして継続 */ }
+  try { negResult = extractNegations(clauses, hitsPerClause, { hasQuestionMark }); } catch { /* 否定なしとして継続 */ }
   const negations = negResult.negations || [];
   const unresolved = [...(negResult.unresolved || [])];
   if (negResult.hostileNegated && constraints.hostiles === "default") constraints.hostiles = "ignore";
