@@ -66,6 +66,23 @@ export function unionForbiddenIds(ltIds, forbids, kind = "gather") {
   } catch { return []; }
 }
 
+// --- cycle1604: release (0-C2). Remove only records matching target (+verb when
+// given; verb omitted removes every verb for that target). Input is not mutated;
+// `removed` lets the caller report exactly what was lifted. ---
+export function removeSessionForbids(list, targetId, verb = undefined) {
+  try {
+    const cur = sanitizeForbids(list);
+    const t = normForbiddenId(targetId);
+    if (typeof t !== "string" || !t) return { list: cur, removed: [] };
+    const removed = [], kept = [];
+    for (const f of cur) {
+      const hit = f.target === t && (verb === undefined || f.verb === verb);
+      (hit ? removed : kept).push(f);
+    }
+    return { list: kept, removed };
+  } catch { return { list: [], removed: [] }; }
+}
+
 // --- forbids G6-c (cycle0628): 自律作業対象の禁止照合 (B案・純粋核) ---
 function dropCandidatesG6c(dropOf, typeId) {
   if (typeof dropOf !== "function") return [];

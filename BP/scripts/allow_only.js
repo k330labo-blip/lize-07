@@ -38,3 +38,29 @@ export function isAllowedByAllowOnly(allowOnly, targetId, verb = null) {
 export function allowOnlyBlocks(allowOnly, targetId, verb = null) {
   try { return !isAllowedByAllowOnly(allowOnly, targetId, verb); } catch { return false; }
 }
+// --- cycle1604: persistence + release (0-C2). Persistence and release ship together:
+// a restriction that survives respawn must always be removable by the owner. ---
+// Serialize via normalizeAllowOnly as the single source of truth; verb:null is
+// preserved verbatim (null means "all verbs" on the reader side).
+export function serializeAllowOnly(a) {
+  try { const n = normalizeAllowOnly(a); return n ? JSON.stringify(n) : ""; } catch { return ""; }
+}
+export function restoreAllowOnly(json) {
+  try {
+    if (!json || typeof json !== "string") return null;
+    return normalizeAllowOnly(JSON.parse(json)); // broken/shape-mismatched => null (no restriction)
+  } catch { return null; }
+}
+// Release: no targetId => clear all. With a target, clear only on a normalized
+// match and no verb conflict (same verb rule as isAllowedByAllowOnly).
+export function clearAllowOnly(a, targetId = null, verb = null) {
+  try {
+    const n = normalizeAllowOnly(a);
+    if (!n) return null;
+    if (targetId == null) return null;
+    const t = normAllowId(targetId);
+    if (!t || t !== n.target) return n;
+    if (n.verb != null && verb != null && n.verb !== verb) return n;
+    return null;
+  } catch { return null; }
+}

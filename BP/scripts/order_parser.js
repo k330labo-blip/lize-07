@@ -884,6 +884,24 @@ export function parseOrder(input) {
 
   const constraints = { hostiles: "default" };
 
+  // 0-C2 release (cycle1604): 制限の解除は否定処理より前に分離する (否定経路へ流すと
+  // 再び禁止として記録されてしまう)。質問形・仮定形では発火しない (0-C1 ゲートと同方針)。
+  try {
+    const releaseGuarded = /[？?]/.test(text) || /^(もし|仮に)/.test(text) || /(したら|と言ったら|言えば|なら)/.test(text) || /(少なく|少し|ちょっと)/.test(text);
+    if (!releaseGuarded) {
+      if (/(もう)?(何でも|なんでも)(いい|よい|構わない)/.test(text) || /制限(を|は)?(なし|無し|解除)/.test(text)) {
+        return { kind: "unforbid", target: null, amount: null, constraints, sideTasks: [], negations: [], unresolved: [], caps: [], releaseTarget: null, releaseScope: "all", returnTo: "owner", raw };
+      }
+      const mRel = text.match(/(てもいい|てもよい|て構わない|ても構わない)/);
+      // 「掘らなくてもいい」は免除 (禁止側、cycle0936 N-1 の既存契約) であって解除ではない。
+      // 解除は肯定許可形 (掘ってもいい) だけ: マッチ直前が「なく」で終わる形は除外する。
+      if (mRel && !/なく$/.test(text.slice(0, mRel.index))) {
+        const rh = scanMentions(text, [MATERIAL_INDEX, ENTITY_INDEX]);
+        if (rh && rh.length) return { kind: "unforbid", target: null, amount: null, constraints, sideTasks: [], negations: [], unresolved: [], caps: [], releaseTarget: targetOf(rh[0]), releaseScope: "target", returnTo: "owner", raw };
+      }
+    }
+  } catch { /* 解除として解釈できなければ従来経路へ */ }
+
   // 1) 制約句を抽出して除去（先に見つかった明示指定を優先し、上書きしない）
   for (const [re, value] of CONSTRAINT_PHRASES) {
     if (re.test(text)) {

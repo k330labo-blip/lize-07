@@ -86,7 +86,7 @@ import { createPartnerCheckState, notePartnerCheck, partnerCheckOffset } from ".
 import { createEnderavertState, noteEnderavert, sampleEnderavert } from "./enderavert_math.js"; // POLISH-ANIM-ENDERAVERT-01 (cycle1940): 表示層のみ・実機確認待ち
 import { createSurveyLatch, recoverSurveyLatch, surveyLatchAvailable, tripSurveyLatch, applySurveyChunkOutcome, shouldTripGlobalLatch, pruneGlobalErrorEvents } from "./survey_broken.js"; // SURVEY-BROKEN-PERMANENT 是正 (cycle0628): 進捗で fails リセット＋区画隔離＋全体ラッチのクールダウン回復
 import { createXpGlanceState, noteXpGlance, sampleXpGlance, blendXpGlanceGaze } from "./xpglance_math.js"; // POLISH-ANIM-XPGLANCE-01 (cycle0628): 表示層のみ・実機確認待ち
-import { restoreForbids, mergeSessionForbids, serializeForbids, forbiddenTargetIds, unionForbiddenIds, normForbiddenId, isForbiddenWorkTarget } from "./session_forbids.js"; // cycle0505: forbids G4 record 側の正規化 // cycle0117: G2/G6-b 読み手 (unionForbiddenIds/forbiddenTargetIds) // Phase5 (cycle1923): sessionForbids の復元純粋核 / 読み手R1 (cycle2006) / 保存の単一形 (cycle2036)
+import { restoreForbids, mergeSessionForbids, serializeForbids, forbiddenTargetIds, unionForbiddenIds, normForbiddenId, isForbiddenWorkTarget, removeSessionForbids } from "./session_forbids.js"; // cycle0505: forbids G4 record 側の正規化 // cycle0117: G2/G6-b 読み手 (unionForbiddenIds/forbiddenTargetIds) // Phase5 (cycle1923): sessionForbids の復元純粋核 / 読み手R1 (cycle2006) / 保存の単一形 (cycle2036)
 import { createMusicnodState, noteMusicnod, sampleMusicnod } from "./musicnod_math.js"; // POLISH-ANIM-MUSICNOD-01 (cycle2006): 表示層のみ・実機確認待ち
 import { createIdleState, noteIdle, sampleIdle } from "./idle_math.js"; // POLISH-ANIM-IDLE-01 (cycle2020): 待機モーション (表示層のみ・実機確認待ち)
 import { createLookLeadState, tickLookLead } from "./looklead_math.js"; // POLISH-ANIM-LOOKLEAD-01 (cycle2036): 作業対象への視線の先行 (表示層のみ・実機確認待ち)
@@ -121,10 +121,10 @@ import { pickNearest as veinPickNearest, veinNeighbors, sameResource as veinSame
 import { classifyDescent as d2Classify, createSpiralAnchor as d2CreateAnchor, spiralStepAt as d2StepAt } from "./d2_spiral_math.js"; // 0-D2 (cycle1434): 発見後も螺旋降下
 import { allowedLogIds, countLogsForTarget } from "./tree_species_math.js";
 import { createWideScanFails, partitionWideIds, noteWideSuccess, noteWideIdFailure, noteWideGlobalFailure, wideIdBlocked } from "./wide_scan_fails.js"; // 0-D4 Bprime (cycle1455): wide scan failures isolated per typeId
-import { isAllowedByAllowOnly } from "./allow_only.js"; // 0-C2 reader (cycle1455): allowOnly enforcement // 0-D3: 樹種指定時は対象選択・進捗をその樹種だけに限定する
+import { isAllowedByAllowOnly, serializeAllowOnly, restoreAllowOnly, clearAllowOnly } from "./allow_only.js"; // 0-C2 reader (cycle1455): allowOnly enforcement // 0-D3: 樹種指定時は対象選択・進捗をその樹種だけに限定する
 import { shouldReplayGaze, GAZE_REPLAY_INTERVAL_TICKS } from "./gaze_cadence_math.js"; // 0-E1 GAZE-CADENCE-01: 視線レイヤーを本体ループから分離する
 import { mergeCaps, capForTarget } from "./cap_guard_math.js"; // 0-C2 読み手 (cycle1337): セッション上限を mission へ届ける
-import { createWarehouseRegistry, serializeWarehouseRegistry, deserializeWarehouseRegistry, addCandidates, warehouseKeyOf } from "./warehouse_registry.js"; // 倉庫 W1: 台帳の DP 永続化 (cb_warehouse)
+import { createWarehouseRegistry, serializeWarehouseRegistry, deserializeWarehouseRegistry, addCandidates, warehouseKeyOf, registerBox, removeCandidate } from "./warehouse_registry.js"; // 倉庫 W1: 台帳の DP 永続化 (cb_warehouse)
 import { createStairLookState, noteStairLook, stairLookPitch } from "./stairlook_math.js"; // POLISH-ANIM-STAIRSLOOK-01 (cycle1455): 表示層のみ・実機確認待ち
 import { createOrderLookState, noteOrderAccepted, sampleOrderLook } from "./orderlook_math.js"; // POLISH-ANIM-ORDERLOOK-01: 指示受理直後の「受けました」の頷き (表示層のみ・実機確認待ち)
 import { evalCondition, conditionExpired } from "./condition_math.js"; // 0-C2 読み手 (cycle1337): 条件付き注文の発火判定
@@ -318,6 +318,9 @@ function rt(bot) {
   }
   if (r.sessionForbids === undefined) { // Phase5 (cycle1923): セッション禁止を DP cb_forbids から復元 (undefined センチネル方式、mission と同形)
     try { const fj = dp(bot, "cb_forbids", ""); r.sessionForbids = restoreForbids(fj); } catch { r.sessionForbids = []; }
+  }
+  if (r.allowOnly === undefined) { // 0-C2 (cycle1604): allowOnly を DP cb_allowonly から復元 (永続化と解除は同サイクルで導入。壊れた保存は制限なし)
+    try { r.allowOnly = restoreAllowOnly(dp(bot, "cb_allowonly", "")); } catch { r.allowOnly = null; }
   }
   if (r.warehouse === undefined) { // 倉庫 W1: 台帳を DP cb_warehouse から復元 (壊れた保存は空台帳として開始し、本体を止めない)
     try { const wj = dp(bot, "cb_warehouse", ""); r.warehouse = wj ? deserializeWarehouseRegistry(wj) : createWarehouseRegistry(); } catch { r.warehouse = createWarehouseRegistry(); }
@@ -4437,6 +4440,7 @@ function openMenu(p, bot) {
   form.button("指示の確認・中止", "textures/items/lize_remote");
   form.button("装備と荷物", "textures/items/lize_remote");
   form.button("文字で指示する", "textures/items/lize_remote");
+  form.button("倉庫の登録・確認", "textures/items/lize_remote");
   form.show(p).then((res) => {
     if (res.canceled) return;
     const r = rt(bot);
@@ -4491,6 +4495,7 @@ function openMenu(p, bot) {
         openEquipUI(p, { forms: { ActionFormData, ModalFormData }, api }).catch(() => {});
       }
     }
+    if (res.selection === 13) openWarehouseMenu(p, bot);
     if (res.selection === 12) {
       // v0.4.57: チャットイベントが使えない環境向けの文字入力。処理はチャットと同一 (handleChatMessage)。
       const mf = new ModalFormData();
@@ -4502,6 +4507,41 @@ function openMenu(p, bot) {
         if (text) system.run(() => handleChatMessage(p, text));
       }).catch(() => {});
     }
+  }).catch(() => {});
+}
+
+// 倉庫 W1 リモコンUI (cycle1604, selection 13): 候補の確認と一括登録/除外/破棄。
+// 候補供給は refreshWarehouseCandidates (既知コンテナ) が担い、ここでは新規走査をしない。
+// 登録時は水平隣接する候補同士をラージチェストの組として pairKey で結ぶ (どちらの半分でも同じ収納先)。
+function openWarehouseMenu(p, bot) {
+  const r = rt(bot);
+  try { refreshWarehouseCandidates(bot, r); } catch {}
+  const reg = r.warehouse || createWarehouseRegistry();
+  const boxes = Array.isArray(reg.boxes) ? reg.boxes : [];
+  const cands = Array.isArray(reg.candidates) ? reg.candidates : [];
+  const roleName = { intake: "投入口", dest: "仕分け先", source: "整理対象", excluded: "除外", unclassified: "未分類" };
+  const lines = boxes.slice(0, 8).map((b) => `登録: ${roleName[b.role] || b.role}${b.needsRecheck ? "（再確認が必要）" : ""} ${b.key}`);
+  const candLines = cands.slice(0, 8).map((c) => `候補: ${c.key}`);
+  const form = new ActionFormData();
+  form.title("倉庫の登録・確認");
+  form.body(`登録済み ${boxes.length}件 / 候補 ${cands.length}件\n${[...lines, ...candLines].join("\n") || "まだ何もありません。チェストを置いて開けると、候補に上がります"}`);
+  form.button("候補を仕分け先に登録", "textures/items/lize_remote");
+  form.button("候補を除外する", "textures/items/lize_remote");
+  form.button("候補を消す（登録しない）", "textures/items/lize_remote");
+  form.button("閉じる", "textures/items/lize_remote");
+  form.show(p).then((res) => {
+    if (res.canceled || res.selection === 3) return;
+    const rr = rt(bot); if (!rr.warehouse) rr.warehouse = createWarehouseRegistry();
+    const cur = (Array.isArray(rr.warehouse.candidates) ? rr.warehouse.candidates : []).slice();
+    if (!cur.length) { say(p, bot, "候補は、今はありません", true); return; }
+    if (res.selection === 2) { let w = rr.warehouse; for (const c of cur) w = removeCandidate(w, c.key); rr.warehouse = w; saveWarehouse(bot, rr); say(p, bot, `候補${cur.length}件を消しました。登録はしていません`, true); return; }
+    const role = res.selection === 0 ? "dest" : "excluded";
+    // ラージチェスト推定: 同じ次元・同じ y で水平に隣接する候補同士を組にする
+    const pairOf = (c) => { try { const [dim, xyz] = c.key.split("|"); const [x, y, z] = xyz.split(",").map(Number); const mate = cur.find((o) => { if (o.key === c.key) return false; const [d2, xyz2] = o.key.split("|"); if (d2 !== dim) return false; const [x2, y2, z2] = xyz2.split(",").map(Number); return y2 === y && Math.abs(x2 - x) + Math.abs(z2 - z) === 1; }); return mate ? mate.key : null; } catch { return null; } };
+    let w = rr.warehouse; let okCount = 0;
+    for (const c of cur) { const out = registerBox(w, { key: c.key, dim: c.dim, role, pairKey: pairOf(c) }); if (out && out.ok) { w = out.reg; okCount++; } }
+    rr.warehouse = w; saveWarehouse(bot, rr);
+    say(p, bot, role === "dest" ? `候補${okCount}件を仕分け先に登録しました` : `候補${okCount}件を除外に登録しました。今後、仕分け先には使いません`, true);
   }).catch(() => {});
 }
 
@@ -4644,6 +4684,26 @@ function recordSessionForbids(bot, r, o) {
   try { dps(bot, "cb_forbids", serializeForbids(r.sessionForbids)); } catch {} // Phase5 (cycle1923): 再召喚・再起動を跨いで禁止を保持する // cycle2036: 保存を serializeForbids へ統一 (非文字列 verb の復元時拡大を防ぐ)
 }
 function forbidTargetName(n) { return n?.target?.name || nameOfItem(n?.target?.item || n?.target?.block || n?.target?.entity || ""); }
+// 0-C2 (cycle1604): allowOnly の代入と DP 保存は必ずこの1点を通す (保存漏れで再召喚時に静かに消える事故の再発防止)
+function setAllowOnly(bot, r, v) { try { r.allowOnly = v; dps(bot, "cb_allowonly", serializeAllowOnly(v)); } catch {} }
+// 0-C2 (cycle1604): 制限の解除。allowOnly と sessionForbids の両方へ適用し、両 DP キーを保存する。
+// scope:"all" は allowOnly のみ全解除する (禁止の一括解除は誤爆範囲が大きいため対象指定がある場合だけ外す)。
+function releaseRestrictions(bot, r, o) {
+  const tid = o.releaseTarget?.item || o.releaseTarget?.block || o.releaseTarget?.entity || null;
+  let changed = false; const notes = [];
+  try {
+    const before = r.allowOnly;
+    const after = o.releaseScope === "all" ? clearAllowOnly(before, null) : (tid ? clearAllowOnly(before, tid) : before);
+    if (after !== before) { setAllowOnly(bot, r, after); changed = true; notes.push("限定は外しました"); }
+  } catch {}
+  if (tid) {
+    try {
+      const res = removeSessionForbids(r.sessionForbids, tid);
+      if (res.removed.length) { r.sessionForbids = res.list; dps(bot, "cb_forbids", serializeForbids(res.list)); changed = true; notes.push(`${o.releaseTarget?.name || nameOfItem(tid)}は対象に戻します`); }
+    } catch {}
+  }
+  return { changed, notes };
+}
 function startOrderFromParser(p, bot, r, o) {
   // 0-C2 (cycle1215): 条件付き注文は即時発行しない。条件を保持して保留し、その旨を返す。
   if (o.constraints?.condition) {
@@ -4657,6 +4717,14 @@ function startOrderFromParser(p, bot, r, o) {
     try { r.caps = [...(Array.isArray(r.caps) ? r.caps : []), ...list.map((c) => ({ target: c.target?.item || c.target?.block || c.target?.entity || null, cap: c.cap, verb: c.verb ?? null, at: Date.now() }))].slice(-16); } catch {}
     if (list.length) say(p, bot, `分かりました。${list.map((c) => `${c.target?.name || ""}は${c.cap}までです`).join("。")}。それ以上はしません`, true);
     else say(p, bot, "分かりました。その上限で止めます", true);
+    return;
+  }
+  // 0-C2 (cycle1604): 制限の解除は forbid 分岐より前に処理する (否定経路へ流すと再び禁止になる)
+  if (o.kind === "unforbid") {
+    const rel = releaseRestrictions(bot, r, o);
+    if (rel.changed) say(p, bot, `分かりました。${rel.notes.join("。")}。`, true);
+    else if (o.releaseScope === "all") say(p, bot, "分かりました。限定はかかっていません", true);
+    else say(p, bot, "その対象への制限は、かかっていません", true);
     return;
   }
   // Phase5 否定配線: build/gather の mission 実行中ガードより前に置くこと
@@ -4676,8 +4744,13 @@ function startOrderFromParser(p, bot, r, o) {
   if (o.kind === "clarify") {
     // 0-C2 (cycle1215): 「X以外は〜しないで」は X が唯一の許可対象。X を禁止に記録せず allowOnly として保持する (逆転の是正)。
     if (o.allowOnly?.target) {
-      try { r.allowOnly = { target: o.allowOnly.target?.item || o.allowOnly.target?.block || o.allowOnly.target?.entity || null, verb: o.allowOnly.verb ?? null, at: Date.now() }; } catch {}
+      setAllowOnly(bot, r, { target: o.allowOnly.target?.item || o.allowOnly.target?.block || o.allowOnly.target?.entity || null, verb: o.allowOnly.verb ?? null, at: Date.now() });
       say(p, bot, `分かりました。${forbidTargetName({ target: o.allowOnly.target })}以外は対象にしません`, true);
+      // 0-C2 (cycle1604, A02-P3): 設定時点で実行中の mission が許可外なら、forbid 分岐と同形に止める
+      try {
+        const m = r.mission;
+        if (m && m.status === "active" && !r.ltLegActive && m.order?.target && !isAllowedByAllowOnly(r.allowOnly, m.order.target, m.order?.kind)) { cancelMission(bot, p, r, true); say(p, bot, "今の指示も止めました。許可された対象ではありませんでした", true); }
+      } catch {}
       return;
     }
     const reason = o.unresolved?.[0]?.reason || "";
