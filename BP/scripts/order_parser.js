@@ -13,6 +13,8 @@
 //   主目的1件＋寄り道（sideTasks）最大2件に分解する。
 //   素材名は最長一致で照合する（鉄鉱石 > 鉄、ダイヤのピッケル > ダイヤ 等）。
 
+import { amount_parse, stackSizeOfItem } from "./amount_math.js"; // 0-C5 (cycle1256): 数量解釈の純粋核
+
 // ---------------------------------------------------------------- 素材辞書
 // [id, type('item'|'block'), 表示名, 別名[]] 。別名は最長一致で照合される。
 const MATERIAL_DEFS = [
@@ -293,28 +295,40 @@ function parseNumberToken(s) {
   return KANJI_NUM[s] ?? null;
 }
 const AMOUNT_RE = /^(\d+|[一二三四五六七八九十]+)\s*(個|本|枚|つ|体|匹|スタック|組|セット|箱)?/;
-function amountValue(numTok, unit) {
+function amountValue(numTok, unit, itemId) {
   const n = parseNumberToken(numTok);
   if (n == null) return null;
-  return unit === "スタック" ? n * 64 : n;
+  // 0-C5 (cycle1256): スタック換算は品目別サイズ (amount_math が単一の正)。品目不明時は 64。
+  return unit === "スタック" ? n * stackSizeOfItem(itemId ?? null).size : n;
 }
 // cycle0832 R1 (Phase5): N5 不要の gap 構成判定。距離 (文字数) ゲートは数量サフィックス
 // 「3個は」等で常に外れ否定が反転したため、gap が「数量サフィックス＋係助詞・強調のみ」で
 // 構成される場合に通過させる (語彙は AMOUNT_RE / amountNear と統一。新規の独自表は作らない)。
 const N5_GAP_RE = /^を?(?:(?:\d+|[一二三四五六七八九十]+)\s*(?:個|本|枚|つ|体|匹|スタック|組|セット|箱)|半スタック)?\s*(?:は|が|も)?(?:もう|なんか)?$/;
 function n5GapOk(text, hit, idx) { try { const gap = text.slice(hit.end, idx); if (gap.length <= 2) return true; return N5_GAP_RE.test(gap); } catch { return false; } }
-// メンションの前後から数量を探す（「ダイヤ10個」「ダイヤを10個」「10個のダイヤ」）
+// 0-C5 (cycle1256): 数量フレーズの所在だけを従来どおり前後で特定し、値の解釈
+// (品目別スタック/複合合算/反復/相対/0個) は純粋核 amount_parse へ委ねる。
+// 詳細は hit.amountDetail に保持し、候補・注文へ amountMeta として運ぶ。
+const QTY_PHRASE_RE = /((?:半|はん)スタック|(?:\d+(?:\.\d+)?|[一二三四五六七八九十]+|ゼロ|零)\s*(?:スタック|個|本|枚|つ|体|匹|組|セット|箱)(?:と\s*(?:\d+|[一二三四五六七八九十]+)\s*(?:個|本|枚|つ|体|匹))?(?:ずつ\s*(?:\d+|[一二三四五六七八九十]+)\s*回)?)/;
 function amountNear(text, hit) {
-  const after = text.slice(hit.end, hit.end + 10);
-  if (/^も?半スタック/.test(after)) return 32;
-  let m = after.match(/^[のがをもは]?(?:だけ)?\s*(\d+|[一二三四五六七八九十]+)\s*(個|本|枚|つ|体|匹|スタック|組|セット|箱)/); // 0-C2 (cycle1215): 「石炭だけ10個」の だけ を数量の前置として許す (従来は数量が落ちていた)
-  if (m) return amountValue(m[1], m[2]);
-  m = after.match(/^[のがをもは]?(\d+)/); // 単位なしの裸の数字（「ダイヤ10掘って」）
+  let itemId = null;
+  try { const t = targetOf(hit); itemId = t?.item ?? t?.block ?? null; } catch { itemId = null; }
+  const parsePhrase = (phrase) => {
+    try {
+      const r = amount_parse(phrase, { itemId });
+      if (r && r.ok) { hit.amountDetail = r; return r.total; }
+    } catch { /* 核の失敗は数量なしとして従来経路へ */ }
+    return null;
+  };
+  const after = text.slice(hit.end, hit.end + 18);
+  const am = after.match(new RegExp(`^[のがをもは]?(?:だけ)?\\s*(あと)?\\s*${QTY_PHRASE_RE.source}`));
+  if (am) { const v = parsePhrase((am[1] || "") + am[2]); if (v != null) return v; }
+  let m = after.match(/^[のがをもは]?(\d+)/); // 単位なしの裸の数字（「ダイヤ10掘って」）
   if (m) return parseInt(m[1], 10);
-  const before = text.slice(Math.max(0, hit.start - 10), hit.start);
-  if (/半スタック$/.test(before)) return 32;
-  m = before.match(/(\d+|[一二三四五六七八九十]+)\s*(個|本|枚|つ|体|匹|スタック|組|セット|箱)\s*の\s*$/);
-  if (m) return amountValue(m[1], m[2]);
+  const before = text.slice(Math.max(0, hit.start - 18), hit.start);
+  const bm = before.match(new RegExp(`${QTY_PHRASE_RE.source}\\s*の\\s*$`));
+  if (bm) { const v = parsePhrase(bm[1]); if (v != null) return v; }
+  if (/(?:半|はん)スタック\s*$/.test(before)) { const v = parsePhrase("半スタック"); if (v != null) return v; }
   return null;
 }
 
@@ -875,6 +889,7 @@ export function parseOrder(input) {
         target: targetOf(hit),
         generic: hit.kind === "entity" && hit.def[0] === "hostile",
         amount: amountNear(clause, hit),
+        amountDetail: hit.amountDetail ?? null, // 0-C5 (cycle1256): 反復・相対・訂正・0個の保持
         verbClass,
         clause: ci,
         side: side || !first, // 1句に複数対象があれば2件目以降は寄り道扱い
@@ -982,10 +997,30 @@ export function parseOrder(input) {
   // 別句で肯定として再メンションされた場合はそちらを正として残す（a06 ガード裁定）。
   const negIds = new Set(negations.map((n) => n.target?.item ?? n.target?.block ?? n.target?.entity).filter(Boolean));
   const safeSides = rest.filter((c) => !negIds.has(c.target?.item ?? c.target?.block ?? c.target?.entity));
+
+  // 0-C5 (cycle1256): 句をまたぐ数量訂正 (「石炭を10個、いや3個集めて」) は後勝ち。
+  // 訂正側の句が別の候補を生んでいない場合だけ主数量へ反映する (対象訂正とは混ぜない)。
+  let amountMeta = main.amountDetail ?? null;
+  try {
+    const corrIdx = text.lastIndexOf("いや");
+    if (corrIdx >= 0) {
+      const corrClause = text.slice(0, corrIdx).split(/[、。,.!?！？]/).length - 1;
+      if (!candidates.some((c) => c.clause === corrClause)) {
+        const parsed = amount_parse(text.slice(corrIdx + 2, corrIdx + 18), { itemId: main.target?.item ?? main.target?.block ?? null });
+        if (parsed && parsed.ok) { main.amount = parsed.total; amountMeta = { ...parsed, corrected: true }; }
+      }
+    }
+  } catch { /* 訂正の反映失敗は従来数量のまま */ }
+
+  // 0-C5 (cycle1256): 0個の指示は開始処理へ渡さない (聞き返しへ倒す)。
+  if (main.amount === 0) {
+    return { kind: "clarify", target: main.target, amount: 0, constraints, sideTasks: [], negations, unresolved: [...unresolved, { slot: "amount", reason: "zero_amount" }], caps, returnTo, raw };
+  }
   return {
     kind,
     target: main.target,
     amount: main.amount,
+    amountMeta: amountMeta ? { perRun: amountMeta.perRun ?? null, repeats: amountMeta.repeats ?? null, relative: amountMeta.relative === true, corrected: amountMeta.corrected === true } : null,
     constraints,
     sideTasks: safeSides.slice(0, 2).map((c) => ({ target: c.target, amount: c.amount })),
     negations,

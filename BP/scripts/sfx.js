@@ -20,6 +20,7 @@ export const SFX_TABLE = Object.freeze({
   stem:           { hit: "hit.wood",   break: "dig.stem",           step: "step.nether_wood" },  // ネザー木材: hit は wood 代用
   stone:          { hit: "hit.stone",  break: "dig.stone",          step: "step.stone" },        // ✓✓✓
   deepslate:      { hit: "hit.deepslate", break: "dig.deepslate",   step: "step.deepslate" },    // △✓△ (step 無ければ step.stone)
+  deepslate_bricks: { hit: "hit.deepslate", break: "dig.deepslate_bricks", step: "step.deepslate" }, // POLISH-SND-CLASS-DEEPSLATE-BRICKS-01 (cycle1256): break のみ専用ID確認済み、hit/step は deepslate 流用
   copper:         { hit: "hit.stone",  break: "dig.copper",         step: "step.stone" },        // hit/step は stone 代用
   netherite:      { hit: "hit.stone",  break: "dig.netherite",      step: "step.netherite" },    // POLISH-SND-TIER3-NETHERITE (cycle1303): hit は stone 代用、完全一致 netherite_block のみ
   netherrack:     { hit: "hit.stone",  break: "dig.netherrack",     step: "step.netherrack" },   // ✓(break/step)
@@ -57,6 +58,7 @@ export const CONFIRMED_IDS = new Set([
   "dig.moss", "step.moss", // cycle1058 a07: 専用ID確認済み (break/step)
   "dig.candle", "hit.candle", // cycle1134 a07: 専用ID確認済み (break/hit)
   "break.froglight", "step.froglight", // cycle1215 a14: 専用ID確認済み (break/step。dig.froglight/hit.froglight は実在しない)
+  "dig.deepslate_bricks", // cycle1256 a16: 専用ID確認済み (break のみ)
   "step.grass", "step.sand", "step.gravel", "step.cloth", "step.wood",
   "step.nether_wood", "step.stone", "step.netherrack", "step.nether_brick",
   "step.nether_gold_ore", "step.nylium", "step.iron",
@@ -188,6 +190,7 @@ export function materialOfTypeId(typeId) {
   if (id === "froglight" || id.endsWith("_froglight")) return "froglight"; // cycle1215: froglight 3形+素形を専用カテゴリへ (従来は stone 落ち)
   if (id === "honey_block") return "honey_block"; // cycle0955 R1: 完全一致のみ
   if (id === "lodestone") return "lodestone"; // cycle0955 R1: 完全一致のみ
+  if (id === "deepslate_bricks" || id === "cracked_deepslate_bricks") return "deepslate_bricks"; // cycle1256: 完全一致2形のみ (deepslate_tiles は未照合のため巻き込まない)
   if (id === "deepslate_copper_ore") return "deepslate"; // cycle2117: 母岩優先 (深層岩鉱石は母岩が正、copper includes より前)
   if (id.includes("copper") || id.includes("lightning_rod")) return "copper"; // 11 (+a11 避雷針は銅)
   if (id.includes("deepslate")) return "deepslate";                       // 12: 深層岩鉱石は母岩優先
