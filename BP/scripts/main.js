@@ -116,6 +116,7 @@ import { selectWithdrawCandidate, candKeyForFirstStep } from "./withdraw_candida
 import { scanOpportunities, noteAttempt, pruneCooldowns } from "./side_tasks.js";
 import { createSideChase, chaseTick, sideChaseRangeFor } from "./side_chase.js"; // SIDE-COOLDOWN-CHASE (cycle1134): 接近保持と終端クールダウン
 import { gateCancel, gateFactory, isHowToRequest } from "./chat_gate.js"; // 0-C1 (cycle1155): 質問・否定・仮定・部分スコープでは中止/工場/指示を発火しない共通ゲート
+import { pickNearest as veinPickNearest, veinNeighbors, sameResource as veinSameResource } from "./vein_math.js"; // 0-D1 (cycle1400): 鉱脈継続・距離優先の純粋核
 import { mergeCaps, capForTarget } from "./cap_guard_math.js"; // 0-C2 読み手 (cycle1337): セッション上限を mission へ届ける
 import { evalCondition, conditionExpired } from "./condition_math.js"; // 0-C2 読み手 (cycle1337): 条件付き注文の発火判定
 import { detectUnsupportedIntent } from "./unsupported_intent.js"; // 0-C7 (cycle1337): 未対応依頼への明示返答ゲート
@@ -1249,6 +1250,7 @@ function tickWork(bot, owner, r, ctx) {
     if (takeFromInv(bot, seedId, 1)) { try { b.setType(w.typeId); try { sfxPlace(bot.dimension, { x: w.loc.x + 0.5, y: w.loc.y + 0.5, z: w.loc.z + 0.5 }, w.typeId); } catch {} } catch {} } // POLISH-SND-PLACE-01 残件 (cycle2036): 植え直しへの設置音配線 (表示層のみ)
   }
   r.lastBreak = { act: "BREAK", ok: true, reason: null, item: w.typeId, gained: gain ? gain[1] : 0, at: Date.now() }; commitLastAction(r, r.lastBreak);
+  try { if (String(w.typeId || "").includes("_ore")) { const nb = veinNeighbors(w.loc, w.typeId, (p) => { try { const bb = bot.dimension.getBlock(p); return bb ? bb.typeId : null; } catch { return null; } }); const prev = Array.isArray(r.veinCands) ? r.veinCands.filter((c) => c && !(c.loc.x === w.loc.x && c.loc.y === w.loc.y && c.loc.z === w.loc.z)) : []; const seen = new Set(prev.map((c) => `${c.loc.x},${c.loc.y},${c.loc.z}`)); for (const c of nb) { const k = `${c.loc.x},${c.loc.y},${c.loc.z}`; if (!seen.has(k)) { seen.add(k); prev.push(c); } } r.veinCands = prev.slice(-32); } } catch {} // 0-D1: 鉱脈の6近傍を次候補として保持 (二手分岐の両側を忘れない)
   r.work = null;
   return true;
 }
@@ -2400,8 +2402,15 @@ function findMissionTarget(bot, r, scan, step, scanUnknown = false) {
   let anyUnknown = false;
   // Step 3b R3 (v0.4.13): unknown は記録だけでなく遮断する (後続 source/直接ID/ドロップへ素通りさせない)
   const noteScanState = (id) => { try { if (scanCachePeek(r, id).state === "unknown") { anyUnknown = true; return true; } } catch {} return false; };
+  // 0-D1 (cycle1400): 継続中の鉱脈があれば survey/遠方より優先する (実在を再確認し、消えた候補は捨てる)
+  try { if (Array.isArray(r.veinCands) && r.veinCands.length && sources.some((s) => s.kind === "block")) { const live = []; for (const c of r.veinCands) { let t = null; try { t = bot.dimension.getBlock(c.loc)?.typeId || null; } catch {} if (t && veinSameResource(t, c.typeId) && sources.some((s) => s.kind === "block" && veinSameResource(s.id, t))) live.push({ loc: c.loc, typeId: t }); else if (!t) live.push(c); } r.veinCands = live.filter((c) => { try { return bot.dimension.getBlock(c.loc)?.typeId; } catch { return true; } }); const vp = veinPickNearest(live.filter((c) => { try { return !!bot.dimension.getBlock(c.loc)?.typeId; } catch { return false; } }), bot.location); if (vp) return { found: true, kind: "block", loc: vp.loc, typeId: vp.typeId, detail: { state: "present", via: "vein" } }; } } catch {}
+  { // 0-D1: block 候補は登録順でなく距離優先 (通常/深層は同一資源として横断比較する)
+    const blockCands = [];
+    for (const s of sources) { if (s.kind !== "block") continue; const loc = scanBlockNear(bot, r, s.id); if (loc) blockCands.push({ loc, typeId: s.id }); else if (noteScanState(s.id)) return { found: false, detail: { state: "unknown" } }; }
+    const bp = veinPickNearest(blockCands, bot.location); if (bp) return { found: true, kind: "block", loc: bp.loc, typeId: bp.typeId, detail: { state: "present" } };
+  }
   for (const s of sources) {
-    if (s.kind === "block") { const loc = scanBlockNear(bot, r, s.id); if (loc) return { found: true, kind: "block", loc, typeId: s.id, detail: { state: "present" } }; if (noteScanState(s.id)) return { found: false, detail: { state: "unknown" } }; }
+    if (s.kind === "block") { continue; }
     else if (s.kind === "entity") { const e = (scan?.hostiles || []).find((x) => x.typeId === s.id) || (scan?.animals || []).find((x) => x.typeId === s.id); if (e) return { found: true, kind: "entity", loc: { ...e.location }, typeId: target, entity: e, detail: { state: "present" } }; if (scanUnknown) anyUnknown = true; }
     else if (s.kind === "craft") {
       const loc = scanBlockNear(bot, r, s.id); if (loc) return { found: true, kind: "block", loc, typeId: s.id, detail: { state: "present" } }; if (noteScanState(s.id)) return { found: false, detail: { state: "unknown" } };
@@ -2459,7 +2468,7 @@ function startMission(bot, owner, r, mo, announce = true, opts = {}) {
     if (ltPlan && ltPlan.feasible) { startLongTask(bot, owner, r, mo, ltPlan, announce); return null; }
   }
   const m = createMission(mo, null);
-  r.mission = m; r.missionKills = 0; r.suspendNotified = false; r.mFound = false; r.sideTask = null;
+  r.mission = m; r.missionKills = 0; r.suspendNotified = false; r.mFound = false; r.sideTask = null; r.veinCands = []; // 0-D1: 鉱脈候補は mission 単位 (前 mission の残りを持ち越さない)
   r.withdrawBlocked = new Set(); r.withdrawCooldownUntil = 0; r.withdrawTargetKey = null; // Phase2 WITHDRAW Step B: 試行済み情報は mission 単位で初期化
   persistMission(bot, r, true);
   dps(bot, "cb_order", JSON.stringify({ ...mo, startedAt: Date.now() }));

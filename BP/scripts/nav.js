@@ -80,6 +80,7 @@ export function classifyTypeId(typeId, api = null) {
     return c; // 通過可能
   }
   if (id.endsWith("_slab") && !id.includes("double")) c.top = 0.5; // 下付きハーフブロック近似
+  if ((id.endsWith("_fence") || id.endsWith("_wall")) && !id.endsWith("_fence_gate")) c.top = 1.5; // BASICS-07 (cycle1400): フェンス/塀の実衝突は1.5。top=1のままだと登れる扱いになり段差判定が狂う
   if (api && api.isLiquid) { c.water = true; return c; }
   c.solid = true; c.pass = false; // 不明なブロックは固体として倒す（安全側）
   return c;
