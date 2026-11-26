@@ -224,7 +224,7 @@ export function materialOfTypeId(typeId) {
   // 19: ネザー木材 (幹・菌類・ネザー木の板材/幹)
   if (id.endsWith("_stem") || id.endsWith("_hyphae") || id.endsWith("_fungus")
       || id === "warped_planks" || id === "crimson_planks"
-      || id === "warped_wart_block" || id === "nether_wart_block") return "stem";
+      || id === "warped_wart_block" || id === "nether_wart_block" || id === "wart_block") return "stem"; // cyc2122: 旧式別名 wart_block も同素材として stem (includes("wart") は作物巻き込みのため不採用)
   // 21 を wood より先に判定する鉄製品 (iron_door 等)。§2.2 順20の「iron でないもの」条件の実装。
   if (METAL_IDS.has(id)) return "metal";                                  // a11: 完全一致のみ
   if (id.includes("rail")) return "metal";                                // 21: rail 系

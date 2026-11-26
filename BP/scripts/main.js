@@ -61,6 +61,7 @@ import { createCombatEndState, noteCombatEnd, sampleCombatEnd } from "./combaten
 import { createYieldState, noteYield, sampleYield } from "./yield_math.js"; // POLISH-ANIM-YIELD-01 (cycle0153): 狭い通路での半歩の譲り (表示層のみ・実機確認待ち) // POLISH-ANIM-ROUTECHECK-01 (cycle0117): 長距離移動中の進路確認 (表示層のみ・実機確認待ち) // POLISH-ANIM-FALLLAND-01 (cycle0057): 落下ポーズ+着地クッション (表示層のみ・実機確認待ち)
 import { extractItemData, applyItemData, normalizeSavedInv } from "./inv_item_data.js"; // 0-C3 (cycle1238): 回収・再召喚で荷物の個別情報 (名前/エンチャント/消耗) を保持する
 import { applyRecallcheckPitch, isRecallcheckActive, shouldRecallcheck } from "./recallcheck_math.js"; // POLISH-ANIM-RECALLCHECK-01 (cycle1238)
+import { createLevelupNodState, noteOwnerLevel, applyLevelupNodPitch, isLevelupNodActive } from "./levelupnod_math.js"; // POLISH-ANIM-LEVELUPNOD-01 (cyc2059 pure core / cyc2122 feeder wiring)
 import { createHeedState, noteHeed as noteHeedState, sampleHeed } from "./heed_math.js";
 import { createThresholdState, noteThreshold as noteThresholdState, sampleThreshold } from "./threshold_math.js"; // POLISH-ANIM-THRESHOLD-01 (cycle1503): くぐり視線 (表示層のみ・実機確認待ち)
 import { createEdgepeekState, noteEdgepeek as noteEdgepeekState, sampleEdgepeek } from "./edgepeek_math.js";
@@ -633,6 +634,9 @@ function buildContext(bot, owner) {
   c.x.pickupTotal = st.pickup || 0; c.x.deliverTotal = st.deliver || 0; c.x.depositTotal = st.deposit || 0;
   c.x.milestone = [10, 50, 100, 250, 500, 1000].includes(c.x.pickupTotal) && r.lastMilestone !== c.x.pickupTotal;
   c.x.ownerLevel = owner.level || 0;
+  // POLISH-ANIM-LEVELUPNOD-01 feeder (cyc2122): ownerLevel 設定直後の1箇所のみ。新規走査なし、表示層のみ・実機確認待ち。
+  // 設定より前に置くと undefined を読み続け永遠に発火しないため、この置き順を維持すること (wiring test が固定)。
+  try { if (!r.levelupnodState) r.levelupnodState = createLevelupNodState(); const dimNow = c.x.dimension; const dimChanged = r.levelupnodPrevDim != null && r.levelupnodPrevDim !== dimNow; r.levelupnodPrevDim = dimNow; const nowL = Date.now(); let overlayL = false; try { overlayL = isNodActive(r.nodAnimAt, nowL) || isFlinchActive(r.flinchAnimAt, nowL) || isSettleActive(r.settleAnimAt, nowL) || isDeliverBowActive(r.deliverBowAt, nowL); } catch {} const supL = ((c.danger?.count ?? 0) > 0) || r.selfFalling === true || !!bot.isInWater || !!r.work || !c.owner.dimensionSame; const resL = noteOwnerLevel(r.levelupnodState, { level: c.x.ownerLevel, nowMs: nowL, dimensionChanged: dimChanged, suppressed: supL, overlayActive: overlayL }); if (resL?.fired) { r.levelupnodAnimAt = nowL; r.lastLevelupNod = { atMs: nowL, fromLevel: resL.fromLevel, toLevel: resL.toLevel, delta: (resL.toLevel ?? 0) - (resL.fromLevel ?? 0) }; } } catch {}
   try { c.x.daysTogether = Math.max(0, world.getDay() - (dp(bot, "cb_firstday", world.getDay()))); } catch {}
   c.x.firstToday = r.greetedDay !== world.getDay();
   c.x.ownerBreaking = !!ort.breakAt && Date.now() - ort.breakAt < 3000;
@@ -2518,6 +2522,8 @@ function startMission(bot, owner, r, mo, announce = true, opts = {}) {
   try { if (!mo.legsOnly && r.allowOnly && mo.target && (mo.kind === "hunt" || mo.kind === "gather")) { const tid1455 = typeof mo.target === "string" ? mo.target : (mo.target?.item || mo.target?.block || mo.target?.entity || null); if (tid1455 && !isAllowedByAllowOnly(r.allowOnly, tid1455, mo.kind)) { if (announce) say(owner, bot, `その対象は対象外です。許可されている対象だけにします`, true); return null; } } if (!mo.legsOnly && r.allowOnly && Array.isArray(mo.sideTasks) && mo.sideTasks.length) { const keptSides = mo.sideTasks.filter((st) => { const sid = typeof st?.target === "string" ? st.target : (st?.target?.item || st?.target?.block || st?.target?.entity || null); return !sid || isAllowedByAllowOnly(r.allowOnly, sid, st?.kind || mo.kind); }); if (keptSides.length !== mo.sideTasks.length) mo = { ...mo, sideTasks: keptSides }; } } catch {} // v0.5.79: allowOnly は副目標にも適用する (a16 P1: 主目標だけ許可しても副目標が素通りしていた)
   // 0-C2 読み手 (cycle1337): セッション上限 (r.caps) を mission 制約へ届け、狩猟量を上限で clamp する
   try { const mergedCaps = mergeCaps(mo.constraints?.caps, r.caps); if (mergedCaps.length) { mo = { ...mo, constraints: { ...(mo.constraints || {}), caps: mergedCaps } }; if (mo.kind === "hunt" || mo.kind === "gather") { const cp = capForTarget(mergedCaps, mo.target, mo.kind); if (cp !== null && (mo.amount ?? 1) > cp) mo = { ...mo, amount: cp }; } } } catch {} // cyc2043: 採取 (gather) もセッション上限で clamp (従来は狩猟のみ)
+  // 0-C5 R3 (cyc2122): 指示個数の上限10,000をチャット経路にも持たせる (UI経路 parseCount と同じ上限で非対称を解消)。leg は手段であり対象でないため除外。
+  try { if (!mo.legsOnly && typeof mo.amount === "number" && Number.isFinite(mo.amount) && mo.amount > 10000) mo = { ...mo, amount: 10000 }; } catch {}
   if (!mo.legsOnly) r.toolPrepTotal = 0; // キュー0副次 R1 (cycle1421): 道具準備の通算上限は新規注文ごとに数え直す (leg 子ミッションでは消さない)
   // 工程（クラフト/精錬/ツール自作）が要る注文は、長期自律タスクとして自分で手段を組み立てる
   if (!opts.noLongTask && !mo.legsOnly) {
@@ -4185,6 +4191,7 @@ function applyGaze(bot, owner, ctx, scan) {
     // POLISH-ANIM-STOW-01 feeder (cycle0522): 作業セッション (BREAK/PLACE/CRAFT/SMELT成功の連なり) の終了の辺でのみ発火 (表示層のみ・実機確認待ち。腕は記録のみ)
     try { if (!r.stowState) r.stowState = createStowState(); const la = r.lastAction; if (la && la.ok && la.seq !== r.stowSeenSeq) { r.stowSeenSeq = la.seq; r.stowState = noteStowWork(r.stowState, { nowMs: la.at || Date.now(), kind: la.act, success: true }); } const supS = ((ctx?.danger?.count ?? 0) > 0) || r.selfFalling === true || !!bot.isInWater; const ovS = isSettleActive(r.settleAnimAt, Date.now()) || isPlacesettleActive(r.placesettleAnimAt, Date.now()) || isCraftsettleActive(r.craftsettleAnimAt, Date.now()) || isStoresettleActive(r.storesettleAnimAt, Date.now()); const tk = noteStowTick(r.stowState, { nowMs: Date.now(), workActive: !!(r.work || r.buildPlan || r.mission), suppressed: supS, overlayActive: ovS, toolTypeId: null }); r.stowState = tk.state; if (tk.fired) { r.stowAnimAt = Date.now(); r.lastStow = { atMs: r.stowAnimAt, toolTypeId: tk.toolTypeId, armPitchDeg: STOW_MAX_ARM_DEG }; } } catch {}
     if (rot && isStowActive(r.stowAnimAt, Date.now())) rot = { ...rot, x: applyStowPitch(rot.x, Date.now() - r.stowAnimAt) }; // POLISH-ANIM-STOW-01 (cycle0522): 重畳は最下位 (表示層のみ・実機確認待ち)
+    if (rot && isLevelupNodActive(r.levelupnodAnimAt, Date.now()) && !isFlinchActive(r.flinchAnimAt, Date.now()) && !isNodActive(r.nodAnimAt, Date.now())) rot = { ...rot, x: applyLevelupNodPitch(rot.x, Date.now() - r.levelupnodAnimAt) }; // POLISH-ANIM-LEVELUPNOD-01 (cyc2122): 最下位重畳 (表示層のみ・実機確認待ち)
     if (rot && r.snowtreadState) { try { const so = snowtreadCurrentOffset(r.snowtreadState); if (so.active) rot = { ...rot, x: applySnowtreadPitch(rot.x, r.snowtreadState.phase) }; } catch {} } // POLISH-ANIM-SNOWTREAD-01 (cycle2333): 重畳 (表示層のみ・実機確認待ち)
     if (rot && isFlinchActive(r.flinchAnimAt, Date.now())) rot = { ...rot, x: applyFlinchPitch(rot.x, Date.now() - r.flinchAnimAt) }; // POLISH-ANIM-FLINCH-01 (cycle1051)
     // POLISH-ANIM-ENDERAVERT-01 (cycle1940): feeder は既存走査 scan.hostiles から最寄りエンダーマンを取る (新規走査なし)。重畳は FLINCH の直下 (表示層のみ・実機確認待ち)
