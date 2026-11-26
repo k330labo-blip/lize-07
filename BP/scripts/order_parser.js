@@ -154,6 +154,24 @@ const MATERIAL_DEFS = [
   ["diamond_axe", "item", "ダイヤの斧", ["ダイヤの斧", "ダイヤのオノ", "ダイヤのおの", "ダイヤモンドの斧", "ダイヤモンドのオノ", "ダイヤモンドのおの"]],
   ["diamond_shovel", "item", "ダイヤのシャベル", ["ダイヤのシャベル", "ダイヤのスコップ", "ダイヤモンドのシャベル", "ダイヤモンドのスコップ"]],
   ["diamond_sword", "item", "ダイヤの剣", ["ダイヤの剣", "ダイヤのソード", "ダイヤモンドの剣", "ダイヤモンドのソード"]],
+  // 0-F1 (cyc2003): 防具の素材×部位合成。道具だけ辞書にあり防具が無く、「ダイヤのチェストプレート」が
+  // 素材そのもの (diamond) ＋副目標チェストへ誤分解していた非対称を是正する。
+  ["leather_helmet", "item", "革のヘルメット", ['革のヘルメット', '革の兜', '革のかぶと', 'レザーのヘルメット', 'レザーの兜', 'レザーのかぶと']],
+  ["leather_chestplate", "item", "革のチェストプレート", ['革のチェストプレート', '革の胸当て', 'レザーのチェストプレート', 'レザーの胸当て']],
+  ["leather_leggings", "item", "革のレギンス", ['革のレギンス', '革のズボン', 'レザーのレギンス', 'レザーのズボン']],
+  ["leather_boots", "item", "革のブーツ", ['革のブーツ', '革の靴', 'レザーのブーツ', 'レザーの靴']],
+  ["golden_helmet", "item", "金のヘルメット", ['金のヘルメット', '金の兜', '金のかぶと', 'ゴールドのヘルメット', 'ゴールドの兜', 'ゴールドのかぶと']],
+  ["golden_chestplate", "item", "金のチェストプレート", ['金のチェストプレート', '金の胸当て', 'ゴールドのチェストプレート', 'ゴールドの胸当て']],
+  ["golden_leggings", "item", "金のレギンス", ['金のレギンス', '金のズボン', 'ゴールドのレギンス', 'ゴールドのズボン']],
+  ["golden_boots", "item", "金のブーツ", ['金のブーツ', '金の靴', 'ゴールドのブーツ', 'ゴールドの靴']],
+  ["iron_helmet", "item", "鉄のヘルメット", ['鉄のヘルメット', '鉄の兜', '鉄のかぶと']],
+  ["iron_chestplate", "item", "鉄のチェストプレート", ['鉄のチェストプレート', '鉄の胸当て']],
+  ["iron_leggings", "item", "鉄のレギンス", ['鉄のレギンス', '鉄のズボン']],
+  ["iron_boots", "item", "鉄のブーツ", ['鉄のブーツ', '鉄の靴']],
+  ["diamond_helmet", "item", "ダイヤのヘルメット", ['ダイヤのヘルメット', 'ダイヤの兜', 'ダイヤのかぶと', 'ダイヤモンドのヘルメット', 'ダイヤモンドの兜', 'ダイヤモンドのかぶと']],
+  ["diamond_chestplate", "item", "ダイヤのチェストプレート", ['ダイヤのチェストプレート', 'ダイヤの胸当て', 'ダイヤモンドのチェストプレート', 'ダイヤモンドの胸当て']],
+  ["diamond_leggings", "item", "ダイヤのレギンス", ['ダイヤのレギンス', 'ダイヤのズボン', 'ダイヤモンドのレギンス', 'ダイヤモンドのズボン']],
+  ["diamond_boots", "item", "ダイヤのブーツ", ['ダイヤのブーツ', 'ダイヤの靴', 'ダイヤモンドのブーツ', 'ダイヤモンドの靴']],
   ["bow", "item", "弓", ["弓"]],
   ["crossbow", "item", "クロスボウ", ["クロスボウ"]],
   ["trident", "item", "トライデント", ["トライデント"]],
@@ -935,6 +953,23 @@ export function parseOrder(input) {
       }
     }
   } catch { /* 解除として解釈できなければ従来経路へ */ }
+
+  // 0-F2 (cyc2003): 「<素材>フル」「防具一式作って」を防具4部位の作製指示として受ける。
+  // 質問形 (コスト質問の一式応答は chat_tools 側の正常例) では発火しない。ネザライトは
+  // 鍛冶強化で直接クラフトできないため対象外 (一式のコスト応答が既存の正)。
+  try {
+    if (!/[？?]/.test(text) && !/(何個|いくつ|要る|必要|コスト)/.test(text)) {
+      const GEAR_MATS = [["ダイヤモンド", "diamond", "ダイヤ"], ["ダイヤ", "diamond", "ダイヤ"], ["鉄", "iron", "鉄"], ["アイアン", "iron", "鉄"], ["金", "golden", "金"], ["ゴールド", "golden", "金"], ["革", "leather", "革"], ["レザー", "leather", "革"]];
+      const GEAR_PARTS = [["helmet", "ヘルメット"], ["chestplate", "チェストプレート"], ["leggings", "レギンス"], ["boots", "ブーツ"]];
+      let gm = null;
+      for (const [word, mid, disp] of GEAR_MATS) { if (text.includes(word + "フル") || text.includes(word + "のフル")) { gm = { mid, disp }; break; } }
+      if (!gm && /(防具|装備)一式/.test(text)) { for (const [word, mid, disp] of GEAR_MATS) { if (text.includes(word)) { gm = { mid, disp }; break; } } }
+      if (gm && /(作って|作る|ください|欲しい|ちょうだい|お願い)/.test(text)) {
+        const ids = GEAR_PARTS.map(([pid]) => `${gm.mid}_${pid}`);
+        return { kind: "build", target: { item: ids[0], block: null, entity: null, name: `${gm.disp}の${GEAR_PARTS[0][1]}` }, amount: 1, constraints, sideTasks: [], negations: [], unresolved: [], caps: [], tool: null, placement: null, gearSet: ids, gearMaterial: gm.disp, returnTo: "owner", raw };
+      }
+    }
+  } catch { /* 一式として解釈できなければ従来経路へ */ }
 
   // 1) 制約句を抽出して除去（先に見つかった明示指定を優先し、上書きしない）
   for (const [re, value] of CONSTRAINT_PHRASES) {

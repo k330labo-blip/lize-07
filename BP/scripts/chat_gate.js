@@ -19,6 +19,10 @@ function isNegatedDirective(t, re) {
   if (/(しないで|しちゃだめ|してはだめ|やめてほしくない|止めてほしくない|ほしくない|ないでください|ないでね|ないで$|ないで。)/.test(t)) return true;
   // cycle1722 A13 R2: 命令形の否定「中止するな／やめるな／止めるな」も否定 (現行は fire してしまう実測あり)
   if (/(中止|キャンセル|やめ|止め).{0,4}(するな|るな)/.test(t)) return true;
+  // cyc2003 A13: 工場側の命令形否定も対称に否定とする (「自動化するな」「ラインを組むな」
+  // 「鉄の自動化はするな」)。促音便形「組んではだめ」も否定形に含める。
+  if (/(自動化|ライン).{0,10}(するな|組むな|すんな)/.test(t)) return true;
+  if (/(んではだめ|んじゃだめ|んではダメ)/.test(t)) return true;
   if (/まだ.{0,8}(やめて|中止|止めて|キャンセル)/.test(t) && /ほしくない|ないで/.test(t)) return true;
   return false;
 }
@@ -33,7 +37,8 @@ export function gateCancel(text) {
     if (/だけ(やめて|中止|止めて|キャンセル)/.test(t) || /(続けて|継続して).{0,16}(やめて|中止|止めて)/.test(t)) return { fire: false, kind: "partial" };
     if (isNegatedDirective(t)) return { fire: false, kind: "negation" };
     if (isQuestionForm(t)) return { fire: false, kind: "question" };
-    if (/(したら|すると|すれば)/.test(t)) return { fire: false, kind: "conditional" };
+    // cyc2003 A13: 単独「たら」条件 (雨が降ったら中止して 等) も条件節として発火しない
+    if (/(したら|すると|すれば|たら)/.test(t)) return { fire: false, kind: "conditional" };
     return { fire: true, kind: "cancel" };
   } catch { return { fire: false, kind: "error" }; }
 }
@@ -49,6 +54,8 @@ export function gateFactory(text) {
     if (isHowToRequest(t)) return { fire: false, kind: "question" };
     if (isQuestionForm(t)) return { fire: false, kind: "question" };
     if (/(なったら|たら|れば|ときは|時は).{0,20}(自動化|ライン)/.test(t)) return { fire: false, kind: "conditional" };
+    // cyc2003 A13: 後置条件 (「自動化するのは雨が降ってからにして」) も条件節
+    if (/(自動化|ライン).{0,40}(降ってから|なってから|たら|れば)/.test(t)) return { fire: false, kind: "conditional" };
     return { fire: true, kind: "start" };
   } catch { return { fire: false, kind: "error" }; }
 }

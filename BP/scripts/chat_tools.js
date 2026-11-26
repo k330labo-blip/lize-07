@@ -168,7 +168,10 @@ const MATERIALS = [
   { keys: ["木"], ingot: "木材" },
 ];
 function tryGearCost(text) {
-  if (!/(一式|装備|防具|剣|ツルハシ|斧|シャベル|クワ|兜|胸当て|レギンス|ブーツ|盾|ハサミ)/.test(text)) return null;
+  if (!/(一式|装備|防具|剣|ツルハシ|斧|シャベル|クワ|兜|胸当て|チェストプレート|ヘルメット|レギンス|ブーツ|盾|ハサミ)/.test(text)) return null;
+  // cyc2003 A01/A02: 作製動詞がある指示はコスト質問ではない (「ダイヤの防具一式作って」が
+  // コスト応答に競合して作製へ進まなかった)。質問形の判定は下の既存ゲートに任せる。
+  if (/(作って|作る|作製)/.test(text) && !/(何個|いくつ|要る|必要|コスト)/.test(text)) return null;
   if (!/(何個|いくつ|要る|いる|必要|コスト|素材)/.test(text) && !/一式/.test(text)) return null;
   const mat = MATERIALS.find((mm) => mm.keys.some((k) => text.includes(k)));
   if (!mat) return null;

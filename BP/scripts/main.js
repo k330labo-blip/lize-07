@@ -1670,6 +1670,13 @@ function canBreakForPath(bot, c, b) {
 function breakForPath(bot, r, c, opts = {}) {
   let b = null; try { b = bot.dimension.getBlock(c); } catch {}
   if (!b || !canBreakForPath(bot, c, b)) return false;
+  // forbids 直前ゲート (cyc2003 A17-D2): 経路掘り・救済・坑道の即時破壊も tickWork と同じ
+  // 純粋核で fail-closed に照合する (従来は canBreakForPath と到達ゲートだけで素通りしていた)。
+  try {
+    let fbBlocked = false;
+    try { fbBlocked = isForbiddenWorkTarget(r.sessionForbids, b.typeId, dropOfWorkTarget) === true; } catch { fbBlocked = true; }
+    if (fbBlocked) { try { r.lastBreak = { act: "BREAK", ok: false, reason: "FORBIDDEN", item: b.typeId, at: Date.now() }; commitLastAction(r, r.lastBreak); } catch {} return false; }
+  } catch { return false; }
   // 要望バッチA (v0.4.88): 経路掘り・救済・坑道 dig にも到達ゲートを通す。dig_first は遮蔽側を深さ1だけ先に掘る
   try {
     const eye2 = { x: bot.location.x, y: bot.location.y + 1.6, z: bot.location.z };
@@ -2541,6 +2548,16 @@ function startMission(bot, owner, r, mo, announce = true, opts = {}) {
 function clearPlanRecords(r) { try { r.toolNeed = null; r.lastPlan = null; r.lastPlanGate = null; r.lastPlanGateP3 = null; r.lastPlanRevalP4 = null; r.lastPlanGateUnified = null; r.lastPlanRevalFull = null; r.lastPlanRevalAdopt = null; r.lastPlanRevalFullAdopt = null; r.lastPlanGateUnifiedAdopt = null; r.lastGoal = null; r.lastPlanInspect = null; r.lastPlanAt = 0; r.planAdoptSeen = null; r.planAdoptShieldUsedFor = null; r.lastPlanAdoptEffect = null; r.tracePlanSeen = null; r.traceActSeen = null; } catch {} }
 function finishMission(bot, owner, r) {
   r.mission = null; clearPlanRecords(r);
+  // 0-F2 (cyc2003): 防具一式の残り部位があれば次を開始する (完了した部位は再開しない)
+  try {
+    if (Array.isArray(r.pendingGearSet) && r.pendingGearSet.length && owner) {
+      const next = r.pendingGearSet.shift();
+      if (!r.pendingGearSet.length) r.pendingGearSet = null;
+      startMission(bot, owner, r, { kind: "gather", target: next, amount: 1, constraints: { hostiles: "avoid", forbiddenTargets: [] }, sideTasks: [], returnTo: "owner", name: null, tool: null, placement: null });
+      persistMission(bot, r, true);
+      return;
+    }
+  } catch {}
   persistMission(bot, r, true);
   dps(bot, "cb_order", "");
   if (r.buildPlan && r.buildPlan.stage === "gather") advanceBuildGather(bot, owner, r);
@@ -4798,7 +4815,7 @@ function parserOrderToMission(o) {
   const hostiles = o.constraints?.hostiles === "engage" ? "fight" : o.constraints?.hostiles === "ignore" ? "ignore" : "avoid";
   const sideTasks = (o.sideTasks || []).map((s) => { const st = s.target || {}; const id = typeof st === "string" ? st : (st.item || st.block || st.entity); return id ? { kind: s.kind === "hunt" ? "hunt" : "gather", target: id, amount: s.amount ?? 8 } : null; }).filter(Boolean);
   const forbiddenTargets = [...new Set((o.negations || []).map((n) => n?.target?.item || n?.target?.block || n?.target?.entity).filter(Boolean))].filter((id) => id !== (t.item || t.block || t.entity));
-  return { kind: o.kind === "hunt" ? "hunt" : "gather", target: t.item || t.block || t.entity || null, amount: o.amount ?? 32, constraints: { hostiles, forbiddenTargets, caps: Array.isArray(o.caps) ? o.caps : [] }, sideTasks, returnTo: o.returnTo === "home" ? "home" : "owner", name: t.name || null, tool: o.tool ?? null, placement: o.placement ?? null }; // 0-C2 (cycle1215): caps を mission 制約へ同梱 (保持のみ)。0-C4 (cycle1321): 道具と設置位置も保持する
+  return { kind: o.kind === "hunt" ? "hunt" : "gather", target: t.item || t.block || t.entity || null, amount: o.amount ?? 32, constraints: { hostiles, forbiddenTargets, caps: Array.isArray(o.caps) ? o.caps : [] }, sideTasks, returnTo: o.returnTo === "home" ? "home" : "owner", name: t.name || null, tool: o.tool ?? null, placement: o.placement ?? null, gearSet: Array.isArray(o.gearSet) ? o.gearSet : null }; // 0-C2 (cycle1215): caps を mission 制約へ同梱 (保持のみ)。0-C4 (cycle1321): 道具と設置位置も保持する
 }
 
 // Phase5 否定配線 (NEGW): 禁止・聞き返しは mission を作らない。記録と復唱/聞き返しのみ。
@@ -4916,6 +4933,18 @@ function startOrderFromParser(p, bot, r, o) {
     if (!bp) {
       // v0.4.67: 図面が無くても、クラフトで作れる物 (道具・かまど・インゴット等) なら長期タスクとして作る
       const mo0 = parserOrderToMission(o);
+      // 0-F2 (cyc2003): 防具一式は4部位すべて作製可能か先に検証し、最初の部位を開始して残りを
+      // pendingGearSet へ保持する (finishMission が完了ごとに次部位を開始する)。
+      if (Array.isArray(o.gearSet) && o.gearSet.length > 1) {
+        let allOk = true;
+        for (const gid of o.gearSet) { let ok = false; try { const pl = planLongTask({ target: "minecraft:" + gid, amount: 1 }, countInv(bot), invDurabilityOf(bot)); ok = !!(pl && pl.feasible); } catch {} if (!ok) { allOk = false; break; } }
+        if (!allOk) { say(p, bot, `${o.gearMaterial || ""}の一式は、今の調達経路では作りきれません。部位ごとに頼んでください`, true); return; }
+        if (r.mission && r.mission.status === "active") { say(p, bot, "今の指示の途中です。やめるなら「やめて」と言ってください", true); return; }
+        r.pendingGearSet = o.gearSet.slice(1).map((gid) => "minecraft:" + gid);
+        mo0.amount = 1; mo0.target = "minecraft:" + o.gearSet[0];
+        startMission(bot, p, r, mo0);
+        return;
+      }
       let craftable = false;
       if (mo0.target) {
         mo0.amount = o.amount ?? 1;
@@ -4973,6 +5002,12 @@ function handleChatMessage(p, rawIn) {
   if (!r.mission && r.pendingConditionOrder && gateCancel(raw).fire) {
     clearPendingCondition(bot, r);
     system.run(() => { say(p, bot, "分かりました。条件の指示は取り下げました", true); try { conv.hear(raw, "pending_condition_cancel"); } catch {} });
+    return;
+  }
+  // 0-F3 (cyc2003): ネザーゲート/ポータルの建築は未対応。知識説明へ流して受理したように見せず、
+  // できない部分 (フレーム設置・点火・次元移動) をその場で明示する (0-C7 原則)。質問形は対象外。
+  if (/(ネザーゲート|ネザーポータル|ポータル)/.test(raw) && /(作って|作る|建てて|建てる|設置)/.test(raw) && !/(教えて|方法|どう|？|\?)/.test(raw)) {
+    system.run(() => { say(p, bot, "ネザーゲートは、まだ作れません。黒曜石の枠の設置も、火打ち石での点火も、次元を移動する仕組み自体も未実装です。枠だけでも先に置く形は、今後の課題に記録しました", true); try { conv.hear(raw, "portal_unsupported"); } catch {} });
     return;
   }
   // ①.45 倉庫 W2 (cyc1939): 整理の依頼は注文パーサーへ流さず倉庫整理へ直結する (質問形・方法の相談は対象外)
