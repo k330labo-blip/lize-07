@@ -45,7 +45,8 @@ import { darkEntryInit, noteDarkEntry, darkEntryOffset, darkEntryActive, lightBa
 import { createTorchPassState, noteTorchPass } from "./torchpass_math.js"; // POLISH-ANIM-TORCHPASS-01 (cycle1532): feeder 第1段は記録のみ (peek-only・新規走査なし)
 import { applyDryoffYaw, isDryoffActive, noteDryoff as noteDryoffState } from "./dryoff_math.js"; // POLISH-ANIM-DRYOFF-01 (cycle1322): 雨上がりに水を払う (表示層のみ・実機確認待ち)
 import { noteBreathCold } from "./breath_cold_math.js"; // POLISH-FX-BREATHCOLD-01 (cycle1343): 寒冷地での白い排気 (表示層のみ・粒子ID未照合のため記録のみ・実機確認待ち)
-import { fromCraftResult } from "./actions_contract.js"; // 6-ML (cycle1322): CRAFT/SMELT 実行結果の正規化 (記録専用) // POLISH-ANIM-SKYGLANCE-01 (cycle1133): 雨の降り始めに空を見上げる (表示層のみ) // POLISH-ANIM-SUMMONSCAN-01 (cycle1110): 召喚・復元直後の見回し (表示層のみ)
+import { fromCraftResult } from "./actions_contract.js"; // 6-ML (cycle1322): CRAFT/SMELT 実行結果の正規化 (記録専用)
+import { fromEquipmentResult } from "./actions_contract.js"; // 6-ML (cyc1939): ATTACK (shootAt) 実行結果の正規化 (記録専用) // POLISH-ANIM-SKYGLANCE-01 (cycle1133): 雨の降り始めに空を見上げる (表示層のみ) // POLISH-ANIM-SUMMONSCAN-01 (cycle1110): 召喚・復元直後の見回し (表示層のみ)
 import { createSpiral, spiralStepCell, spiralDigCells, spiralStepsTotal, spiralHeading, spiralLocateK, chooseSpiralVariant } from "./spiral.js";
 import { steerDecision, collectHints, chooseHint, hintDirection, inDepthBand, SURVEY_HINT, reSteerDir } from "./survey_hint.js"; // cycle2333: R1 reSteerDir 配線 (発火点限定) // キュー7 (cycle1443): surveyヒントで坑道を誘導する純粋核 (ヒント無し時は従来ランダムへ完全フォールバック)
 import { createGuardState, decideResteer, recordBlocked, recordResteerApplied, legKeyOf } from "./resteer_guard_math.js"; // cycle0005: resteer F-1/F-2 ガード純粋核 (元凶方向への復帰禁止・再blocked無効化・blocked累計30秒の出口・距離/深度ガード)
@@ -74,6 +75,7 @@ import { createOreSpotState, noteOreSpot, sampleOreSpot } from "./orespot_math.j
 import { createHomesightState, noteHomesight, sampleHomesight } from "./homesight_math.js"; // POLISH-ANIM-HOMESIGHT-01 (cycle0900): 拠点が見える距離まで帰ってきたときの小さな頷き (表示層のみ・実機確認待ち)
 import { createSleepwatchState, noteSleepwatch, sampleSleepwatch, sleepwatchYawPullDeg } from "./sleepwatch_math.js"; // POLISH-ANIM-SLEEPWATCH-01 (cycle0910): 主人が眠り始めた瞬間に一度だけ頭を向け直す見守り視線 (表示層のみ・実機確認待ち)
 import { createMountglanceState, noteMountglance, sampleMountglance, mountglanceYawPullDeg } from "./mountglance_math.js"; // POLISH-ANIM-MOUNTGLANCE-01 (cycle0936): 主人が乗り物に跨った瞬間に一度だけ頭を向け直す出発の見届け視線 (表示層のみ・実機確認待ち)
+import { createWakegreetState, noteWakegreet, sampleWakegreet, wakegreetYawPullDeg } from "./wakegreet_math.js"; // POLISH-ANIM-WAKEGREET-01 (cyc1939): 主人が目覚めた瞬間に一度だけ向け直す小さな会釈 (表示層のみ・実機確認待ち)
 import { createWorkglanceState, noteWorkglance, sampleWorkglance } from "./workglance_math.js"; // POLISH-ANIM-WORKGLANCE-01 (cycle1728, v0.5.19)
 import { createCatchsightState, noteCatchsight, sampleCatchsight } from "./catchsight_math.js";
 import { createRainShelterState, noteRainShelter, sampleRainShelter } from "./rainshelter_math.js"; // POLISH-ANIM-RAINSHELTER-01 (cycle2231): 持続雨の待機中に屋根方向へ視線を寄せる (表示層のみ・実機確認待ち) // POLISH-ANIM-CATCHSIGHT-01 (cycle2200): 主人が投げた物の追視 (表示層のみ・実機確認待ち)
@@ -128,6 +130,9 @@ import { shouldReplayGaze, GAZE_REPLAY_INTERVAL_TICKS } from "./gaze_cadence_mat
 import { mergeCaps, capForTarget } from "./cap_guard_math.js"; // 0-C2 読み手 (cycle1337): セッション上限を mission へ届ける
 import { createWarehouseRegistry, serializeWarehouseRegistry, deserializeWarehouseRegistry, addCandidates, warehouseKeyOf, registerBox, removeCandidate } from "./warehouse_registry.js"; // 倉庫 W1: 台帳の DP 永続化 (cb_warehouse)
 import { WAREHOUSE_CATEGORIES, categoryLabelOf } from "./warehouse_categories.js"; // 倉庫 W1 (cyc1908): 仕分け先カテゴリ語彙の単一の正。UI 登録で category を渡し、仕分け核の category 一致を実運用で発火させる
+import { planSortMoves } from "./warehouse_sort.js"; // 倉庫 W2 (cyc1939): 仕分け計画核を実機経路へ接続
+import { verifyMove } from "./warehouse_exec.js"; // 倉庫 W2 (cyc1939): 移動直前のスロット再確認
+import { itemSnapshotOf, boxSnapshotOf, buildSortInput, summarizeSort } from "./warehouse_adapter.js"; // 倉庫 W2 (cyc1939): 実コンテナ⇔boxes 形式の変換
 import { createStairLookState, noteStairLook, stairLookPitch } from "./stairlook_math.js"; // POLISH-ANIM-STAIRSLOOK-01 (cycle1455): 表示層のみ・実機確認待ち
 import { createOrderLookState, noteOrderAccepted, sampleOrderLook } from "./orderlook_math.js"; // POLISH-ANIM-ORDERLOOK-01: 指示受理直後の「受けました」の頷き (表示層のみ・実機確認待ち)
 import { createHomebowState, noteHomeArrival, sampleHomebow } from "./homebow_math.js"; // POLISH-ANIM-HOMEBOW-01 (cyc1908): 拠点入庫完了直後の小さな一礼 (表示層のみ・実機確認待ち)
@@ -688,6 +693,7 @@ function buildContext(bot, owner) {
   try { c.owner.onFire = !!owner.isOnFire; } catch {}
   try { c.x.ownerInBed = !!owner.isSleeping; } catch {}
   noteSleepwatchTick(bot, r, c); // POLISH-ANIM-SLEEPWATCH-01 (cycle0910): ownerInBed はこの行で初めて立つため、feeder は知覚tick列 (上記) でなく必ずここ (設定直後) で呼ぶ。前に置くと毎回 undefined で永遠に発火しない (cycle0910-a04 実測)
+  noteWakegreetTick(bot, r, c); // POLISH-ANIM-WAKEGREET-01 (cyc1939): 起床の辺も ownerInBed 設定直後でしか正しく観測できないため同位置で呼ぶ
   try { const oc0 = invOf(owner); if (oc0) c.x.ownerInvFull = oc0.emptySlotsCount === 0; } catch {}
   if (scan && scan.nearestHostile) { try { c.danger.ownerTargeted = dist(scan.nearestHostile.location, owner.location) < dist(scan.nearestHostile.location, bot.location); } catch {} }
   // バイオーム正規化（getBiome の長いID → ルール語彙）
@@ -2473,7 +2479,7 @@ function zapEntity(bot, r, e) {
   if (core) {
     let snap = null; try { snap = core.snapshot(); } catch {}
     if (snap && snap.hasGun && d <= snap.gunRange && d >= 2) {
-      try { const sr = core.shootAt({ distance: d, applyDamage: (amt) => e.applyDamage(amt, { cause: "projectile", damagingEntity: bot }) }); r.lastAttack = { ok: !!sr?.ok, reason: sr?.reason || null, at: Date.now() }; if (sr?.ok) { try { sfxAttack(bot.dimension, bot.location); } catch {} } } catch {} // Phase2: ATTACK結果の回収（記録のみ）/ POLISH-SND-ATTACK-01 (cycle0841): 射撃成功時のみ攻撃音 (表示層のみ・実機確認待ち)
+      try { const sr = core.shootAt({ distance: d, applyDamage: (amt) => e.applyDamage(amt, { cause: "projectile", damagingEntity: bot }) }); r.lastAttack = { ok: !!sr?.ok, reason: sr?.reason || null, at: Date.now() }; try { const norm = fromEquipmentResult(sr, "shootAt"); commitLastAction(r, { act: "ATTACK", ok: !!norm?.ok, reason: norm?.ok ? null : (norm?.reason || null), item: e?.typeId || null, at: Date.now() }); } catch {} if (sr?.ok) { try { sfxAttack(bot.dimension, bot.location); } catch {} } } catch {} // Phase2: ATTACK結果の回収（記録のみ）/ 6-ML ATTACK commit (cyc1939): 銃の小文字 reason は契約語彙へ正規化してから記録する (記録のみ・分岐不変) / POLISH-SND-ATTACK-01 (cycle0841): 射撃成功時のみ攻撃音 (表示層のみ・実機確認待ち)
       return;
     }
   }
@@ -2481,6 +2487,7 @@ function zapEntity(bot, r, e) {
   r.zapAt = Date.now();
   const dmg = core ? core.weaponDamage().damage : 2; // 装備中核の武器ダメージ表（素手2。フォールバックも表と一致させる v0.4.88）
   try { e.applyDamage(dmg, { cause: "entityAttack", damagingEntity: bot }); } catch {}
+  try { commitLastAction(r, { act: "ATTACK", ok: true, reason: null, item: e?.typeId || null, at: Date.now() }); } catch {} // 6-ML ATTACK commit (cyc1939): 近接も result 軸へ記録する (記録のみ・分岐不変)
   try { sfxAttack(bot.dimension, bot.location); } catch {} // POLISH-SND-ATTACK-01 (cycle0841): 近接攻撃音 (表示層のみ・実機確認待ち)
 }
 function pickupItemEntity(bot, owner, itemEnt, ctx) {
@@ -4056,6 +4063,19 @@ function noteSleepwatchTick(bot, r, c) {
     if (out?.fired) r.lastSleepWatch = { at: Date.now(), dist: typeof d === "number" ? d : null };
   } catch {}
 }
+// POLISH-ANIM-WAKEGREET-01 (cyc1939): feeder は既存観測だけを使い新規走査なし。就寝確定 (2回連続) 後の起床確定でのみ発火し、SLEEPWATCH (就寝開始の辺) とは発火源が別。
+function noteWakegreetTick(bot, r, c) {
+  try {
+    if (!bot || !r) return;
+    if (!r.wakegreetState) r.wakegreetState = createWakegreetState();
+    let inWater = false; try { inWater = !!bot.isInWater; } catch {}
+    const suppressed = !!((c?.danger?.count ?? 0) > 0) || r.selfFalling === true || inWater || !!r.work;
+    const d = c?.self?.distOwner;
+    const out = noteWakegreet(r.wakegreetState, { nowMs: Date.now(), ownerSleeping: c?.x?.ownerInBed === true ? true : (c?.x?.ownerInBed === false ? false : null), ownerDist: typeof d === "number" && Number.isFinite(d) && d < 900 ? d : null, sameDimension: c?.owner?.dimensionSame === true, suppressed });
+    r.wakegreetState = out.state;
+    if (out?.fired) r.lastWakegreet = { at: Date.now(), dist: typeof d === "number" ? d : null };
+  } catch {}
+}
 // POLISH-ANIM-MOUNTGLANCE-01 (cycle0936): feeder は既存観測 (c.x.ownerRiding / c.self.distOwner / c.owner.dimensionSame) だけを使い新規走査なし。
 function noteMountglanceTick(bot, r, c) {
   try {
@@ -4188,6 +4208,7 @@ function applyGaze(bot, owner, ctx, scan) {
     if (rot && r.homesightState) { try { const hs2 = sampleHomesight(r.homesightState, Date.now()); if (hs2.active) rot = { ...rot, x: rot.x + hs2.pitchDeg }; } catch {} } // POLISH-ANIM-HOMESIGHT-01 (cycle0900): 重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot && r.sleepwatchState) { try { const sw2 = sampleSleepwatch(r.sleepwatchState, Date.now()); if (sw2.active) { let yawPull = 0; try { if (owner) { const gr = gazeRotation(bot.location, { x: owner.location.x, y: owner.location.y + 1.4, z: owner.location.z }); yawPull = sleepwatchYawPullDeg(rot.y, gr?.y); } } catch {} rot = { ...rot, y: rot.y + yawPull, x: rot.x + sw2.pitchDeg }; } } catch {} } // POLISH-ANIM-SLEEPWATCH-01 (cycle0910): 重畳の最下位 (表示層のみ・実機確認待ち。体は回さない)
     if (rot && r.mountglanceState) { try { const mg2 = sampleMountglance(r.mountglanceState, Date.now()); if (mg2.active) { let yawPull = 0; try { if (owner) { const gr = gazeRotation(bot.location, { x: owner.location.x, y: owner.location.y + 1.4, z: owner.location.z }); yawPull = mountglanceYawPullDeg(rot.y, gr?.y); } } catch {} rot = { ...rot, y: rot.y + yawPull, x: rot.x + mg2.pitchDeg }; } } catch {} } // POLISH-ANIM-MOUNTGLANCE-01 (cycle0936): 重畳の最下位 (表示層のみ・実機確認待ち。体は回さない)
+    if (rot && r.wakegreetState) { try { const wg2 = sampleWakegreet(r.wakegreetState, Date.now()); if (wg2.active) { let yawPull = 0; try { if (owner) { const gr = gazeRotation(bot.location, { x: owner.location.x, y: owner.location.y + 1.4, z: owner.location.z }); yawPull = wakegreetYawPullDeg(rot.y, gr?.y); } } catch {} rot = { ...rot, y: rot.y + yawPull, x: rot.x + wg2.pitchDeg }; } } catch {} } // POLISH-ANIM-WAKEGREET-01 (cyc1939): 重畳の最下位 (表示層のみ・実機確認待ち。体は回さない)
     if (rot) { try { bot.setRotation(rot); } catch {} }
   }
   if (gz.say && !r.gazeReplayCall && Math.random() < 0.4) sayAmbient(owner, bot, gz.say); // 0-E1: 視線再適用 (2tick) では環境発話を繰り返さない
@@ -4546,6 +4567,76 @@ function openMenu(p, bot) {
 // 倉庫 W1 リモコンUI (cycle1604, selection 13): 候補の確認と一括登録/除外/破棄。
 // 候補供給は refreshWarehouseCandidates (既知コンテナ) が担い、ここでは新規走査をしない。
 // 登録時は水平隣接する候補同士をラージチェストの組として pairKey で結ぶ (どちらの半分でも同じ収納先)。
+// 倉庫 W2 (cyc1939): 登録箱の実コンテナを boxes 形式へスナップショットする。
+// 開けない・未読込・破損した箱は null を返し、呼び出し側が「開けなかった箱」として数える (粘らない)。
+function warehouseRawStackOf(stack) {
+  try {
+    if (!stack) return null;
+    let durability = null; try { const dc = stack.getComponent?.("minecraft:durability"); if (dc && typeof dc.damage === "number") durability = dc.damage; } catch {}
+    let enchants = []; try { const ec = stack.getComponent?.("minecraft:enchantable"); const list = ec?.getEnchantments?.(); if (Array.isArray(list)) enchants = list.map((e) => `${e?.type?.id || e?.id || ""}:${e?.level ?? 1}`).filter((s) => !s.startsWith(":")); } catch {}
+    return { typeId: stack.typeId, name: stack.nameTag || null, durability, enchants, amount: stack.amount };
+  } catch { return null; }
+}
+function warehouseContainerOf(bot, regBox) {
+  try {
+    const dimId = typeof regBox?.dim === "string" ? regBox.dim : null;
+    const key = typeof regBox?.key === "string" ? regBox.key : "";
+    const xyz = key.split("|")[1]; if (!xyz) return null;
+    const [x, y, z] = xyz.split(",").map(Number);
+    if (![x, y, z].every(Number.isFinite)) return null;
+    let dim = bot.dimension; try { if (dimId && dimId !== bot.dimension?.id) dim = world.getDimension(dimId); } catch { return null; }
+    if (!dim) return null;
+    const block = dim.getBlock({ x, y, z }); if (!block || !isContainerBlock(block.typeId)) return null;
+    const cont = block.getComponent("minecraft:inventory")?.container; if (!cont) return null;
+    return { cont, block };
+  } catch { return null; }
+}
+function snapshotWarehouseBox(bot, regBox) {
+  try {
+    const got = warehouseContainerOf(bot, regBox); if (!got) return null;
+    const raw = [];
+    for (let i = 0; i < got.cont.size; i++) { let st = null; try { st = got.cont.getItem(i); } catch {} raw.push(warehouseRawStackOf(st)); }
+    return boxSnapshotOf(regBox, raw);
+  } catch { return null; }
+}
+// 倉庫 W2 (cyc1939): 整理の実行本体。在庫調査→計画→各 move を移動直前に再確認してから実スロットへ適用する。
+// 再確認で食い違った move 以降は止め、適用済み件数と止まった理由を報告する (消失・複製・投棄なし)。
+function runWarehouseSort(p, bot, r) {
+  try {
+    const reg = r.warehouse || createWarehouseRegistry();
+    const regBoxes = (Array.isArray(reg.boxes) ? reg.boxes : []).filter((b) => b && b.role !== "excluded");
+    if (!regBoxes.length) { say(p, bot, "登録された箱がまだありません。リモコンの倉庫メニューで候補を登録してください", true); return; }
+    const snaps = []; const contByKey = new Map(); let unreadable = 0;
+    for (const b of regBoxes) { const s = snapshotWarehouseBox(bot, b); if (s) { snaps.push(s); const got = warehouseContainerOf(bot, b); if (got) contByKey.set(b.key, got.cont); } else unreadable++; }
+    if (!snaps.length) { say(p, bot, "登録された箱を1つも開けませんでした。近くの箱だけが対象です", true); return; }
+    const plan = planSortMoves(buildSortInput(reg, snaps));
+    if (!plan.moves.length) { say(p, bot, `整理しました。移動はありませんでした${plan.leftovers.length ? `。行き先が分からない物が${plan.leftovers.length}件、元の箱に残っています` : ""}${unreadable ? `。開けなかった箱が${unreadable}件あります` : ""}`, true); return; }
+    let applied = 0; let stopReason = null;
+    for (const mv of plan.moves) {
+      // 移動直前の再確認: 関係する2箱だけを撮り直して verifyMove に通す
+      const fresh = [];
+      for (const b of regBoxes) if (b.key === mv.fromKey || b.key === mv.toKey) { const s = snapshotWarehouseBox(bot, b); if (s) fresh.push(s); }
+      const v = verifyMove(fresh, mv);
+      if (!v.ok) { stopReason = v.reason; break; }
+      const fromCont = contByKey.get(mv.fromKey); const toCont = contByKey.get(mv.toKey);
+      if (!fromCont || !toCont) { stopReason = "container_missing"; break; }
+      let fs = null, ts = null; try { fs = fromCont.getItem(mv.fromSlot); ts = toCont.getItem(mv.toSlot); } catch {}
+      if (!fs) { stopReason = "from_empty"; break; }
+      try {
+        const moving = fs.clone(); moving.amount = mv.amount;
+        if (ts) { const merged = ts.clone(); merged.amount = ts.amount + mv.amount; toCont.setItem(mv.toSlot, merged); }
+        else toCont.setItem(mv.toSlot, moving);
+        const remain = fs.amount - mv.amount;
+        if (remain > 0) { const rem = fs.clone(); rem.amount = remain; fromCont.setItem(mv.fromSlot, rem); }
+        else fromCont.setItem(mv.fromSlot, undefined);
+      } catch { stopReason = "apply_error"; break; }
+      applied++;
+    }
+    const sum = summarizeSort(plan, { ok: stopReason === null, applied, reason: stopReason, remaining: plan.moves.slice(applied) });
+    if (stopReason) say(p, bot, `整理を途中で止めました。${applied}件は移動済みです。理由は ${stopReason} で、残り${sum.remaining}件は元の箱に残っています`, true);
+    else say(p, bot, `整理しました。${applied}件を移動しました${sum.leftoverCount ? `。行き先が分からない物が${sum.leftoverCount}件、元の箱に残っています` : ""}${unreadable ? `。開けなかった箱が${unreadable}件あります` : ""}`, true);
+  } catch { try { say(p, bot, "整理の途中で問題が起きました。移動済みの分以外は元の箱に残っています", true); } catch {} }
+}
 function openWarehouseMenu(p, bot) {
   const r = rt(bot);
   try { refreshWarehouseCandidates(bot, r); } catch {}
@@ -4563,11 +4654,13 @@ function openWarehouseMenu(p, bot) {
   form.button("候補を仕分け先（カテゴリなし）に登録", "textures/items/lize_remote");
   form.button("候補を除外する", "textures/items/lize_remote");
   form.button("候補を消す（登録しない）", "textures/items/lize_remote");
+  form.button("登録した箱を整理する", "textures/items/lize_remote");
   form.button("閉じる", "textures/items/lize_remote");
   const catCount = WAREHOUSE_CATEGORIES.length;
-  const selExcluded = catCount + 1, selClear = catCount + 2, selClose = catCount + 3;
+  const selExcluded = catCount + 1, selClear = catCount + 2, selSort = catCount + 3, selClose = catCount + 4;
   form.show(p).then((res) => {
     if (res.canceled || res.selection === selClose) return;
+    if (res.selection === selSort) { const rr2 = rt(bot); system.run(() => runWarehouseSort(p, bot, rr2)); return; }
     const rr = rt(bot); if (!rr.warehouse) rr.warehouse = createWarehouseRegistry();
     const cur = (Array.isArray(rr.warehouse.candidates) ? rr.warehouse.candidates : []).slice();
     if (!cur.length) { say(p, bot, "候補は、今はありません", true); return; }
@@ -4880,6 +4973,11 @@ function handleChatMessage(p, rawIn) {
   if (!r.mission && r.pendingConditionOrder && gateCancel(raw).fire) {
     clearPendingCondition(bot, r);
     system.run(() => { say(p, bot, "分かりました。条件の指示は取り下げました", true); try { conv.hear(raw, "pending_condition_cancel"); } catch {} });
+    return;
+  }
+  // ①.45 倉庫 W2 (cyc1939): 整理の依頼は注文パーサーへ流さず倉庫整理へ直結する (質問形・方法の相談は対象外)
+  if (/(倉庫|チェスト).*(整理|仕分け)/.test(raw) && !/(教えて|方法|どう|？|\?)/.test(raw)) {
+    system.run(() => { runWarehouseSort(p, bot, r); try { conv.hear(raw, "warehouse_sort"); } catch {} });
     return;
   }
   // ①.5 Phase5 clarify 再開フック: 保持中の聞き返しへの回答を、提案収集より前に解釈する（深さ1）

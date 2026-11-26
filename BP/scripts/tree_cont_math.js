@@ -1,8 +1,11 @@
 // tree_cont_math.js — 0-D3 R1 (cycle0583): 同じ木の継続の純粋核。
-// 原木を壊したとき6近傍の「同一typeIdかつ許可ID内」の原木だけを次候補として保持する。
+// 原木を壊したとき近傍の「同一typeIdかつ許可ID内」の原木だけを次候補として保持する。
 // 葉は辿らないため葉接触の隣木へは渡らない。完全一致なので樹種厳守と両立する。
+// cyc1939 G1: 6近傍→26近傍へ拡張。斜めにずれる横枝と2x2幹 (ダークオーク等) の
+// 斜め柱が6近傍では候補に入らず同じ木の継続が切れていた。対象は同一typeIdの
+// 原木セルだけなので、葉だけが接触する隣木へは依然として渡らない。
 // @minecraft/server を import しない。例外を投げない。
-const DIRS = Object.freeze([[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]]);
+const DIRS = Object.freeze((() => { const out = []; for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) { if (dx || dy || dz) out.push([dx, dy, dz]); } return out; })());
 export function treeNeighbors(pos, brokenTypeId, typeIdAt, allowedIds) {
   try {
     if (!pos || typeof typeIdAt !== "function" || typeof brokenTypeId !== "string") return [];
