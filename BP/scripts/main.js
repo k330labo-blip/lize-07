@@ -76,7 +76,7 @@ import { createEdgepeekState, noteEdgepeek as noteEdgepeekState, sampleEdgepeek 
 import { createIcebalanceState, noteIcebalance as noteIcebalanceState, sampleIcebalance } from "./icebalance_math.js";
 import { createSnowtreadState, noteSnowtread, snowtreadCurrentOffset, applySnowtreadPitch } from "./snowtread_math.js"; // POLISH-ANIM-SNOWTREAD-01 (cycle2333): 雪上歩行の小さな沈み込み (表示層のみ・実機確認待ち)
 import { createStepupState, noteStepup as noteStepupState, sampleStepup } from "./stepup_math.js";
-import { banKeyFor, matchesBan, isBanned, filterBanned, isTrunkType } from "./trunk_ban.js"; // queue0-A bug2 (cycle1728, v0.5.19): trunk-unit ban
+import { banKeyFor, matchesBan, isBanned, filterBanned, isTrunkType, entityBanKey, isEntityBanned } from "./trunk_ban.js"; // queue0-A bug2 (cycle1728, v0.5.19): trunk-unit ban // HUNT-BAN-CELL-01 (cyc2385): 実体 ban は ID 単位
 import { treeNeighbors, mergeTreeCands } from "./tree_cont_math.js"; // 0-D3 R1 (cycle0583): 同じ木の継続候補
 import { createTakeBanState, recordTakeBan, isTakeBanned, pruneTakeBans, clearAllTakeBans } from "./take_ban_math.js"; // TR2136-01 (cycle2200): 回収全量失敗の実行側見切り
 import { createWorkBanState, recordWorkBan, isWorkBanned, pruneWorkBans, filterWorkBanned } from "./work_ban_math.js"; // cycle0832 F5: work層の見切り ban (hold枯渇後に到達不能候補を選び直す無限ループの是正)
@@ -124,7 +124,8 @@ import { materialOfTypeId } from "./sfx.js"; // cycle1543: ICEBALANCE の足元�
 import { pickaxeItemForLevel } from "./bootstrap.js"; // cycle0942: toolNeed 消費点の等級→ツルハシ決定
 import { createResidueState, residueTick, emitResidueParticle } from "./env_residue.js"; // POLISH-FX-ENVRESIDUE-01 (cycle0942): 環境残留表現の状態機械 (パーティクルID未照合の間は記録のみ)
 import { createSfxState, sfxDigHit, sfxDigBreak, sfxStep, sfxPlace, sfxPickup, sfxSplash, sfxEat, sfxAttack, sfxLand, sfxHurt } from "./sfx.js"; // POLISH-SND-LAND-01/HURT-01 (cycle0942): 着地音・被弾音も配線 // POLISH-SND-SWIM-01 (cycle0731): 入水/出水音も配線 // POLISH-SND-PICKUP-01 (cycle0710): 回収音も配線 // 要望バッチF (v0.4.88): 素材別サウンド
-import { findSources, planFor } from "./sourcing.js";
+import { findSources, planFor, entitySourceIds } from "./sourcing.js";
+import { huntKillCounts, nearestEntityOfType } from "./hunt_math.js"; // HUNT-ANIMAL-PROGRESS-01 / HUNT-NEAREST-01 (cyc2385): 討伐計上の門と最寄り選択の純粋核
 import { createMission, advance, missionSummary, withdrawKeyOf, STEP_TYPES } from "./mission.js";
 import { selectWithdrawCandidate, candKeyForFirstStep } from "./withdraw_candidate.js"; // Phase3 candKey B1 (v0.4.26): 候補選定・射影の純粋関数
 import { scanOpportunities, noteAttempt, pruneCooldowns } from "./side_tasks.js";
@@ -179,6 +180,8 @@ import { createMirrorState, recordEdge as recordMirrorEdge } from "./mirror_math
 import { createExpStore, addExpRecord, buildExpFromCommit, buildExpFromNoteFail, expCtxOf, serializeExpStore, restoreExpStore, expBytes } from "./exp_recorder.js"; // Phase7準備 6-ML (cycle0710): 経験記録のみ・挙動不変。6-ML5 export は配線しない // 基礎 N1 (v0.4.65): 決定的 block 源の獲得は sourcing の dropItem が正 (block_drops が逆引き)
 
 const DIMS = ["minecraft:overworld", "minecraft:nether", "minecraft:the_end"];
+let _entitySourceIdSet = null; // HUNT-SCAN-BUCKET-01 (cyc2385): sourcing の entity 供給源ID集合 (遅延生成・走査の受け皿)
+function entitySourceIdSet() { if (!_entitySourceIdSet) { try { _entitySourceIdSet = entitySourceIds(); } catch { _entitySourceIdSet = new Set(); } } return _entitySourceIdSet; }
 const bots = new Map(); // botId -> runtime
 const ownerRt = new Map(); // playerId -> {breakAt, placeAt, spawnAt, lastDay}
 let tick = 0;
@@ -611,6 +614,9 @@ function buildContext(bot, owner) {
         if (RANGED_IDS.has(e.typeId)) c.danger.rangedDist = Math.min(c.danger.rangedDist, d);
         const hh = hpOf(e); if (BOSS_IDS.has(e.typeId) || hh.max >= 300) { c.x.bossNear = true; c.x.bossHpPct = hh.max ? hh.cur / hh.max : 1; c.x.bossKind = e.typeId === "minecraft:warden" ? "warden" : e.typeId === "minecraft:wither" ? "wither" : e.typeId === "minecraft:ender_dragon" ? "dragon" : e.typeId === "minecraft:elder_guardian" ? "elder_guardian" : "large"; if (e.typeId.includes("gv") || e.typeId.startsWith("gun:")) c.x.gvcBoss = true; }
       }
+      // HUNT-SCAN-BUCKET-01 (cyc2385): 非敵対の entity 供給源 (ウサギ/鱈/鮭/イカ/馬/ムーシュルーム等) の受け皿。
+      // 家畜4種は上の分岐で処理済み。供給源集合に無い実体は保持しない (走査コストと機会提示の膨張防止)。
+      if (!isHostile && entitySourceIdSet().has(e.typeId)) { scan.animals.push(e); scan.opportunities.push({ kind: "entity", typeId: e.typeId, pos: { x: e.location.x, y: e.location.y, z: e.location.z }, id: e.id }); continue; }
     }
   } catch (err) { scanOk = false; noteFail(bot, "entityScan", err); }
   // POLISH-ANIM-CATCHSIGHT-01 (cycle2200): 既存走査の id 差分でアイテム出現の辺を作る (表示層のみ・実機確認待ち)。
@@ -2558,7 +2564,7 @@ function findMissionTarget(bot, r, scan, step, scanUnknown = false) {
   const target = step.target;
   if (step.type === "hunt_entity") {
     let e = null;
-    if (target && target !== "hostile") e = (scan?.hostiles || []).find((x) => x.typeId === target) || (scan?.animals || []).find((x) => x.typeId === target);
+    if (target && target !== "hostile") e = nearestEntityOfType([...(scan?.hostiles || []), ...(scan?.animals || [])].filter((x) => !isEntityBanned(r.mBanKey, r.mBanUntil, Date.now(), x?.id)), target, bot.location); // HUNT-NEAREST-01/HUNT-BAN-CELL-01 (cyc2385): 最寄り選択＋実体ban除外 (従来は走査順 .find)
     else e = scan?.nearestHostile || null; // HUNT-SUBST-01 (cyc2364): 種別指定時は別種への代替をしない。最寄り敵へのフォールバックは汎用指定 "hostile" のときだけ
     return e ? { found: true, kind: "entity", loc: { ...e.location }, typeId: e.typeId, entity: e } : (scanUnknown ? { found: false, detail: { state: "unknown" } } : { found: false }); // typeId は実体の種別を正とする (依頼種別で名乗らない)
   }
@@ -2631,7 +2637,7 @@ function findMissionTarget(bot, r, scan, step, scanUnknown = false) {
   }
   for (const s of sources) {
     if (s.kind === "block") { continue; }
-    else if (s.kind === "entity") { const e = (scan?.hostiles || []).find((x) => x.typeId === s.id) || (scan?.animals || []).find((x) => x.typeId === s.id); if (e) return { found: true, kind: "entity", loc: { ...e.location }, typeId: target, entity: e, detail: { state: "present" } }; if (scanUnknown) anyUnknown = true; }
+    else if (s.kind === "entity") { const e = nearestEntityOfType([...(scan?.hostiles || []), ...(scan?.animals || [])], s.id, bot.location); if (e) return { found: true, kind: "entity", loc: { ...e.location }, typeId: target, entity: e, detail: { state: "present" } }; if (scanUnknown) anyUnknown = true; }
     else if (s.kind === "craft") {
       const loc = scanBlockNear(bot, r, s.id); if (loc) return { found: true, kind: "block", loc, typeId: s.id, detail: { state: "present" } }; if (noteScanState(s.id)) return { found: false, detail: { state: "unknown" } };
       const it = (scan?.items || []).find((x) => itemTypeOf(x) === s.id); if (it) return { found: true, kind: "item", loc: { ...it.location }, typeId: s.id, entity: it, detail: { state: "present" } };
@@ -3940,12 +3946,12 @@ function tickMission(bot, owner, ctx, scan) {
     const prevTS = r.mTargetState;
     if (r.mTargetSince && prevTS && (prevTS.state === "unknown" || prevTS.state === "pending") && prevTS.typeId === (step.target ?? null) && typeof prevTS.at === "number") { r.mTargetSince += Math.max(0, Math.min(Date.now() - prevTS.at, 10000)); }
     if (curHave !== r.mLastHave) { r.mLastHave = curHave; r.mTargetSince = Date.now(); }
-    else if (r.mTargetLoc && r.mTargetSince && Date.now() - r.mTargetSince > 45000 && !(r.tunnel && r.tunnel.key === r.mTargetKey && Date.now() - r.tunnel.lastStepAt < 15000)) { /* v0.4.66: 掘り進めている間は見切らない */ r.mBanKey = banKeyFor(r.mTargetLoc, r.mTargetType) || r.mTargetKey; r.mBanUntil = Date.now() + 60000; r.mTargetLoc = null; r.mTargetKey = ""; r.mTargetSince = Date.now(); } // queue0-A bug2 (cycle1728): trunk-unit ban (was found-cell key, looped on same trunk)
+    else if (r.mTargetLoc && r.mTargetSince && Date.now() - r.mTargetSince > 45000 && !(r.tunnel && r.tunnel.key === r.mTargetKey && Date.now() - r.tunnel.lastStepAt < 15000)) { /* v0.4.66: 掘り進めている間は見切らない */ r.mBanKey = (r.mTargetKind === "entity" && r.mTargetEntity?.id) ? (entityBanKey(r.mTargetEntity.id) || banKeyFor(r.mTargetLoc, r.mTargetType) || r.mTargetKey) : (banKeyFor(r.mTargetLoc, r.mTargetType) || r.mTargetKey); r.mBanUntil = Date.now() + 60000; r.mTargetLoc = null; r.mTargetKey = ""; r.mTargetSince = Date.now(); } // queue0-A bug2 (cycle1728): trunk-unit ban (was found-cell key, looped on same trunk) // HUNT-BAN-CELL-01 (cyc2385): 実体対象は ID 単位で ban (セルキーでは移動で即すり抜けた)
     // 目標の固定: 一度狙った対象は、消える/壊れるまで変えない（毎tickの最寄り再選択による上下動・迷走を断つ）
     if (r.mTargetLoc && missionTargetValid(bot, r)) ft = { found: true, kind: r.mTargetKind, loc: r.mTargetLoc, typeId: r.mTargetType, entity: r.mTargetEntity, fillItem: r.mTargetFillItem || undefined, mediumKind: r.mTargetMediumKind || undefined, stand: r.mTargetFillStand || undefined };
     else {
       ft = findMissionTarget(bot, r, scan, step, ctx.x?.obs ? ctx.x.obs.scan !== "ok" : ctx.x?.scanOk === false);
-      if (ft.found && ft.loc && isBanned(ft.loc, ft.typeId, r.mBanKey, r.mBanUntil, Date.now())) { // queue0-A bug2 (cycle1728)
+      if (ft.found && ft.loc && (isBanned(ft.loc, ft.typeId, r.mBanKey, r.mBanUntil, Date.now()) || isEntityBanned(r.mBanKey, r.mBanUntil, Date.now(), ft.entity?.id))) { // queue0-A bug2 (cycle1728) // HUNT-BAN-CELL-01 (cyc2385): 実体は ID で照合
         // v0.4.66: 一番近いものを避けている時は、調査結果から次に近いものを選ぶ (隣の鉱石を見落とさない)
         let alt = null; try { if (ft.kind === "block" && ft.typeId) alt = lookupSurvey(bot, [ft.typeId], r.mBanKey); } catch {}
         ft = alt ? { found: true, kind: "block", loc: alt.loc, typeId: alt.typeId, detail: { state: "present", via: "survey" } } : { found: false };
@@ -5204,8 +5210,10 @@ world.afterEvents.entityDie.subscribe((ev) => {
   if (dead.typeId !== "minecraft:player" && dead.typeId !== BOT_ID) {
     let hostile = GVC_HOSTILE_SET.has(dead.typeId);
     if (!hostile) { try { hostile = !!dead.getComponent("minecraft:type_family")?.hasTypeFamily("monster"); } catch {} }
-    if (hostile) for (const [bid, rr] of bots) { let b = null; try { b = world.getEntity(bid); } catch {} if (b && b.dimension.id === dead.dimension.id && dist(b.location, dead.location) < 7) { // HUNT-SUBST-01 (cyc2364): 現行 hunt ステップの対象種別 (または汎用指定) に一致する死亡だけを数える。加害者の厳密な帰属は正式版APIで担保しにくいため最低ラインは種別一致とする
-      try { const mm = rr.mission; const st = mm && mm.status === "active" ? (mm.steps || [])[mm.currentStep || 0] : null; if (st && st.type === "hunt_entity" && (!st.target || st.target === "hostile" || st.target === dead.typeId)) rr.missionKills = (rr.missionKills || 0) + 1; } catch {} } }
+    // HUNT-ANIMAL-PROGRESS-01 (cyc2385・BLOCKER是正): 計上の門は敵対性でなく現行 hunt ステップの対象指定 (huntKillCounts が単一の正)。
+    // 種別指定の動物 (牛等) は敵対でなくても数え、汎用指定 "hostile" では従来どおり敵対だけを数える。
+    for (const [bid, rr] of bots) { let b = null; try { b = world.getEntity(bid); } catch {} if (b && b.dimension.id === dead.dimension.id && dist(b.location, dead.location) < 7) { // HUNT-SUBST-01 (cyc2364): 現行 hunt ステップの対象種別 (または汎用指定) に一致する死亡だけを数える。加害者の厳密な帰属は正式版APIで担保しにくいため最低ラインは種別一致とする
+      try { const mm = rr.mission; const st = mm && mm.status === "active" ? (mm.steps || [])[mm.currentStep || 0] : null; if (st && st.type === "hunt_entity" && huntKillCounts(st.target, dead.typeId, hostile)) rr.missionKills = (rr.missionKills || 0) + 1; } catch {} } }
   }
   if (dead.typeId === BOT_ID) {
     const oid = dp(dead, "cb_owner", "");

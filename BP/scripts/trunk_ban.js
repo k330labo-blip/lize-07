@@ -109,6 +109,21 @@ export function isBanned(loc, typeId, banKey, banUntil, now) {
   return matchesBan(loc, typeId, banKey);
 }
 
+// HUNT-BAN-CELL-01 (cyc2385): 狩猟対象は移動する実体であり、セルキー ban は
+// 1マス動けばすり抜けて即再選択された。是正: 実体対象の ban は実体ID単位にする。
+/** 実体 ban キー: "ent:<entityId>" */
+export function entityBanKey(entityId) {
+  if (entityId === null || entityId === undefined || entityId === "") return null;
+  return `ent:${String(entityId)}`;
+}
+
+/** 実体 ban 判定 (期限つき)。banKey が ent: 形式でなければ false。 */
+export function isEntityBanned(banKey, banUntil, now, entityId) {
+  if (!Number.isFinite(banUntil) || !Number.isFinite(now) || now >= banUntil) return false;
+  const k = entityBanKey(entityId);
+  return k !== null && k === banKey;
+}
+
 /**
  * 候補リストから ban 中のものを除く (lookupSurvey / findMissionTarget の
  * 次点選択用)。入力は [{loc:{x,y,z}, typeId?}, ...]、順序は保持する。

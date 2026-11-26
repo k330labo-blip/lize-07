@@ -903,6 +903,29 @@ function toolPhraseOf(clause, hits) {
   } catch { return null; }
 }
 const PLACE_DIR_RE = /^(上|右|左|前|後ろ|後|下|隣|となり|横)$/;
+// 0-C R-C4-4 S6 (cyc2385 統合): 「<媒体>から<充填品目>を取って」の媒体分離。
+// 媒体 (牛) は充填の相手であって採取対象ではない。道具 (toolPhraseOf)・
+// 設置アンカー (anchorHitOf) と同型に、候補生成段で候補から外す。
+// R-C4-3 ガード (gather 主目標 entity → clarify) 自体は変更しない:
+// fill でない entity gather (牛から革を, 等) は従来どおりガードが受ける。
+const FILL_SOURCE_ITEMS = { cow: "milk_bucket" }; // entity id -> 充填品目 id (媒体が entity の組のみ)
+// ↑ fill_math.js の FILL_DEFS が正。本表は order_parser が fill_math を
+//    import できない制約 (autonomy 副本に fill_math が無くバイト同期が前提)
+//    のための写しであり、ドリフトは tests/test_fill_s6_cyc2385.mjs の突合で固定する。
+function fillSourceHitOf(clause, hits, verbClass) {
+  try {
+    if (verbClass === "hunt" || verbClass === "build") return null;
+    for (const h of hits || []) {
+      if (h.kind !== "entity") continue;
+      const itemId = FILL_SOURCE_ITEMS[h.def?.[0]];
+      if (!itemId) continue;
+      if (clause.slice(h.end, h.end + 2) !== "から") continue;
+      const f = (hits || []).find((x) => x.kind === "material" && x.def?.[0] === itemId);
+      if (f) return { hit: h, fillHit: f };
+    }
+    return null;
+  } catch { return null; }
+}
 // 「<対象>の<方向>に置く」: 方向の直前の対象 hit は設置先 (アンカー) であり対象ではない。
 function anchorHitOf(clause, hits) {
   try {
@@ -1048,12 +1071,14 @@ export function parseOrder(input) {
     const toolInfo = nonOrder ? null : toolPhraseOf(clause, hitsPerClause[ci]);
     if (toolInfo && !orderTool) orderTool = toolInfo.tool;
     const anchorInfo = nonOrder ? null : anchorHitOf(clause, hitsPerClause[ci]);
+    const fillSrcInfo = nonOrder ? null : fillSourceHitOf(clause, hitsPerClause[ci], verbClass); // 0-C R-C4-4 S6 (cyc2385)
     if (!orderPlacement) { const pl = nonOrder ? null : placementOf(clause, anchorInfo); if (pl) orderPlacement = pl; }
     let first = true;
     for (const hit of hits) {
       if (negResult.quarantinedHits?.has(hit)) continue; // 否定側は候補にしない
       if (toolInfo && hit === toolInfo.hit) continue; // 0-C4: 道具は対象にしない
       if (anchorInfo && hit === anchorInfo.hit) continue; // 0-C4: 設置アンカーは対象にしない
+      if (fillSrcInfo && hit === fillSrcInfo.hit) continue; // 0-C R-C4-4 S6 (cyc2385): 充填の媒体は対象にしない
       // 数量単位の消費: 数字の直後の単位字（本→book 等）はメンションにしない（§7-2、位置ベース）
       if (hit.kind === "material" && hit.def?.[0] === "book" && /[0-9一二三四五六七八九十]/.test(clause[hit.start - 1] ?? "")) continue;
       // 建築物は「〜を/が」に続くか直後に作/建が来る場合だけ採用

@@ -534,6 +534,19 @@ const ALIAS_INDEX = (() => {
   return m;
 })();
 
+// HUNT-SCAN-BUCKET-01 (cyc2385): 供給源になりうる実体IDの集合。
+// 走査分類が家畜4種固定で、sourcing が列挙する非敵対の供給源 (rabbit/cod/salmon/squid 等) を
+// 拾う受け皿が無く、目の前にいても absent 扱いになった是正。知識表が増えれば集合も追随する。
+export function entitySourceIds() {
+  const out = new Set();
+  try {
+    for (const e of Object.values(SOURCING)) {
+      for (const s of e?.sources || []) if (s && s.kind === "entity" && typeof s.id === "string") out.add(s.id);
+    }
+  } catch {}
+  return out;
+}
+
 // itemId（完全/省略形）・日本語名・エイリアスのいずれかからエントリを引く。無ければ null。
 export function findSources(itemIdOrAlias) {
   if (!itemIdOrAlias) return null;
