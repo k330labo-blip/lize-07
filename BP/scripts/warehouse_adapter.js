@@ -5,6 +5,8 @@
 // 純粋・例外なし。@minecraft/server を import しない。
 "use strict";
 
+import { WAREHOUSE_ITEM_CATEGORIES } from "./warehouse_categories.js";
+
 export function itemSnapshotOf(raw) {
   try {
     if (!raw || typeof raw !== "object" || typeof raw.typeId !== "string" || !raw.typeId) return null;
@@ -44,8 +46,11 @@ export function buildSortInput(reg, snapshots) {
     const itemRules = (Array.isArray(reg?.itemRules) ? reg.itemRules : [])
       .filter((x) => x && typeof x.item === "string" && typeof x.boxKey === "string")
       .map((x) => ({ typeId: x.item, destKey: x.boxKey }));
-    return { boxes, itemRules };
-  } catch { return { boxes: [], itemRules: [] }; }
+    // W3 (2): 既知分類 (完全一致 typeId -> カテゴリ) を sort 核へ供給する (cyc2059)。
+    // これが無いと本番経路では category move が構造的に発火しなかった。
+    const categories = { ...WAREHOUSE_ITEM_CATEGORIES };
+    return { boxes, itemRules, categories };
+  } catch { return { boxes: [], itemRules: [], categories: {} }; }
 }
 
 // 計画 + 実行結果 -> プレイヤー向け報告の材料 (件数と理由の内訳)

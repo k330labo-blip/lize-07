@@ -5024,6 +5024,12 @@ function handleChatMessage(p, rawIn) {
     system.run(() => { say(p, bot, "ネザーゲートは、まだ作れません。黒曜石の枠の設置も、火打ち石での点火も、次元を移動する仕組み自体も未実装です。枠だけでも先に置く形は、今後の課題に記録しました", true); try { conv.hear(raw, "portal_unsupported"); } catch {} });
     return;
   }
+  // 0-F3 点火単独形 (cyc2059): 枠が既にある前提の点火依頼も、知識説明へ流さず未対応を明示する。
+  // 質問形・否定形では発火しない (0-C1 ゲートと同作法)。点火が正式版 API で可能かは断定しない。
+  if (/(ネザーゲート|ネザーポータル|ポータル|ゲート)/.test(raw) && /(点火|着火|再点火|火をつけ|火を付け|火を点け)/.test(raw) && !/(教えて|方法|どう|？|\?)/.test(raw) && !/(しないで|しない|するな)/.test(raw)) {
+    system.run(() => { say(p, bot, "点火は、まだできません。火打ち石で火をつける仕組みが未実装です。枠が既にある場合も、点火だけを代行することはできません", true); try { conv.hear(raw, "portal_ignite_unsupported"); } catch {} });
+    return;
+  }
   // ①.45 倉庫 W2 (cyc1939): 整理の依頼は注文パーサーへ流さず倉庫整理へ直結する (質問形・方法の相談は対象外)
   if (/(倉庫|チェスト).*(整理|仕分け)/.test(raw) && !/(教えて|方法|どう|？|\?)/.test(raw)) {
     system.run(() => { runWarehouseSort(p, bot, r); try { conv.hear(raw, "warehouse_sort"); } catch {} });
