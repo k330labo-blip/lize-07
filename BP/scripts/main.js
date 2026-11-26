@@ -5108,6 +5108,7 @@ function startOrderFromParser(p, bot, r, o) {
     } catch {}
     const nm = (o.negations || []).find((n) => n?.target);
     if (reason === "excluded_only") { try { recordSessionForbids(bot, r, { negations: o.unresolved?.[0]?.negations?.length ? o.unresolved[0].negations : (o.negations || []) }); } catch {} say(p, bot, `分かりました。${nm ? forbidTargetName(nm) + "は対象にしません" : "その対象は外します"}。では、何を対象にしましょうか`, true); } // forbids G5-a (cycle0423): 発話で約束した除外をセッション禁止にも記録する (correction_without_base では記録しない)
+    else if (reason === "gather_target_is_entity") say(p, bot, `${o.target?.name || "その生き物"}そのものは集められません。欲しい品物の名前で教えてください`, true); // 0-C4 R-C4-3 (cyc2373)
     else if (reason === "correction_without_base") say(p, bot, `${nm ? forbidTargetName(nm) + "ではない、ですね" : "訂正ですね"}。${o.retainedCandidates?.[0]?.name ? `${o.retainedCandidates[0].name}でよろしいですか` : "正しい対象を教えてください"}`, true);
     else say(p, bot, "何を指しているか分かりませんでした。名前で教えてください", true);
     return;

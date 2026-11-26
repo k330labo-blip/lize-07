@@ -1235,6 +1235,13 @@ export function parseOrder(input) {
   if (main.amount === 0) {
     return { kind: "clarify", target: main.target, amount: 0, constraints, sideTasks: [], negations, unresolved: [...unresolved, { slot: "amount", reason: "zero_amount" }], caps, returnTo, raw };
   }
+  // 0-C4 R-C4-3 (cyc2373): gather の主目標が生き物 (entity) になった注文は型不整合。
+  // gather の対象はアイテム/ブロックであるべきで、entity が主目標の形は調達元が無く
+  // 必ず行き詰まる (例: 「牛から牛乳を取って」→ gather/cow)。開始処理へ渡さず聞き返しへ倒す。
+  // hunt の entity 目標は正規なので対象外。R-C4-4 (バケツ類の調達元) は含めない。
+  if (kind === "gather" && main.target?.entity) {
+    return { kind: "clarify", target: main.target, amount: main.amount ?? null, constraints, sideTasks: [], negations, unresolved: [...unresolved, { slot: "target", reason: "gather_target_is_entity" }], caps, returnTo, raw };
+  }
   return {
     kind,
     target: main.target,
