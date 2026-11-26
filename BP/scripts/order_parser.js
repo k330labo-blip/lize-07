@@ -314,7 +314,9 @@ function n5GapOk(text, hit, idx) { try { const gap = text.slice(hit.end, idx); i
 // 0-C5 (cycle1256): 数量フレーズの所在だけを従来どおり前後で特定し、値の解釈
 // (品目別スタック/複合合算/反復/相対/0個) は純粋核 amount_parse へ委ねる。
 // 詳細は hit.amountDetail に保持し、候補・注文へ amountMeta として運ぶ。
-const QTY_PHRASE_RE = /((?:半|はん)スタック|(?:\d+(?:\.\d+)?|[一二三四五六七八九十]+|ゼロ|零)\s*(?:スタック|個|本|枚|つ|体|匹|組|セット|箱)(?:と\s*(?:\d+|[一二三四五六七八九十]+)\s*(?:個|本|枚|つ|体|匹))?(?:ずつ\s*(?:\d+|[一二三四五六七八九十]+)\s*回)?)/;
+// cyc1743 0-C5 R-1/R-3: 項の繰り返し (3項以上)・第2項以降のスタック/半スタック・小数スタックを許可し、値解釈は核 amount_parse へ委ねる
+const QTY_TERM_SRC = String.raw`(?:(?:半|はん)スタック|(?:\d+(?:\.\d+)?|[一二三四五六七八九十]+|ゼロ|零)\s*(?:スタック|個|本|枚|つ|体|匹|組|セット|箱))`;
+const QTY_PHRASE_RE = new RegExp(`(${QTY_TERM_SRC}(?:\\s*と\\s*${QTY_TERM_SRC})*(?:ずつ\\s*(?:\\d+|[一二三四五六七八九十]+)\\s*回)?)`);
 function amountNear(text, hit) {
   let itemId = null;
   try { const t = targetOf(hit); itemId = t?.item ?? t?.block ?? null; } catch { itemId = null; }
@@ -380,6 +382,25 @@ const BIOME_PATTERNS = [
   ["badlands", /メサ|荒野/],
   ["mushroom", /キノコ島/],
 ];
+
+// cyc1743 0-C5 R-3: 句分割は数字に挟まれた小数点・カンマを区切りとしない
+// (「2.5スタック」が句分割で割れて核へ届かなかった)。
+function splitClauses(text) {
+  const out = []; let cur = "";
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if ("、。,.!?！？".includes(ch)) {
+      if (ch === "." || ch === ",") {
+        const pv = text[i-1], nx = text[i+1];
+        if (pv && nx && /\d/.test(pv) && /\d/.test(nx)) { cur += ch; continue; }
+      }
+      if (cur) out.push(cur); cur = ""; continue;
+    }
+    cur += ch;
+  }
+  if (cur) out.push(cur);
+  return out;
+}
 
 function normalize(text) {
   let t = String(text ?? "");
@@ -932,7 +953,7 @@ export function parseOrder(input) {
 
   // 4) 句ごとに候補を集める（過去・完了報告と質問文の句は候補にしない）
   const hasQuestionMark = /[？?]/.test(text);
-  const clauses = text.split(/[、。,.!?！？]/).filter((s) => s.length > 0);
+  const clauses = splitClauses(text);
   // Phase 5: 否定抽出を候補決定の前に置く（手順3）。失敗時は否定なしで従来経路へ。
   const hitsPerClause = clauses.map((c) => scanMentions(c, [MATERIAL_INDEX, ENTITY_INDEX, STRUCTURE_INDEX]));
   let negResult = { negations: [], quarantinedHits: new Set(), hostileNegated: false, unresolved: [], caps: [] };
@@ -1083,11 +1104,16 @@ export function parseOrder(input) {
   // 訂正側の句が別の候補を生んでいない場合だけ主数量へ反映する (対象訂正とは混ぜない)。
   let amountMeta = main.amountDetail ?? null;
   try {
-    const corrIdx = text.lastIndexOf("いや");
+    // cyc1743 0-C5 R-2: 訂正マーカーは「いや」「やっぱり」。同一句内の訂正も、
+    // その句に別対象の候補が無い場合に限り主数量へ反映する (対象訂正とは混ぜない)。
+    let corrIdx = -1, corrLen = 0;
+    for (const mk of ["やっぱり", "いや"]) { const ix = text.lastIndexOf(mk); if (ix > corrIdx) { corrIdx = ix; corrLen = mk.length; } }
     if (corrIdx >= 0) {
-      const corrClause = text.slice(0, corrIdx).split(/[、。,.!?！？]/).length - 1;
-      if (!candidates.some((c) => c.clause === corrClause)) {
-        const parsed = amount_parse(text.slice(corrIdx + 2, corrIdx + 18), { itemId: main.target?.item ?? main.target?.block ?? null });
+      const corrClause = splitClauses(text.slice(0, corrIdx)).length - 1;
+      const mainId = main.target?.item ?? main.target?.block ?? main.target?.entity ?? null;
+      const otherInClause = candidates.some((c) => c.clause === corrClause && (c.target?.item ?? c.target?.block ?? c.target?.entity ?? null) !== mainId);
+      if (!otherInClause) {
+        const parsed = amount_parse(text.slice(corrIdx + corrLen, corrIdx + corrLen + 18), { itemId: main.target?.item ?? main.target?.block ?? null });
         if (parsed && parsed.ok) { main.amount = parsed.total; amountMeta = { ...parsed, corrected: true }; }
       }
     }

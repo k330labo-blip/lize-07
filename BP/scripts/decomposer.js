@@ -11,6 +11,7 @@
 // BP/scripts/ へ取り込む際は import を "./sourcing.js" に変えること（SPEC.md 参照）。
 
 import { findSources } from "./sourcing.js";
+import { stackSizeOfItem } from "./amount_math.js"; // cyc1743 0-C5 R-5: スタック表の単一の正
 import { buildRecipes, WOOD_SPECIES, smeltPerFuel } from "./recipes.js";
 
 // ============================================================
@@ -81,14 +82,12 @@ export function resolveItem(query) {
 // ============================================================
 // スタック換算（「原木10スタック」→ 640）
 // ============================================================
-const STACK_16 = new Set(["minecraft:ender_pearl", "minecraft:egg", "minecraft:snowball", "minecraft:bucket", "minecraft:sign", "minecraft:oak_sign"]);
-const STACK_1_PATTERNS = [/_pickaxe$/, /_axe$/, /_sword$/, /_shovel$/, /_hoe$/, /_helmet$/, /_chestplate$/, /_leggings$/, /_boots$/, /minecraft:bow$/, /minecraft:shield$/, /minecraft:fishing_rod$/];
-
+// cyc1743 0-C5 R-5: 独自表を廃し amount_math.stackSizeOfItem (単一の正) へ委譲する。
+// 従来表は bucket=16 (正は1)・中身入りバケツ/ハチミツ/他樹種看板=64 (正は1/16/16) と分裂していた。
 export function stackSizeOf(item) {
   if (!item) return 64;
-  if (STACK_16.has(item)) return 16;
-  if (STACK_1_PATTERNS.some((re) => re.test(item))) return 1;
-  return 64;
+  const id = item.includes(":") ? item : "minecraft:" + item;
+  return stackSizeOfItem(id).size;
 }
 
 // amount + unit（'個' | 'stack' | 'スタック'）→ 個数

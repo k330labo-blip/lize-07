@@ -36,7 +36,7 @@ const STACK_1_PATTERNS = Object.freeze([
   /minecraft:cake$/, /_stew$/, /_soup$/,
 ]);
 const STACK_16_IDS = new Set([
-  "minecraft:ender_pearl", "minecraft:egg", "minecraft:snowball", "minecraft:honey_bottle",
+  "minecraft:ender_pearl", "minecraft:egg", "minecraft:snowball", "minecraft:honey_bottle", "minecraft:sign", // cyc1743 R-5前提: 素の看板も16
 ]);
 const STACK_16_PATTERNS = Object.freeze([/_sign$/, /_hanging_sign$/, /banner$/]);
 
@@ -56,7 +56,7 @@ export function halfStack(size) { return size === 1 ? 1 : Math.floor(size / 2); 
 
 const NUM = "(\\d+(?:\\.\\d+)?|[一二三四五六七八九十]+|ゼロ|零)";
 const UNIT = "(個|本|枚|つ|体|匹|組|セット|箱)";
-const CORRECTION_RE = /(いや|じゃなくて|ではなく|じゃなしに|まちがえた|訂正)/;
+const CORRECTION_RE = /(やっぱり|いや|じゃなくて|ではなく|じゃなしに|まちがえた|訂正)/; // cyc1743 R-2: やっぱり追加
 
 // 数量項1つを読む: { value, consumed(number of chars), isStack } | null
 function readTerm(s, size) {
