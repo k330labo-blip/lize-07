@@ -34,9 +34,25 @@ const STACK_1_PATTERNS = Object.freeze([
   /minecraft:trident$/, /minecraft:elytra$/, /minecraft:saddle$/,
   /minecraft:potion$/, /minecraft:splash_potion$/, /minecraft:lingering_potion$/,
   /minecraft:cake$/, /_stew$/, /_soup$/,
+  // --- cyc1810 R-6: スタック1の広い系統 (実測で64に落ちていたもの) ---
+  /_boat$/, /_chest_boat$/, /_raft$/, /_chest_raft$/,
+  /minecart$/,
+  /_bed$/, /minecraft:bed$/,
+  /^minecraft:music_disc_/,
+  /_horse_armor$/,
+  /(^|:)shulker_box$/, /_shulker_box$/,
+  /_on_a_stick$/,
+  /_bundle$/, /minecraft:bundle$/,
+]);
+const STACK_1_IDS = new Set([ // パターン化すると誤爆する個別品 (本系は ID 単位でしか分けられない)
+  "minecraft:totem_of_undying", "minecraft:spyglass", "minecraft:brush",
+  "minecraft:mace", "minecraft:goat_horn", "minecraft:wolf_armor",
+  "minecraft:enchanted_book", "minecraft:knowledge_book", "minecraft:writable_book",
 ]);
 const STACK_16_IDS = new Set([
   "minecraft:ender_pearl", "minecraft:egg", "minecraft:snowball", "minecraft:honey_bottle", "minecraft:sign", // cyc1743 R-5前提: 素の看板も16
+  "minecraft:armor_stand", // cyc1810 R-6: 防具立ては1ではなく16
+  "minecraft:written_book", // cyc1810 R-6: 記入済みの本は16 (書ける本=1・通常の本=64)
 ]);
 const STACK_16_PATTERNS = Object.freeze([/_sign$/, /_hanging_sign$/, /banner$/]);
 
@@ -46,6 +62,7 @@ export function stackSizeOfItem(itemId) {
     const id = itemId.includes(":") ? itemId : "minecraft:" + itemId;
     if (STACK_1_BUCKET.some((re) => re.test(id))) return { size: 1, sizeSource: "id" };
     if (STACK_1_PATTERNS.some((re) => re.test(id))) return { size: 1, sizeSource: "pattern" };
+    if (STACK_1_IDS.has(id)) return { size: 1, sizeSource: "id" };
     if (STACK_16_IDS.has(id)) return { size: 16, sizeSource: "id" };
     if (STACK_16_PATTERNS.some((re) => re.test(id))) return { size: 16, sizeSource: "pattern" };
     return { size: 64, sizeSource: "id" };
@@ -160,6 +177,11 @@ export function amount_parse(segment, ctx = {}) {
       // ずつ のみ: repeats は未指定 (null) のまま保持する
     }
 
+    // cyc1810 (a11ファズ実測): 巨大桁数で total が Infinity になり startable:true で
+    // 素通りしていた。非有限の総量は開始可能な注文にしない (too_large)。
+    if (!Number.isFinite(total)) {
+      return { ...emptyResult(sizeInfo), reason: "too_large", corrected, repeats, perRun: null };
+    }
     const isZero = total === 0;
     return {
       ok: true,

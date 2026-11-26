@@ -58,9 +58,19 @@ const STACK_1_PATTERNS = Object.freeze([
   /minecraft:trident$/, /minecraft:elytra$/, /minecraft:saddle$/,
   /minecraft:potion$/, /minecraft:splash_potion$/, /minecraft:lingering_potion$/,
   /minecraft:cake$/, /_stew$/, /_soup$/, /bucket$/,
+  // cyc1810 R-6: amount_math と同値に保つ (自己完結コピーの再分裂防止)
+  /_boat$/, /_chest_boat$/, /_raft$/, /_chest_raft$/, /minecart$/,
+  /_bed$/, /minecraft:bed$/, /^minecraft:music_disc_/, /_horse_armor$/,
+  /(^|:)shulker_box$/, /_shulker_box$/, /_on_a_stick$/, /_bundle$/, /minecraft:bundle$/,
+]);
+const STACK_1_IDS = new Set([
+  "minecraft:totem_of_undying", "minecraft:spyglass", "minecraft:brush",
+  "minecraft:mace", "minecraft:goat_horn", "minecraft:wolf_armor",
+  "minecraft:enchanted_book", "minecraft:knowledge_book", "minecraft:writable_book",
 ]);
 const STACK_16_IDS = new Set([
   "minecraft:ender_pearl", "minecraft:egg", "minecraft:snowball", "minecraft:honey_bottle",
+  "minecraft:sign", "minecraft:armor_stand", "minecraft:written_book", // cyc1810: amount_math と一致 (sign は R-5 で warehouse だけ漏れていた)
 ]);
 const STACK_16_PATTERNS = Object.freeze([/_sign$/, /_hanging_sign$/, /banner$/]);
 
@@ -73,6 +83,7 @@ export function stackSizeOf(typeId, overrides) {
     if (typeof typeId !== "string" || !typeId) return 64;
     const id = typeId.includes(":") ? typeId : "minecraft:" + typeId;
     if (STACK_1_PATTERNS.some((re) => re.test(id))) return 1;
+    if (STACK_1_IDS.has(id)) return 1;
     if (STACK_16_IDS.has(id)) return 16;
     if (STACK_16_PATTERNS.some((re) => re.test(id))) return 16;
     return 64;

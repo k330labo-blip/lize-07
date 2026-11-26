@@ -47,6 +47,7 @@ export const SFX_TABLE = Object.freeze({
   basalt:         { hit: "hit.basalt", break: "dig.basalt",       step: "step.basalt" },       // POLISH-SND-CLASS-BASALT-01 (cycle1514): 3軸とも専用IDを Wiki Bedrock 行で確認済み
   azalea_leaves:  { hit: "hit.azalea_leaves", break: "dig.azalea_leaves", step: "step.azalea_leaves" }, // POLISH-SND-CLASS-AZALEA-LEAVES-01 (cycle1532): 3軸とも専用ID確認済み (Bedrock Wiki 1.21.70)。低木 azalea 本体は対象外
   bone_block:     { hit: "hit.bone_block", break: "dig.bone_block", step: "step.bone_block" }, // POLISH-SND-CLASS-BONEBLOCK-01 (cyc1743): 3軸とも専用ID確認済み (A19先行照合)、従来は stone 落ち
+  cherry_leaves:  { hit: "hit.cherry_leaves", break: "break.cherry_leaves", step: "step.cherry_leaves" }, // POLISH-SND-CLASS-CHERRYLEAVES-01 (cyc1810): hit/step/break 専用ID確認済み (Bedrock Wiki 1.21.70)。dig.cherry_leaves は実在しないため break.* 命名 (froglight と同型)
 });
 
 // §1.2 で実在確認済みの ID (この表が参照する分 + 汎用分)
@@ -65,6 +66,7 @@ export const CONFIRMED_IDS = new Set([
   "hit.basalt", "dig.basalt", "step.basalt", // cycle1514 a14: 専用ID確認済み (3軸とも)
   "hit.azalea_leaves", "dig.azalea_leaves", "step.azalea_leaves", // cycle1532 a18: 専用ID確認済み (3軸とも)
   "hit.bone_block", "dig.bone_block", "step.bone_block", // cyc1743 A19: 専用ID確認済み (3軸とも)
+  "hit.cherry_leaves", "break.cherry_leaves", "step.cherry_leaves", // cyc1810 A15: 専用ID確認済み (dig.cherry_leaves は実在しない)
   "break.froglight", "step.froglight", // cycle1215 a14: 専用ID確認済み (break/step。dig.froglight/hit.froglight は実在しない)
   "dig.deepslate_bricks", // cycle1256 a16: 専用ID確認済み (break のみ)
   "step.grass", "step.sand", "step.gravel", "step.cloth", "step.wood",
@@ -175,6 +177,7 @@ export function materialOfTypeId(typeId) {
   if (id.includes("glass")) return "glass";                               // 3
   if (GLASSLIKE_IDS.has(id)) return "glass";                              // 3b (a11): 発光ガラス系
   if (id === "azalea_leaves" || id === "flowering_azalea_leaves") return "azalea_leaves"; // 3c (cycle1532): ツツジの葉だけ専用音 (完全一致のみ。azalea_leaves_flowered は PLANT 側の grass を維持)
+  if (id === "cherry_leaves") return "cherry_leaves"; // 3d (cyc1810): 桜の葉だけ専用音 (完全一致のみ。includes("cherry") は桜木材を巻き込むため不採用)
   if (id.endsWith("_leaves") || id === "leaves" || id === "leaves2") return "grass"; // 4: 葉は草系 (cycle0832 a11 A1: レガシー素形 leaves/leaves2 も同素材)
   if (GRASS_IDS.has(id)) return "grass";                                 // 5: 土は grass グループ
   if (id === "moss_block" || id === "moss_carpet") return "moss"; // cycle1058 R2: PLANT_IDS (5b) より前に完全一致で抜く (pale_moss 系は巻き込まない)

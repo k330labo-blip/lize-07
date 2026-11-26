@@ -9,7 +9,11 @@
 // 純粋・決定的・例外なし。入力 boxes は変更せず、適用後の新しい boxes を返す。
 "use strict";
 
-import { identityKeyOf } from "./warehouse_sort.js";
+import { identityKeyOf, stackSizeOf } from "./warehouse_sort.js";
+
+// warehouse_sort.js の isWritableDest / isSource と同値に保つこと (cyc1810 EX-05)
+const WRITABLE_ROLES = new Set(["dest", "unclassified"]);
+const SOURCE_ROLES = new Set(["intake", "source", "dest", "unclassified"]);
 
 function cloneBoxes(boxes) {
   return (Array.isArray(boxes) ? boxes : []).map((b) => ({
@@ -25,19 +29,35 @@ function findBox(boxes, key) { return boxes.find((b) => b && b.key === key) || n
 export function verifyMove(boxes, move, stackSizes) {
   try {
     if (!move || typeof move !== "object") return { ok: false, reason: "invalid_move" };
+    // EX-02 (cyc1810): 数量は正の整数のみ (0=ゴースト、負数・NaN・小数は複製/素通り経路だった)
+    if (!Number.isInteger(move.amount) || move.amount <= 0) return { ok: false, reason: "invalid_amount" };
     const from = findBox(boxes, move.fromKey); const to = findBox(boxes, move.toKey);
     if (!from) return { ok: false, reason: "from_missing" };
     if (!to) return { ok: false, reason: "to_missing" };
+    // EX-05: 移動元の role を sort の isSource と対称に (needsRecheck は移動元可のまま維持)
+    if (from.role === "excluded") return { ok: false, reason: "from_excluded" };
+    if (!SOURCE_ROLES.has(from.role)) return { ok: false, reason: "from_not_source" };
+    const sameBox = move.fromKey === move.toKey;
+    // EX-05: 移動先の role を sort の isWritableDest と対称に。同箱圧縮だけは role 集合を免除し
+    // 「書いてはいけない箱」検査 (excluded / needsRecheck) のみに留める (sort の圧縮と整合)。
     if (to.role === "excluded") return { ok: false, reason: "to_excluded" };
     if (to.needsRecheck) return { ok: false, reason: "to_needs_recheck" };
-    const fs = from.slots?.[move.fromSlot]; const ts = to.slots?.[move.toSlot];
+    if (!sameBox && !WRITABLE_ROLES.has(to.role)) return { ok: false, reason: "to_not_writable" };
+    if (sameBox && move.fromSlot === move.toSlot) return { ok: false, reason: "self_slot" };
+    // EX-04: スロットは整数かつ実在範囲内 (範囲外は適用部が配列を拡張してしまう)
+    if (!Number.isInteger(move.fromSlot) || move.fromSlot < 0 || move.fromSlot >= (from.slots?.length ?? 0)) return { ok: false, reason: "from_slot_oob" };
+    if (!Number.isInteger(move.toSlot) || move.toSlot < 0 || move.toSlot >= (to.slots?.length ?? 0)) return { ok: false, reason: "to_slot_oob" };
+    const fs = from.slots[move.fromSlot]; const ts = to.slots[move.toSlot];
     if (!fs || !fs.item) return { ok: false, reason: "from_empty" };
     if (identityKeyOf(fs.item) !== identityKeyOf(move.item)) return { ok: false, reason: "from_changed" };
     if (typeof fs.amount !== "number" || fs.amount < move.amount) return { ok: false, reason: "from_short" };
-    const cap = (stackSizes && typeof stackSizes[fs.item.typeId] === "number" ? stackSizes[fs.item.typeId] : 64);
+    // EX-03: 上限は空き先でも検査する。cap は sort の stackSizeOf を単一の正とする
+    const cap = stackSizeOf(fs.item.typeId, stackSizes);
     if (ts && ts.item) {
       if (identityKeyOf(ts.item) !== identityKeyOf(move.item)) return { ok: false, reason: "to_occupied_other" };
       if (ts.amount + move.amount > cap) return { ok: false, reason: "to_overflow" };
+    } else if (move.amount > cap) {
+      return { ok: false, reason: "to_overflow" };
     }
     return { ok: true };
   } catch { return { ok: false, reason: "error" }; }
