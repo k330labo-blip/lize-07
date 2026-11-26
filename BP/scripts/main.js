@@ -135,7 +135,7 @@ import { createWideScanFails, partitionWideIds, noteWideSuccess, noteWideIdFailu
 import { isAllowedByAllowOnly, serializeAllowOnly, restoreAllowOnly, clearAllowOnly } from "./allow_only.js"; // 0-C2 reader (cycle1455): allowOnly enforcement // 0-D3: 樹種指定時は対象選択・進捗をその樹種だけに限定する
 import { shouldReplayGaze, GAZE_REPLAY_INTERVAL_TICKS } from "./gaze_cadence_math.js"; // 0-E1 GAZE-CADENCE-01: 視線レイヤーを本体ループから分離する
 import { mergeCaps, capForTarget, serializeCaps, restoreCaps } from "./cap_guard_math.js"; // 0-C2 読み手 (cycle1337): セッション上限を mission へ届ける // cyc2020: caps の DP 永続化 (cb_caps)
-import { createWarehouseRegistry, serializeWarehouseRegistry, deserializeWarehouseRegistry, addCandidates, warehouseKeyOf, registerBox, removeCandidate, teachItemDest } from "./warehouse_registry.js"; // 倉庫 W1: 台帳の DP 永続化 (cb_warehouse)
+import { createWarehouseRegistry, serializeWarehouseRegistry, deserializeWarehouseRegistry, addCandidates, warehouseKeyOf, registerBox, removeCandidate, teachItemDest, markNeedsRecheck, confirmBox, canonicalKeyOf } from "./warehouse_registry.js"; // cyc2367 WH-RECHECK-01 // 倉庫 W1: 台帳の DP 永続化 (cb_warehouse)
 import { WAREHOUSE_CATEGORIES, categoryLabelOf } from "./warehouse_categories.js"; // 倉庫 W1 (cyc1908): 仕分け先カテゴリ語彙の単一の正。UI 登録で category を渡し、仕分け核の category 一致を実運用で発火させる
 import { planSortMoves } from "./warehouse_sort.js"; // 倉庫 W2 (cyc1939): 仕分け計画核を実機経路へ接続
 import { verifyMove } from "./warehouse_exec.js"; // 倉庫 W2 (cyc1939): 移動直前のスロット再確認
@@ -2032,7 +2032,7 @@ function splitVolume(a, b) {
 const warnedOnce = new Set();
 function warnOnce(key, msg) { if (warnedOnce.has(key)) return; warnedOnce.add(key); console.warn(msg); }
 const wideScanState = createWideScanFails(5); // 0-D4 Bprime: failures isolated per typeId; only infra failures are global
-function wideQuery(bot, typeIds) {
+function wideQuery(bot, typeIds, skipFn = null) { // cyc2367 HARVEST-OCCLUDED-YOUNG-01: 任意 skip（既定 null で従来不変）
   // 戻り値: { ok, best: { typeId: {x,y,z}|null } }。ok=false は「測れなかった」(呼び出し側が従来走査へ)
   const best = {}; for (const id of typeIds) best[id] = null;
   const part1455 = partitionWideIds(wideScanState, typeIds); const typeIdsQ = part1455.usable;
@@ -2056,6 +2056,7 @@ function wideQuery(bot, typeIds) {
       let id = ids.length === 1 ? ids[0] : null;
       if (!id) { try { id = dim.getBlock(loc)?.typeId ?? null; } catch { id = null; } }
       if (!id || !want.has(id)) continue;
+      if (skipFn) { let sk = false; try { sk = !!skipFn(loc, id); } catch {} if (sk) continue; } // cyc2367: ban 中セルは次点へ譲る
       const dx = loc.x - bx, dy = loc.y - by, dz = loc.z - bz;
       const dd = dx * dx + dz * dz + dy * dy * 2.25; // 上下は 1.5 倍遠いとみなす (掘り進む手間)
       if (bd[id] === undefined || dd < bd[id]) { bd[id] = dd; best[id] = { x: loc.x, y: loc.y, z: loc.z }; any = true; }
@@ -2102,14 +2103,20 @@ function cropCellMature(b, typeId) {
   let g = null; try { g = b?.permutation?.getState("growth") ?? b?.permutation?.getState("age"); } catch {}
   return isCropMature(typeId, g);
 }
+function scanBanned(r, loc, typeId, now) { // cyc2367 HARVEST-OCCLUDED-YOUNG-01: fail-open の ban 述語（例外時は ban されていない側へ倒す）
+  try { if (isBanned(loc, typeId, r.mBanKey, r.mBanUntil, now)) return true; } catch {}
+  try { if (r.workBan && isWorkBanned(r.workBan, loc, typeId, now)) return true; } catch {}
+  return false;
+}
 function scanBlockNear(bot, r, typeId, ttlJitter = 0) {
   const pt = r.percTargets || {};
-  for (const k of ["tree", "ore", "crop"]) if (pt[k] && pt[k].typeId === typeId) return { x: pt[k].x, y: pt[k].y, z: pt[k].z };
+  const now0 = Date.now();
+  for (const k of ["tree", "ore", "crop"]) if (pt[k] && pt[k].typeId === typeId && !scanBanned(r, pt[k], typeId, now0)) return { x: pt[k].x, y: pt[k].y, z: pt[k].z };
   const now = Date.now();
   if (!r.mScanMap) r.mScanMap = {};
   const ent = r.mScanMap[typeId];
-  if (ent && now - ent.at < ent.ttl) return ent.loc;
-  { const wq = wideQuery(bot, [typeId]); if (wq.ok && (!wq.best[typeId] || cropMatureAt(bot.dimension, wq.best[typeId], typeId))) { r.mScanMap[typeId] = { at: now, ttl: SCAN_TTL_MS + ttlJitter, loc: wq.best[typeId], failedCells: 0, totalCells: 2601 }; try { r.lastBlockScan = { typeId, failedCells: 0, totalCells: 2601, at: now, wide: true }; } catch {} return wq.best[typeId]; } } // v0.4.66: 広域探索
+  if (ent && now - ent.at < ent.ttl) { if (!ent.loc || !scanBanned(r, ent.loc, typeId, now)) return ent.loc; delete r.mScanMap[typeId]; }
+  { const wq = wideQuery(bot, [typeId], (loc, id) => scanBanned(r, loc, id, now)); if (wq.ok && (!wq.best[typeId] || cropMatureAt(bot.dimension, wq.best[typeId], typeId))) { r.mScanMap[typeId] = { at: now, ttl: SCAN_TTL_MS + ttlJitter, loc: wq.best[typeId], failedCells: 0, totalCells: 2601 }; try { r.lastBlockScan = { typeId, failedCells: 0, totalCells: 2601, at: now, wide: true }; } catch {} return wq.best[typeId]; } } // v0.4.66: 広域探索
   let best = null, bd = 1e9, failedCells = 0;
   const bx = Math.floor(bot.location.x), by = Math.floor(bot.location.y), bz = Math.floor(bot.location.z);
   for (let dx = -8; dx <= 8; dx++) for (let dy = -4; dy <= 4; dy++) for (let dz = -8; dz <= 8; dz++) {
@@ -2117,6 +2124,7 @@ function scanBlockNear(bot, r, typeId, ttlJitter = 0) {
     if (!b) { failedCells++; continue; } // Phase2 INSPECT Step0: 失敗セル計数 (例外と未読込を1セル1回だけ数える)
     if (b.typeId !== typeId) continue;
     if (!cropCellMature(b, typeId)) continue; // cycle2231: 未成熟作物は候補にしない
+    if (scanBanned(r, b.location, typeId, now)) continue; // cyc2367: ban 中は次点へ譲る
     const dd = Math.hypot(dx, dy, dz); if (dd < bd) { bd = dd; best = { x: b.location.x, y: b.location.y, z: b.location.z }; }
   }
   r.mScanMap[typeId] = { at: now, ttl: SCAN_TTL_MS + ttlJitter, loc: best, failedCells, totalCells: 2601 };
@@ -2353,8 +2361,8 @@ system.runInterval(() => {
     const ms = Date.now() - t0;
     if (ms > 25) surveySlowUntil = Date.now() + ms * 2; // 処理落ち防止: 重かった分だけ次を遅らせる
     sv.nextIdx = (idx + 1) % 16;
-    if (res === "done") { sv.fails = 0; sv.doneMask |= (1 << idx); sv.at = Date.now(); if (sv.doneMask === 0xffff && sv.doneAt == null) sv.doneAt = sv.at; }
-    else if (res === "partial") { sv.fails = 0; sv.at = Date.now(); } // B-prime: progress refreshes freshness only / cycle0628: 進捗で fails リセット (survey_broken.js の nextFails と同義。断片抽出ハーネスと両立させるため実行部は自己完結形で書く)
+    if (res === "done") { sv.fails = 0; sv.doneMask |= (1 << idx); sv.at = Date.now(); sv.wantAt = sv.at; if (sv.doneMask === 0xffff && sv.doneAt == null) sv.doneAt = sv.at; } // cyc2367 SURVEY-WANTAT-FREEZE-01: 進捗が wantAt 窓も供給する
+    else if (res === "partial") { sv.fails = 0; sv.at = Date.now(); sv.wantAt = sv.at; } // cyc2367 SURVEY-WANTAT-FREEZE-01 // B-prime: progress refreshes freshness only / cycle0628: 進捗で fails リセット (survey_broken.js の nextFails と同義。断片抽出ハーネスと両立させるため実行部は自己完結形で書く)
     else if (res === "error") { sv.fails++; if (sv.fails > 40) { sv.quarantinedUntil = Date.now() + 900000; sv.fails = 0; /* cycle0659: reset fails on quarantine */ try { surveyGlobalEvents = pruneGlobalErrorEvents([...surveyGlobalEvents, { key: surveyKeyOf(sv.dim, sv.rx, sv.rz), at: Date.now() }], Date.now()); if (shouldTripGlobalLatch(surveyGlobalEvents, Date.now())) { surveyLatch = tripSurveyLatch(surveyLatch, Date.now()); console.warn("[LIZE] chunk survey paused (failures spread across regions, cooldown recovery)"); } } catch {} } } // cycle0628: 単一区画の失敗では全体を止めず当該区画だけ15分隔離。全体停止は複数区画への拡散時のみ＋5分クールダウンで回復 (恒久ラッチ surveyBroken は廃止)
 // unloaded は次の tick に別のチャンクを試す (リゼが近づけば読み込まれる)
     break;
@@ -4779,10 +4787,12 @@ function snapshotWarehouseBox(bot, regBox) {
 function runWarehouseSort(p, bot, r) {
   try {
     const reg = r.warehouse || createWarehouseRegistry();
-    const regBoxes = (Array.isArray(reg.boxes) ? reg.boxes : []).filter((b) => b && b.role !== "excluded");
+    const allRegBoxes = (Array.isArray(reg.boxes) ? reg.boxes : []).filter((b) => b && b.role !== "excluded");
+    const seenCanon = new Set(); const regBoxes = allRegBoxes.filter((b) => { let ck = b.key; try { ck = canonicalKeyOf(reg, b.key) || b.key; } catch {} if (seenCanon.has(ck)) return false; seenCanon.add(ck); return true; }); // cyc2367 WH-RECHECK-01: ラージチェストは代表1件だけ snapshot する
     if (!regBoxes.length) { say(p, bot, "登録された箱がまだありません。リモコンの倉庫メニューで候補を登録してください", true); return; }
-    const snaps = []; const contByKey = new Map(); let unreadable = 0;
-    for (const b of regBoxes) { const s = snapshotWarehouseBox(bot, b); if (s) { snaps.push(s); const got = warehouseContainerOf(bot, b); if (got) contByKey.set(b.key, got.cont); } else unreadable++; }
+    const snaps = []; const contByKey = new Map(); let unreadable = 0; let recheckDirty = false;
+    for (const b of regBoxes) { const s = snapshotWarehouseBox(bot, b); if (s) { snaps.push(s); const got = warehouseContainerOf(bot, b); if (got) contByKey.set(b.key, got.cont); if (b.needsRecheck) { try { r.warehouse = confirmBox(r.warehouse || reg, b.key); recheckDirty = true; } catch {} } } else { unreadable++; if (!b.needsRecheck) { try { r.warehouse = markNeedsRecheck(r.warehouse || reg, b.key); recheckDirty = true; } catch {} } } }
+    if (recheckDirty) { try { saveWarehouse(bot, r); } catch {} } // cyc2367 WH-RECHECK-01: 印の立て下げは対で保存は最大1回
     if (!snaps.length) { say(p, bot, "登録された箱を1つも開けませんでした。近くの箱だけが対象です", true); return; }
     const plan = planSortMoves(buildSortInput(reg, snaps));
     if (!plan.moves.length) { say(p, bot, `整理しました。移動はありませんでした${plan.leftovers.length ? `。行き先が分からない物が${plan.leftovers.length}件、元の箱に残っています` : ""}${unreadable ? `。開けなかった箱が${unreadable}件あります` : ""}`, true); return; }
