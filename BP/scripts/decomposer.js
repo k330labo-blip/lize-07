@@ -325,15 +325,14 @@ export function decompose(itemOrName, count, opts = {}) {
     .sort((a, b) => a.depth - b.depth);
 
   // --- 充填ステップ (R-C4-4 S2): 容器のクラフトより後に実行する工程として末尾へ。
-  // 実行部は S4 で接続する。それまでは supported:false を正直に出し、警告も添える。
+  // S4 (cyc2382) で実行部を接続済み。
   const fillSteps = [...ctx.fills.values()].map((rec) => ({
     type: "fill",
     item: rec.item, fills: rec.fills,
     container: rec.container, needContainer: rec.fills,
     medium: rec.medium, mediumKind: rec.mediumKind,
-    supported: false,
+    supported: true, // R-C4-4 S4 (cyc2382): 充填tx接続済み
   }));
-  if (fillSteps.length > 0) warnings.push("充填（バケツへの汲み取り）は実行部が未接続のため、容器の用意までを計画します");
   const fillOps = fillSteps.reduce((a, s) => a + s.fills, 0);
 
   const craftOps = processSteps.filter((s) => s.type === "craft").reduce((a, s) => a + s.crafts, 0);
