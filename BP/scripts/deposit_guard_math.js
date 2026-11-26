@@ -121,6 +121,36 @@ export function depositGate(input) {
   } catch { return { ok: false, reason: "no_home" }; }
 }
 
+// ---- DEPOSIT-SUPPRESS-AND-GATE 是正 (cycle0900, a13 cycle0832 実測確定) ----
+// 旧計数は tickAutonomy の case "deposit_at_home" の yield 側にしか無く、「冷却中に goal として
+// 選ばれている」ことを要求したが、冷却中は選択ゲート (depositBlocked→効用0) が選出を不可能に
+// するため AND が両立せず、楽観200,000tick・冷却167周期でも抑制発動0回だった。
+// 是正: 冷却の立ち上がりエッジを goal 選択に依存しない毎tickの場所 (buildContext) で数える純粋核。
+// fields: { coolSeen, coolCycles, suppressedUntil } (rt の該当3フィールドを束ねたオブジェクト)
+export const DEPOSIT_SUPPRESS_CYCLES = 3;
+export const DEPOSIT_SUPPRESS_MS = 600000;
+export function noteDepositCoolEdge(fields, cooling, suppressed, nowMs) {
+  try {
+    if (!fields || typeof fields !== "object") return { action: "invalid", cycles: 0 };
+    const now = finiteOrNull(nowMs);
+    if (now === null) return { action: "invalid", cycles: fields.coolCycles || 0 };
+    if (cooling !== true) { fields.coolSeen = false; return { action: "none", cycles: fields.coolCycles || 0 }; }
+    if (suppressed === true || fields.coolSeen === true) return { action: "none", cycles: fields.coolCycles || 0 };
+    fields.coolSeen = true;
+    fields.coolCycles = (Number.isInteger(fields.coolCycles) && fields.coolCycles > 0 ? fields.coolCycles : 0) + 1;
+    if (fields.coolCycles >= DEPOSIT_SUPPRESS_CYCLES) {
+      fields.coolCycles = 0;
+      fields.suppressedUntil = now + DEPOSIT_SUPPRESS_MS;
+      return { action: "suppress", cycles: 0, suppressedUntil: fields.suppressedUntil };
+    }
+    return { action: "counted", cycles: fields.coolCycles };
+  } catch { return { action: "invalid", cycles: 0 }; }
+}
+// 成功入庫 (progress) で周期カウンタを戻す (潜在欠陥 C-2: 成功でも減らない単調カウンタの是正)
+export function resetDepositCoolCycles(fields) {
+  try { if (fields && typeof fields === "object") fields.coolCycles = 0; } catch {}
+}
+
 // planDepositDecision(input) -> { action, reason }  (F4 是正用: planner deposit_at_home の判断)
 // input: { homePresent, homeDim, botDim, distToHome, range, cooling }
 //  - cooling === true        -> { action:"yield", reason:"cooldown" }    (目標を張らず他 goal へ譲る)

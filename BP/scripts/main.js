@@ -66,6 +66,7 @@ import { banKeyFor, matchesBan, isBanned } from "./trunk_ban.js"; // queue0-A bu
 import { createTakeBanState, recordTakeBan, isTakeBanned, pruneTakeBans } from "./take_ban_math.js"; // TR2136-01 (cycle2200): 回収全量失敗の実行側見切り
 import { createWorkBanState, recordWorkBan, isWorkBanned, pruneWorkBans } from "./work_ban_math.js"; // cycle0832 F5: work層の見切り ban (hold枯渇後に到達不能候補を選び直す無限ループの是正)
 import { createOreSpotState, noteOreSpot, sampleOreSpot } from "./orespot_math.js"; // POLISH-ANIM-ORESPOT-01 (cycle0832): 貴重鉱石への二度見 (表示層のみ・実機確認待ち)
+import { createHomesightState, noteHomesight, sampleHomesight } from "./homesight_math.js"; // POLISH-ANIM-HOMESIGHT-01 (cycle0900): 拠点が見える距離まで帰ってきたときの小さな頷き (表示層のみ・実機確認待ち)
 import { createWorkglanceState, noteWorkglance, sampleWorkglance } from "./workglance_math.js"; // POLISH-ANIM-WORKGLANCE-01 (cycle1728, v0.5.19)
 import { createCatchsightState, noteCatchsight, sampleCatchsight } from "./catchsight_math.js";
 import { createRainShelterState, noteRainShelter, sampleRainShelter } from "./rainshelter_math.js"; // POLISH-ANIM-RAINSHELTER-01 (cycle2231): 持続雨の待機中に屋根方向へ視線を寄せる (表示層のみ・実機確認待ち) // POLISH-ANIM-CATCHSIGHT-01 (cycle2200): 主人が投げた物の追視 (表示層のみ・実機確認待ち)
@@ -88,7 +89,7 @@ import { applySettlePitch, isSettleActive, shouldSettle } from "./settle_math.js
 import { applyPlacesettlePitch, isPlacesettleActive, shouldPlacesettle } from "./placesettle_math.js"; // POLISH-ANIM-PLACESETTLE-01 (cycle2248): 設置完了直後の小さな確認視線 (表示層のみ・実機確認待ち)
 import { applyCraftsettlePitch, isCraftsettleActive, shouldCraftsettle } from "./craftsettle_math.js"; // POLISH-ANIM-CRAFTSETTLE-01 (cycle0141): 製作/精錬完了直後の小さな確認視線 (表示層のみ・実機確認待ち)
 import { createDeliverGuardState, noteDeliverOutcome, isDeliverCooling } from "./deliver_guard_math.js";
-import { createDepositGuardState, noteDepositOutcome, isDepositCooling, nextDepositDeliverFail, planDepositDecision } from "./deposit_guard_math.js"; // cycle0740: planDepositDecision 配線 (deposit_at_home) // cycle0659: deposit F1/F3 guard
+import { createDepositGuardState, noteDepositOutcome, isDepositCooling, nextDepositDeliverFail, planDepositDecision, noteDepositCoolEdge, resetDepositCoolCycles } from "./deposit_guard_math.js"; // cycle0740: planDepositDecision 配線 (deposit_at_home) // cycle0659: deposit F1/F3 guard // cycle0900: DEPOSIT-SUPPRESS-AND-GATE 是正 (冷却エッジ計数)
 import { ownerLavaNearFromIds, lavaBelowFromIds, LAVA_BELOW_SCAN } from "./lava_detect_math.js"; // cycle0721: LAVA-01/02 検知分離 // A18-TR-01 (cycle0446): planner deliver_to_owner 満杯失敗の出口 (連続全滅3回で60秒冷却し他 goal へ譲る)
 import { applyDeliverBowPitch, isDeliverBowActive, shouldDeliverBow } from "./deliverbow_math.js"; // POLISH-ANIM-DELIVERBOW-01 (cycle0446): 手渡し成功直後の小さな会釈 (表示層のみ・実機確認待ち)
 import { applyStoresettlePitch, isStoresettleActive, shouldStoresettle } from "./storesettle_math.js";
@@ -392,6 +393,13 @@ function buildContext(bot, owner) {
   // home.registered は不変 (登録の有無は次元と独立)。dim 欠落の旧保存も不一致として 999。
   const homeSameDim = !!home && home.dim === dim.id;
   let depositBlocked = false; try { depositBlocked = !!(r.depositGuard && isDepositCooling(r.depositGuard, Date.now())) || (r.depositHomeSuppressedUntil || 0) > Date.now(); } catch {} // cycle0740 deposit P2
+  // cycle0900 DEPOSIT-SUPPRESS-AND-GATE: 冷却エッジ計数を goal 選択に依存しない毎tick地点 (ここ) へ移設。
+  // 旧計数 (planner case の yield 側) は選択ゲートと AND が両立せず発動0回だった (cycle0832-a13 実測)。
+  try { const nowE = Date.now(); const coolingE = !!(r.depositGuard && isDepositCooling(r.depositGuard, nowE)); const suppressedE = (r.depositHomeSuppressedUntil || 0) > nowE;
+    const fieldsE = { get coolSeen() { return r.depositCoolSeen; }, set coolSeen(v) { r.depositCoolSeen = v; }, get coolCycles() { return r.depositCoolCycles || 0; }, set coolCycles(v) { r.depositCoolCycles = v; }, get suppressedUntil() { return r.depositHomeSuppressedUntil || 0; }, set suppressedUntil(v) { r.depositHomeSuppressedUntil = v; } };
+    const edgeE = noteDepositCoolEdge(fieldsE, coolingE, suppressedE, nowE);
+    if (edgeE?.action === "suppress") { try { noteFail(bot, "planner:deposit_home_suppressed", new Error("deposit_at_home suppressed after 3 cooldown cycles")); } catch {} try { if (owner) say(owner, bot, "拠点のチェストがいっぱいのようです。しばらく入庫は止めておきます", true); } catch {} }
+  } catch {}
   const homeDist = homeSameDim ? dist(bot.location, home) : 999;
   const c = {
     mode,
@@ -547,6 +555,7 @@ function buildContext(bot, owner) {
   try { r.villagerCand = villagerCand; r.villagerScanOk = scanOk; } catch {}
   noteVillagergreetTick(bot, r, c); // POLISH-ANIM-VILLAGERGREET-01 (cycle0855)
   noteOrespotTick(bot, r, c); // POLISH-ANIM-ORESPOT-01 (cycle0832)
+  noteHomesightTick(bot, r, c); // POLISH-ANIM-HOMESIGHT-01 (cycle0900)
   noteIdleTick(bot, r, c); // POLISH-ANIM-IDLE-01 (cycle2020)
   noteWakestretchTick(bot, r, c); // POLISH-ANIM-WAKESTRETCH-01 (cycle0005)
   noteLoadPostureTick(bot, r, c); // POLISH-ANIM-LOADPOSTURE-01 (cycle1832)
@@ -944,7 +953,7 @@ function execArrive(bot, owner, rule, ctx, scan) {
       else sayFromCategory(owner, bot, "deposit_done"); }
       recordStore(r, "deposit", res);
       r.deliverFail = nextDepositDeliverFail(r.deliverFail, res); // cycle0659 F3
-      try { const out = noteDepositOutcome(r.depositGuard, { moved: res?.moved || 0, failed: !!res?.failed }, Date.now()); if (out?.action === "cooldown") noteFail(bot, "deposit:full_cooldown", new Error("home container full")); } catch {}
+      try { const out = noteDepositOutcome(r.depositGuard, { moved: res?.moved || 0, failed: !!res?.failed }, Date.now()); if (out?.action === "cooldown") noteFail(bot, "deposit:full_cooldown", new Error("home container full")); if (out?.action === "progress") { const fP = { get coolCycles() { return r.depositCoolCycles || 0; }, set coolCycles(v) { r.depositCoolCycles = v; } }; resetDepositCoolCycles(fP); } } catch {} // cycle0900 C-2: 成功で周期カウンタを戻す
       if (res.failed) sayFromCategory(owner, bot, "chest_full");
     } else {
       // 拠点にコンテナが無い/読めない: 無言で成功扱いにせず、失敗として本人に認識させる
@@ -1320,9 +1329,7 @@ function tickAutonomy(bot, owner, ctx, effMove) {
       const decD = planDepositDecision({ homePresent: !!h, homeDim: h?.dim ?? null, botDim: bot.dimension.id, distToHome: distD, range: DELIVER_RANGE, cooling: coolingD || suppressedD });
       if (decD.action === "attempt") { r.depositCoolSeen = false; r.target = { x: h.x + 0.5, y: h.y + 1, z: h.z + 0.5 }; execArrive(bot, owner, { act: "deposit" }, ctx, null); }
       else if (decD.action === "approach") { r.depositCoolSeen = false; r.target = { x: h.x + 0.5, y: h.y + 1, z: h.z + 0.5 }; }
-      else { // yield: 目標を張らず主人へ寄って他 goal へ譲る。冷却周期3回で10分抑制する終端を持つ
-        if (decD.reason === "cooldown" && !suppressedD) { if (!r.depositCoolSeen) { r.depositCoolSeen = true; r.depositCoolCycles = (r.depositCoolCycles || 0) + 1; if (r.depositCoolCycles >= 3) { r.depositCoolCycles = 0; r.depositHomeSuppressedUntil = nowD + 600000; try { noteFail(bot, "planner:deposit_home_suppressed", new Error("deposit_at_home suppressed after 3 cooldown cycles")); } catch {} try { say(owner, bot, "拠点のチェストがいっぱいのようです。しばらく入庫は止めておきます", true); } catch {} } } }
-        else if (decD.reason !== "cooldown") r.depositCoolSeen = false;
+      else { // yield: 目標を張らず主人へ寄って他 goal へ譲る。10分抑制の計数は cycle0900 で buildContext の冷却エッジ計数へ移設済み (ここでは数えない)
         try { r.target = behindOf(owner, 2); r.moveAct = "follow"; } catch {}
       } break; }
     case "deliver_to_owner": { // cycle1807 U1: 距離・次元ゲート無しの即時転送を是正 (DELIVER_RANGE が単一の正、範囲外は主人へ接近目標を張る)
@@ -3850,6 +3857,17 @@ function noteOrespotTick(bot, r, c) {
     if (out) r.lastOreSpot = { at: Date.now(), cellKey: out.cellKey };
   } catch {}
 }
+// POLISH-ANIM-HOMESIGHT-01 (cycle0900): feeder は既存 ctx.home (dist/registered/dimensionSame) だけを使い新規走査なし
+function noteHomesightTick(bot, r, c) {
+  try {
+    if (!bot || !r) return;
+    if (!r.homesightState) r.homesightState = createHomesightState();
+    let inWater = false; try { inWater = !!bot.isInWater; } catch {}
+    const suppressed = !!((c?.danger?.count ?? 0) > 0) || r.selfFalling === true || inWater;
+    const out = noteHomesight(r.homesightState, { distHome: c?.home?.dist ?? null, homeRegistered: c?.home?.registered === true, dimensionSame: c?.home?.dimensionSame === true, suppressed }, Date.now());
+    if (out?.fired) r.lastHomesight = { at: Date.now(), dist: c?.home?.dist ?? null };
+  } catch {}
+}
 function applyGaze(bot, owner, ctx, scan) {
   try { const bv = typeof bot.isValid === "function" ? bot.isValid() : bot.isValid; if (bot.isValid !== undefined && !bv) return; if (owner) { const ov = typeof owner.isValid === "function" ? owner.isValid() : owner.isValid; if (owner.isValid !== undefined && !ov) return; } } catch { return; }
   // POLISH-ANIM-OWNERRETURN-01 (cycle1923): 主人の距離遷移だけを発火源にする feeder (表示層のみ・実機確認待ち)
@@ -3940,6 +3958,7 @@ function applyGaze(bot, owner, ctx, scan) {
     if (rot && r.xpglanceState) { try { const xs = sampleXpGlance(r.xpglanceState, Date.now()); if (xs.active) { const bl = blendXpGlanceGaze({ yawDeg: rot.y, pitchDeg: rot.x }, xs); if (bl) rot = { ...rot, y: bl.yawDeg, x: bl.pitchDeg }; } } catch {} } // POLISH-ANIM-XPGLANCE-01 (cycle0628): 重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot && r.villagergreetState) { try { const vg = sampleVillagergreet(r.villagergreetState, Date.now()); if (vg.active) rot = { ...rot, y: rot.y + vg.yawDeg, x: rot.x + vg.pitchDeg }; } catch {} } // POLISH-ANIM-VILLAGERGREET-01 (cycle0855): 重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot && r.orespotState) { try { const os2 = sampleOreSpot(r.orespotState, Date.now()); if (os2.active) rot = { ...rot, y: rot.y + os2.yawDeg, x: rot.x + os2.pitchDeg }; } catch {} } // POLISH-ANIM-ORESPOT-01 (cycle0832): 重畳の最下位 (表示層のみ・実機確認待ち)
+    if (rot && r.homesightState) { try { const hs2 = sampleHomesight(r.homesightState, Date.now()); if (hs2.active) rot = { ...rot, x: rot.x + hs2.pitchDeg }; } catch {} } // POLISH-ANIM-HOMESIGHT-01 (cycle0900): 重畳の最下位 (表示層のみ・実機確認待ち)
     if (rot) { try { bot.setRotation(rot); } catch {} }
   }
   if (gz.say && Math.random() < 0.4) sayAmbient(owner, bot, gz.say);
