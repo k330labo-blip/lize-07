@@ -104,6 +104,32 @@ export function pruneTakeBans(state, now) {
   } catch { return 0; }
 }
 
+// TAKEBAN-NO-RELEASE (cyc2364 A05 確定, cyc2365 統合): 実体+種別の両キーを消す解除。
+// 種別だけの解除では実体キーが残り盲窓が残るため、配線側はこちらを使う。
+export function clearTakeBan(state, entityId, typeId) {
+  try {
+    if (!validState(state)) return 0;
+    let removed = 0;
+    const ek = entKeyOf(entityId);
+    if (ek !== null && ek in state.byEnt) { delete state.byEnt[ek]; removed++; }
+    const tk = typeKeyOf(typeId);
+    if (tk !== null && tk in state.byType) { delete state.byType[tk]; removed++; }
+    return removed;
+  } catch { return 0; }
+}
+
+// 全エントリを消し、削除件数を返す (在庫に空きができた辺での一括解除用)。
+export function clearAllTakeBans(state) {
+  try {
+    if (!validState(state)) return 0;
+    let removed = 0;
+    for (const table of [state.byEnt, state.byType]) {
+      for (const k of Object.keys(table)) { delete table[k]; removed++; }
+    }
+    return removed;
+  } catch { return 0; }
+}
+
 // 種別エントリだけを消して成否を返す。本版では配線しない (将来の即時解除の受け皿)。
 export function clearTakeBanForType(state, typeId) {
   try {

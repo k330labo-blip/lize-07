@@ -55,12 +55,28 @@ export function trunkKey(loc, typeId) {
   return `trunk:${typeId}@${Math.floor(loc.x)},${Math.floor(loc.z)}`;
 }
 
+// FALL-COLUMN-BAN-01 (cyc2364 A06 確定, cyc2365 統合): 落下ブロックの柱では
+// hold の原因が柱全体なのに ban がセル単位で、窓内に別セルが再選され hold 周期を
+// 繰り返した。是正: 落下ブロックも柱単位キーにする。分類は main.js の
+// FALLING_BLOCK_IDS と同一集合 (砂/赤砂/怪しい砂/砂利/怪しい砂利/全色コンクリートパウダー)。
+const FALLING_BLOCK_IDS = new Set(["minecraft:sand","minecraft:red_sand","minecraft:suspicious_sand","minecraft:gravel","minecraft:suspicious_gravel","minecraft:white_concrete_powder","minecraft:orange_concrete_powder","minecraft:magenta_concrete_powder","minecraft:light_blue_concrete_powder","minecraft:yellow_concrete_powder","minecraft:lime_concrete_powder","minecraft:pink_concrete_powder","minecraft:gray_concrete_powder","minecraft:light_gray_concrete_powder","minecraft:cyan_concrete_powder","minecraft:purple_concrete_powder","minecraft:blue_concrete_powder","minecraft:brown_concrete_powder","minecraft:green_concrete_powder","minecraft:red_concrete_powder","minecraft:black_concrete_powder"]);
+
+export function isFallingType(typeId) {
+  return typeof typeId === "string" && FALLING_BLOCK_IDS.has(typeId);
+}
+
+/** 落下ブロック柱キー: y を含めない "fall:<typeId>@<x>,<z>" */
+export function fallKey(loc, typeId) {
+  if (!loc || !Number.isFinite(loc.x) || !Number.isFinite(loc.z) || !isFallingType(typeId)) return null;
+  return `fall:${typeId}@${Math.floor(loc.x)},${Math.floor(loc.z)}`;
+}
+
 /**
  * 見切り ban のキーを作る単一の正。
  * 原木/幹 → 幹キー、それ以外・typeId不明 → セルキー (従来どおり)。
  */
 export function banKeyFor(loc, typeId) {
-  return trunkKey(loc, typeId) ?? cellKey(loc);
+  return trunkKey(loc, typeId) ?? fallKey(loc, typeId) ?? cellKey(loc);
 }
 
 /**
@@ -77,6 +93,10 @@ export function matchesBan(loc, typeId, banKey) {
   if (!banKey || typeof banKey !== "string") return false;
   if (banKey.startsWith("trunk:")) {
     const k = trunkKey(loc, typeId);
+    return k !== null && k === banKey;
+  }
+  if (banKey.startsWith("fall:")) {
+    const k = fallKey(loc, typeId);
     return k !== null && k === banKey;
   }
   const c = cellKey(loc);

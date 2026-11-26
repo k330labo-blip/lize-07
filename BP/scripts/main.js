@@ -76,7 +76,7 @@ import { createSnowtreadState, noteSnowtread, snowtreadCurrentOffset, applySnowt
 import { createStepupState, noteStepup as noteStepupState, sampleStepup } from "./stepup_math.js";
 import { banKeyFor, matchesBan, isBanned, filterBanned, isTrunkType } from "./trunk_ban.js"; // queue0-A bug2 (cycle1728, v0.5.19): trunk-unit ban
 import { treeNeighbors, mergeTreeCands } from "./tree_cont_math.js"; // 0-D3 R1 (cycle0583): 同じ木の継続候補
-import { createTakeBanState, recordTakeBan, isTakeBanned, pruneTakeBans } from "./take_ban_math.js"; // TR2136-01 (cycle2200): 回収全量失敗の実行側見切り
+import { createTakeBanState, recordTakeBan, isTakeBanned, pruneTakeBans, clearAllTakeBans } from "./take_ban_math.js"; // TR2136-01 (cycle2200): 回収全量失敗の実行側見切り
 import { createWorkBanState, recordWorkBan, isWorkBanned, pruneWorkBans, filterWorkBanned } from "./work_ban_math.js"; // cycle0832 F5: work層の見切り ban (hold枯渇後に到達不能候補を選び直す無限ループの是正)
 import { createOreSpotState, noteOreSpot, sampleOreSpot } from "./orespot_math.js"; // POLISH-ANIM-ORESPOT-01 (cycle0832): 貴重鉱石への二度見 (表示層のみ・実機確認待ち)
 import { createHomesightState, noteHomesight, sampleHomesight } from "./homesight_math.js"; // POLISH-ANIM-HOMESIGHT-01 (cycle0900): 拠点が見える距離まで帰ってきたときの小さな頷き (表示層のみ・実機確認待ち)
@@ -3592,7 +3592,10 @@ function applyDirective(bot, owner, r, ctx, scan, d) {
 function missionTargetValid(bot, r) {
   if (!r.mTargetLoc) return false;
   if (r.mTargetKind === "block") { let b = null; try { b = bot.dimension.getBlock(r.mTargetLoc); } catch {} return !!b && b.typeId === r.mTargetType; }
-  if (r.mTargetEntity) { try { const valid = typeof r.mTargetEntity.isValid === "function" ? !!r.mTargetEntity.isValid() : !!r.mTargetEntity.isValid; if (!valid) return false; if (r.mTargetType && r.mTargetType !== "hostile" && r.mTargetType.includes(":") && r.mTargetEntity.typeId && r.mTargetEntity.typeId !== r.mTargetType) return false; return true; } catch { return false; } } // HUNT-SUBST-01 (cyc2364): 固定対象も block 分岐と同型に種別照合する (汎用指定はスキップ)
+  if (r.mTargetEntity) { try { const valid = typeof r.mTargetEntity.isValid === "function" ? !!r.mTargetEntity.isValid() : !!r.mTargetEntity.isValid; if (!valid) return false; if (r.mTargetKind === "item") { // PICKUP-ITEMVALID-01 (cyc2365 A04): アイテム実体の typeId は常時 "minecraft:item" で依頼IDと一致しないため、種別照合はスタックの typeId で行う (従来は常時 false で固定が死に毎tick再走査＋見切り不発だった)
+      let stackType = null; try { stackType = r.mTargetEntity.getComponent("minecraft:item")?.itemStack?.typeId || null; } catch {}
+      if (r.mTargetType && stackType && stackType !== r.mTargetType) return false; return true; }
+    if (r.mTargetType && r.mTargetType !== "hostile" && r.mTargetType.includes(":") && r.mTargetEntity.typeId && r.mTargetEntity.typeId !== r.mTargetType) return false; return true; } catch { return false; } } // HUNT-SUBST-01 (cyc2364): 固定対象も block 分岐と同型に種別照合する (汎用指定はスキップ)
   return true;
 }
 // 0-C2 読み手 (cycle1337): 条件付き注文の発火側。保留は行き止まりにせず、条件成立で1回だけ開始する。
@@ -3639,12 +3642,13 @@ function tickMission(bot, owner, ctx, scan) {
   if (m.invUnreadObs) m.invUnreadObs = 0; // readable tick resets the consecutive counter
   // 寄り道の機会走査（side ステップがある間だけ）
   r.sideTask = null;
+  // TAKEBAN-PRUNE-SIDE-GATED / TAKEBAN-NO-RELEASE (cyc2364 A05, cyc2365 統合): prune は寄り道ステップ依存だったため通常経路で到達しなかった。常時経路へ移設し、在庫が満杯でなくなったら ban を一括解除する (最大60秒の盲窓解消)。
+  try { if (r.takeBan) { pruneTakeBans(r.takeBan, Date.now()); if (ctx?.inv && !ctx.inv.full) clearAllTakeBans(r.takeBan); } } catch {}
   const sideSteps = m.steps.filter((s) => s.type === "side_collect" && s.status !== "done");
   if (sideSteps.length) {
     const sideOrders = sideSteps.map((s) => ({ item: s.target, amount: s.need, have: s.have || 0, target: s.target, label: nameOfItem(s.target) }));
     r.sideState.now = Date.now();
     try { pruneCooldowns(r.sideState, Date.now()); } catch {}
-    try { if (r.takeBan) pruneTakeBans(r.takeBan, Date.now()); } catch {} // cycle0033 a07: prune wiring (was test-only, state grew monotonically)
     try { r.sideTask = scanOpportunities(ctx, sideOrders, r.sideState); } catch {}
     // SIDE-COOLDOWN-CHASE (cycle1134): scan が幾何ゲートで外れても、接近中の候補実体が存続する間は保持する
     try {
