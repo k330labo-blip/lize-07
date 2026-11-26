@@ -3115,6 +3115,7 @@ function tickLongTask(bot, owner, r, ctx) {
   return false;
 }
 function cancelMission(bot, owner, r, silent = false) {
+  r.pendingConditionOrder = null; // E-02: 中止は条件保留も畳む (保留だけが残って後で発火するのを防ぐ)
   if (r.mission) { r.mission = null; clearPlanRecords(r); persistMission(bot, r, true); dps(bot, "cb_order", ""); }
   r.work = null; r.workHoldLeg = null; r.workChain = null; // cycle0033 F2: cancelled work must not keep occupying tickAutonomy
   r.buildPlan = null;
@@ -4855,6 +4856,12 @@ function handleChatMessage(p, rawIn) {
       system.run(() => { say(p, bot, `進捗です。${nameOfItem(s.target)}${cs ? ` ${cs.have}/${cs.need}` : ""}。段階は ${s.stepsDone}/${s.stepsTotal} まで進んでいます`, true); try { conv.hear(raw, "mission_status"); } catch {} });
       return;
     }
+  }
+  // ①.4 E-02: 仕事が無く条件保留だけがある状態でも、中止発話で保留を取り下げられる出口
+  if (!r.mission && r.pendingConditionOrder && gateCancel(raw).fire) {
+    r.pendingConditionOrder = null;
+    system.run(() => { say(p, bot, "分かりました。条件の指示は取り下げました", true); try { conv.hear(raw, "pending_condition_cancel"); } catch {} });
+    return;
   }
   // ①.5 Phase5 clarify 再開フック: 保持中の聞き返しへの回答を、提案収集より前に解釈する（深さ1）
   try {

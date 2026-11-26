@@ -1132,10 +1132,11 @@ export function resumeClarifyOrder(pc, text) {
   if (CLARIFY_CANCEL_RE.test(t)) return { action: "cancelled" };
   const cands = Array.isArray(pc.retainedCandidates) ? pc.retainedCandidates : [];
   const negIds = new Set((pc.negations || []).map((n) => n?.target?.item || n?.target?.block || n?.target?.entity).filter(Boolean));
-  const candOrder = (c, amountOverride) => ({
+  const candOrder = (c, amountOverride, metaOverride) => ({
     kind: c.verbClass || "gather",
     target: c.target || null,
     amount: amountOverride ?? c.amount ?? null,
+    amountMeta: metaOverride ?? null,
     constraints: pc.known?.constraints || { hostiles: "default" },
     sideTasks: [],
     negations: pc.negations || [],
@@ -1143,14 +1144,31 @@ export function resumeClarifyOrder(pc, text) {
     returnTo: pc.known?.returnTo || "owner",
     raw: t,
   });
-  // 数量のみの回答（例: 「10個」）は候補1件のときだけその候補へ数量を補う
-  const amtOnly = t.replace(/[、。\s]/g, "").match(/^(\d+)(個|つ)?$/);
-  if (amtOnly && cands.length === 1 && cands[0]?.target) {
-    return { action: "order", reason: "answered", order: candOrder(cands[0], Number(amtOnly[1])) };
+  // 0-C5 U1: 聞き返し回答の数量解釈も純粋核 amount_parse へ一本化する (従来は独自正規表現で
+  // スタック/半スタック/反復/相対/訂正が落ち、0個まで開始へ渡っていた)。
+  const clarifyAmount = (cand) => {
+    try {
+      if (/つ目|１つ目|２つ目/.test(t)) return null; // R1: 序数回答 (1つ目/2つ目) を数量と読まない
+      const tg = cand?.target || {};
+      const r = amount_parse(t, { itemId: tg.item ?? tg.block ?? null });
+      if (!r) return null;
+      if (r.ok && r.total === 0) return { zero: true };
+      if (r.ok) return { amount: r.total, amountMeta: { perRun: r.perRun ?? null, repeats: r.repeats ?? null, relative: r.relative === true, corrected: r.corrected === true } };
+      if (r.reason === "zero") return { zero: true };
+    } catch { /* 核の失敗は数量なしとして従来経路へ */ }
+    return null;
+  };
+  // 数量のみの回答は候補1件のときだけその候補へ数量を補う (数量形は核が解釈する)
+  const QTY_ONLY_RE = /^(あと)?((半|はん)スタック|(\d+(?:\.\d+)?|[\d０-９]+|[一二三四五六七八九十]+|ゼロ|零)(スタック|個|つ|本|枚|体|匹))(と(\d+|[\d０-９]+|[一二三四五六七八九十]+)(個|つ|本|枚|体|匹))*(ずつ(\d+|[\d０-９]+|[一二三四五六七八九十]+)回)?$/;
+  if (cands.length === 1 && cands[0]?.target && QTY_ONLY_RE.test(t.replace(/[、。\s]/g, ""))) {
+    const ca = clarifyAmount(cands[0]);
+    if (ca?.zero) return { action: "unmatched" };
+    if (ca) return { action: "order", reason: "answered", order: candOrder(cands[0], ca.amount, ca.amountMeta) };
   }
   // 回答文中の数量（候補指定と一緒に言われた数量を落とさない。cycle0202 a14 H-1）
-  const amtMatch = t.match(/(\d+|[一二三四五六七八九十]+)\s*(個|つ|本|枚|体|匹)/);
+  const amtMatch = /つ目/.test(t) ? null : t.match(/(\d+|[一二三四五六七八九十]+)\s*(個|つ|本|枚|体|匹)/);
   const amtInText = amtMatch ? amountValue(amtMatch[1], amtMatch[2]) : null;
+  const amtFor = (cand) => { const ca = clarifyAmount(cand); return ca?.zero ? { zero: true } : ca; };
   // 候補の直接指定（名前/id の部分一致＋辞書の通称解決、序数、肯定）
   // cycle0202 a08/a14: 正式名フル一致だけでは通称短答（「銅」）が当たらず、
   // 否定つき指定（「XじゃなくてY」）では否定された側が最後一致で勝つ欠陥があった。
@@ -1174,7 +1192,7 @@ export function resumeClarifyOrder(pc, text) {
   if (idx < 0 && /(2つ目|２つ目|あっち|そっち|後者)/.test(t) && cands.length >= 2) idx = 1;
   // 発話側は候補2件でも先頭候補への yes/no を聞く形のため、肯定は先頭候補を選ぶ（a08 確定バグ2）
   if (idx < 0 && cands.length >= 1 && /^(うん|はい|それでいい|それで|了解|おｋ|ok)/i.test(t)) idx = 0;
-  if (idx >= 0 && cands[idx]?.target) return { action: "order", reason: "answered", order: candOrder(cands[idx], amtInText) };
+  if (idx >= 0 && cands[idx]?.target) { const ca = amtFor(cands[idx]); if (ca?.zero) return { action: "unmatched" }; return { action: "order", reason: "answered", order: candOrder(cands[idx], ca ? ca.amount : amtInText, ca?.amountMeta ?? null) }; }
   // 候補名を含む完全でない回答（例: 「銅10個」）は候補照合で拾う。それ以外は新規発話として再パース
   let parsed = null;
   try { parsed = parseOrder(t); } catch { parsed = null; }
@@ -1199,8 +1217,10 @@ export function resumeClarifyOrder(pc, text) {
     }
     if (seen.size === 1) {
       const tg = [...seen.values()][0];
+      const ca = amtFor({ target: tg });
+      if (ca?.zero) return { action: "unmatched" };
       return { action: "order", reason: "answered", order: {
-        kind: tg.entity ? "hunt" : "gather", target: tg, amount: amtInText,
+        kind: tg.entity ? "hunt" : "gather", target: tg, amount: ca ? ca.amount : amtInText, amountMeta: ca?.amountMeta ?? null,
         constraints: pc.known?.constraints || { hostiles: "default" }, sideTasks: [],
         negations: pc.negations || [], unresolved: [], returnTo: pc.known?.returnTo || "owner", raw: t,
       } };
