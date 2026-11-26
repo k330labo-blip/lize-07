@@ -80,7 +80,7 @@ const MATERIAL_DEFS = [
   ["ice", "block", "氷", ["氷"]],
   ["snowball", "item", "雪玉", ["雪玉"]],
   // モブドロップ・その他素材
-  ["wool", "block", "羊毛", ["羊毛", "ウール"]],
+  ["wool", "block", "羊毛", ["羊毛", "ウール", "羊の毛"]],
   ["leather", "item", "革", ["革", "レザー"]],
   ["string", "item", "糸", ["糸"]],
   ["feather", "item", "羽根", ["羽根", "羽"]],
@@ -132,7 +132,10 @@ const MATERIAL_DEFS = [
   ["furnace", "block", "かまど", ["かまど", "竈"]],
   ["chest", "block", "チェスト", ["チェスト"]],
   ["white_bed", "block", "ベッド", ["ベッド"]],
+  ["water_bucket", "item", "水入りバケツ", ["水入りバケツ", "水バケツ", "水のバケツ"]],
+  ["lava_bucket", "item", "溶岩バケツ", ["溶岩バケツ", "溶岩入りバケツ", "マグマバケツ"]],
   ["bucket", "item", "バケツ", ["バケツ"]],
+  ["oak_sign", "block", "看板", ["看板", "サイン"]],
   // v0.4.67: 道具 (木・石・鉄・ダイヤ × ツルハシ・斧・シャベル・剣)。以前は「ピッケル」表記の鉄/ダイヤしか無く、
   // 「石のツルハシ」が「石」と読まれていた
   ["wooden_pickaxe", "item", "木のツルハシ", ["木のツルハシ", "木のつるはし", "木のピッケル"]],
@@ -152,6 +155,8 @@ const MATERIAL_DEFS = [
   ["diamond_shovel", "item", "ダイヤのシャベル", ["ダイヤのシャベル", "ダイヤのスコップ", "ダイヤモンドのシャベル", "ダイヤモンドのスコップ"]],
   ["diamond_sword", "item", "ダイヤの剣", ["ダイヤの剣", "ダイヤのソード", "ダイヤモンドの剣", "ダイヤモンドのソード"]],
   ["bow", "item", "弓", ["弓"]],
+  ["crossbow", "item", "クロスボウ", ["クロスボウ"]],
+  ["trident", "item", "トライデント", ["トライデント"]],
   ["arrow", "item", "矢", ["矢"]],
   ["shield", "item", "盾", ["盾"]],
   ["fishing_rod", "item", "釣竿", ["釣竿", "釣り竿"]],
@@ -815,6 +820,55 @@ function extractConditionPrefix(text) {
   } catch { return null; }
 }
 
+// 0-C4 (cycle1321): 道具指定の分離と設置位置の保持。判定は汎用文法のみで行い、
+// 対象の型 (道具か/生き物か/アイテムか) が文面と矛盾する候補を開始処理へ渡さない。
+const TOOL_IDS = new Set([
+  "bow", "crossbow", "trident", "fishing_rod", "shears", "shield",
+  "wooden_pickaxe", "wooden_axe", "wooden_shovel", "wooden_sword",
+  "stone_pickaxe", "stone_axe", "stone_shovel", "stone_sword",
+  "iron_pickaxe", "iron_axe", "iron_shovel", "iron_sword",
+  "golden_pickaxe", "golden_axe", "golden_shovel", "golden_sword",
+  "diamond_pickaxe", "diamond_axe", "diamond_shovel", "diamond_sword",
+  "netherite_pickaxe", "netherite_axe", "netherite_shovel", "netherite_sword",
+]);
+// 「<道具>で<動詞>」: 道具 hit は対象候補から外し、手段として返す。
+// 「を」を含む句 (目的語が先行する形) と、動詞が後続しない句では発動しない。
+function toolPhraseOf(clause, hits) {
+  try {
+    const de = clause.indexOf("で");
+    if (de < 0) return null;
+    if (/を/.test(clause.slice(0, de))) return null;
+    if (!/(倒|掘|狩|切|壊|攻撃|刈|伐|殴)/.test(clause.slice(de + 1))) return null;
+    const hit = (hits || []).find((h) => h.kind === "material" && TOOL_IDS.has(h.def?.[0]) && h.end <= de && de - h.end <= 1);
+    if (!hit) return null;
+    return { hit, tool: targetOf(hit) };
+  } catch { return null; }
+}
+const PLACE_DIR_RE = /^(上|右|左|前|後ろ|後|下|隣|となり|横)$/;
+// 「<対象>の<方向>に置く」: 方向の直前の対象 hit は設置先 (アンカー) であり対象ではない。
+function anchorHitOf(clause, hits) {
+  try {
+    if (!/(置|おい)/.test(clause)) return null;
+    for (const h of hits || []) {
+      if (clause[h.end] !== "の") continue;
+      const dm = clause.slice(h.end + 1).match(/^(.{1,3}?)に/); // 目的語が後続する形 (「上に看板を置いて」) も許す。置 の存在は入口で確認済み
+      if (dm && PLACE_DIR_RE.test(dm[1])) return { hit: h, dir: dm[1] };
+    }
+    return null;
+  } catch { return null; }
+}
+// 設置位置の保持: ここ=発話者の現在位置、アンカー付きは相対位置として保持する。
+function placementOf(clause, anchorInfo) {
+  try {
+    if (!/(置|おい)/.test(clause)) return null;
+    if (anchorInfo) return { mode: "relative", anchor: targetOf(anchorInfo.hit), dir: anchorInfo.dir };
+    if (/ここに/.test(clause)) return { mode: "here", anchor: null, dir: null };
+    const dm = clause.match(/(上|右|左|前|後ろ|後|下|隣|となり|横)に(?=置|おい)/);
+    if (dm) return { mode: "relative", anchor: null, dir: dm[1] };
+    return null;
+  } catch { return null; }
+}
+
 // ---------------------------------------------------------------- 本体
 /**
  * parseOrder(text) -> 注文オブジェクト | null
@@ -871,15 +925,24 @@ export function parseOrder(input) {
   if (negResult.hostileNegated && constraints.hostiles === "default") constraints.hostiles = "ignore";
   const candidates = [];
   let anyVerb = false;
+  let orderTool = null; // 0-C4: 手段として分離した道具
+  let orderPlacement = null; // 0-C4: 設置位置 (絶対=here / 相対=relative)
   clauses.forEach((clause, ci) => {
     const nonOrder = isNonOrderClause(clause, hasQuestionMark);
     const verbClass = nonOrder ? null : classifyVerb(clause);
     if (verbClass) anyVerb = true;
     const side = SIDE_START_RE.test(clause);
     const hits = nonOrder ? [] : hitsPerClause[ci];
+    // 0-C4: 道具 hit と設置アンカー hit は対象候補にしない
+    const toolInfo = nonOrder ? null : toolPhraseOf(clause, hitsPerClause[ci]);
+    if (toolInfo && !orderTool) orderTool = toolInfo.tool;
+    const anchorInfo = nonOrder ? null : anchorHitOf(clause, hitsPerClause[ci]);
+    if (!orderPlacement) { const pl = nonOrder ? null : placementOf(clause, anchorInfo); if (pl) orderPlacement = pl; }
     let first = true;
     for (const hit of hits) {
       if (negResult.quarantinedHits?.has(hit)) continue; // 否定側は候補にしない
+      if (toolInfo && hit === toolInfo.hit) continue; // 0-C4: 道具は対象にしない
+      if (anchorInfo && hit === anchorInfo.hit) continue; // 0-C4: 設置アンカーは対象にしない
       // 数量単位の消費: 数字の直後の単位字（本→book 等）はメンションにしない（§7-2、位置ベース）
       if (hit.kind === "material" && hit.def?.[0] === "book" && /[0-9一二三四五六七八九十]/.test(clause[hit.start - 1] ?? "")) continue;
       // 建築物は「〜を/が」に続くか直後に作/建が来る場合だけ採用
@@ -1026,6 +1089,8 @@ export function parseOrder(input) {
     negations,
     unresolved,
     caps,
+    tool: orderTool,
+    placement: orderPlacement,
     returnTo,
     raw,
   };

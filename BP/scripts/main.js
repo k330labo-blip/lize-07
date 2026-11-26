@@ -4499,7 +4499,7 @@ function parserOrderToMission(o) {
   const hostiles = o.constraints?.hostiles === "engage" ? "fight" : o.constraints?.hostiles === "ignore" ? "ignore" : "avoid";
   const sideTasks = (o.sideTasks || []).map((s) => { const st = s.target || {}; const id = typeof st === "string" ? st : (st.item || st.block || st.entity); return id ? { kind: s.kind === "hunt" ? "hunt" : "gather", target: id, amount: s.amount ?? 8 } : null; }).filter(Boolean);
   const forbiddenTargets = [...new Set((o.negations || []).map((n) => n?.target?.item || n?.target?.block || n?.target?.entity).filter(Boolean))].filter((id) => id !== (t.item || t.block || t.entity));
-  return { kind: o.kind === "hunt" ? "hunt" : "gather", target: t.item || t.block || t.entity || null, amount: o.amount ?? 32, constraints: { hostiles, forbiddenTargets, caps: Array.isArray(o.caps) ? o.caps : [] }, sideTasks, returnTo: o.returnTo === "home" ? "home" : "owner", name: t.name || null }; // 0-C2 (cycle1215): caps を mission 制約へ同梱 (保持のみ)
+  return { kind: o.kind === "hunt" ? "hunt" : "gather", target: t.item || t.block || t.entity || null, amount: o.amount ?? 32, constraints: { hostiles, forbiddenTargets, caps: Array.isArray(o.caps) ? o.caps : [] }, sideTasks, returnTo: o.returnTo === "home" ? "home" : "owner", name: t.name || null, tool: o.tool ?? null, placement: o.placement ?? null }; // 0-C2 (cycle1215): caps を mission 制約へ同梱 (保持のみ)。0-C4 (cycle1321): 道具と設置位置も保持する
 }
 
 // Phase5 否定配線 (NEGW): 禁止・聞き返しは mission を作らない。記録と復唱/聞き返しのみ。
@@ -4577,6 +4577,8 @@ function startOrderFromParser(p, bot, r, o) {
   if (o.kind === "free") { dps(bot, "cb_mode", "free"); say(p, bot, "おまかせ、了解です。状況は私が見ます", true); return; }
   if (o.kind === "escort") { dps(bot, "cb_mode", "follow"); say(p, bot, "分かりました。そばを離れません", true); return; }
   if (o.kind === "build") {
+    // 0-C4 (cycle1321): 設置位置 (ここ/相対) は注文と一緒に保持する。設置実行への接続は次段。
+    if (o.placement && o.target) { try { r.pendingPlacement = { target: o.target?.block || o.target?.item || null, name: o.target?.name || null, placement: o.placement, at: Date.now() }; } catch {} }
     const nm = o.target?.name || "";
     const bp = BLUEPRINTS.find((b) => nm && (b.name.includes(nm) || nm.includes(b.name) || b.id === nm));
     if (!bp) {
