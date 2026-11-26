@@ -346,7 +346,7 @@ function amountNear(text, hit) {
     return null;
   };
   const after = text.slice(hit.end, hit.end + 18);
-  const am = after.match(new RegExp(`^[のがをもは]?(?:だけ)?\\s*(あと)?\\s*${QTY_PHRASE_RE.source}`));
+  const am = after.match(new RegExp(`^[のがをもは]?(?:だけ)?\\s*(あと\\s*[、,]?\\s*(?:もう\\s*)?)?\\s*${QTY_PHRASE_RE.source}`)); // cyc2157 R1G2-c: 核 startRe と対称に「あと」の後ろの読点・「もう」を許す (従来は数量ごと脱落)
   if (am) { const v = parsePhrase((am[1] || "") + am[2]); if (v != null) return v; }
   // 0-C5 R-4 (v0.5.86): 反復前置（「丸石を2回、3個ずつ」）。裸数字フォールバックが
   // 「2回」の 2 を数量として先に拾うため、その前に前置反復つきフレーズを核へ渡す。
@@ -1199,6 +1199,33 @@ export function parseOrder(input) {
       }
     }
   } catch { /* 前置反復の反映失敗は従来数量のまま */ }
+
+  // 0-C5 R1G2 (cyc2157): 文頭の「あと」が対象メンションを挟む形 (「あと丸石を3個」) と
+  // 数量節が対象句より前に出る形 (「あと3個、丸石を集めて」) の横断パス。amountNear は
+  // hit 後方しか見ず、核 startRe はメンション挟みを認めないため、両形とも relative が
+  // 落ち、後者は数量自体も落ちていた。文頭 (発話開始位置) の「あと」だけを対象とし、
+  // 「あとで/あとに」(後刻の指定) は相対指定にしない。対象なし (「あと3個集めて」単独) は
+  // candidates が無いため従来どおり注文不成立のまま。
+  try {
+    const atoHead = text.match(/^\s*あと(?![でに])\s*[、,]?\s*(?:もう\s*)?/);
+    if (atoHead && amountMeta && !amountMeta.relative) {
+      amountMeta = { ...amountMeta, relative: true };
+      if (main.amountDetail) main.amountDetail = { ...main.amountDetail, relative: true };
+    }
+    if (atoHead && main.amount == null) {
+      const seg = text.slice(atoHead[0].length, atoHead[0].length + 18);
+      const parsed = amount_parse(seg, { itemId: main.target?.item ?? main.target?.block ?? null });
+      if (parsed && parsed.ok && parsed.startable) { main.amount = parsed.total; amountMeta = { ...parsed, relative: true }; }
+    }
+    if (main.amount == null) {
+      // 「丸石をあと、3個集めて」: 読点で句が割れ数量が対象句の外に出る形 (R1G2-c 亜型)
+      const cm = text.match(new RegExp(`あと\\s*[、,]\\s*${QTY_PHRASE_RE.source}`));
+      if (cm) {
+        const parsed = amount_parse("あと" + cm[1], { itemId: main.target?.item ?? main.target?.block ?? null });
+        if (parsed && parsed.ok && parsed.startable) { main.amount = parsed.total; amountMeta = { ...parsed, relative: true }; }
+      }
+    }
+  } catch { /* 「あと」横断パスの失敗は従来数量のまま */ }
 
   // 0-C5 (cycle1256): 0個の指示は開始処理へ渡さない (聞き返しへ倒す)。
   if (main.amount === 0) {
