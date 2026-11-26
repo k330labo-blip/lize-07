@@ -37,6 +37,7 @@ export const SFX_TABLE = Object.freeze({
   coral:          { hit: "hit.stone",  break: "dig.coral",          step: "step.stone" },        // POLISH-SND-TIER3-CORAL (cycle1322): hit/step は stone 代用
   amethyst:       { hit: "hit.amethyst_block", break: "dig.amethyst_block", step: "step.amethyst_block" }, // POLISH-SND-AMETHYST-01 (cycle0606, a10監査で専用ID確認済み): アメジスト系が stone へ落ちていた誤分類の是正
   shroomlight:    { hit: "hit.stone",  break: "dig.shroomlight",    step: "step.stone" },        // POLISH-SND-CLASS-A4 (cycle0936): break のみ専用ID確認済み、hit/step は stone 流用
+  froglight:      { hit: "hit.stone",  break: "break.froglight",    step: "step.froglight" },    // POLISH-SND-CLASS-FROGLIGHT (cycle1215): break/step 専用ID確認済み (dig.froglight は実在しないため break.* 命名)、hit は stone 流用
   moss:           { hit: "hit.grass",  break: "dig.moss",           step: "step.moss" },         // POLISH-SND-CLASS-R2 (cycle1058): dig/step 専用ID確認済み、hit は grass 流用
   candle:         { hit: "hit.candle", break: "dig.candle",       step: "step.cloth" },        // POLISH-SND-CLASS-CANDLE (cycle1134): dig/hit 専用ID確認済み、step は cloth 流用
   honey_block:    { hit: "hit.stone",  break: "dig.honey_block",    step: "step.stone" },        // POLISH-SND-CLASS-R1 (cycle0955): break 専用ID確認済み、hit/step は stone 流用
@@ -55,6 +56,7 @@ export const CONFIRMED_IDS = new Set([
   "dig.honey_block", "dig.lodestone", // cycle0955 a07: 専用ID確認済み (break のみ)
   "dig.moss", "step.moss", // cycle1058 a07: 専用ID確認済み (break/step)
   "dig.candle", "hit.candle", // cycle1134 a07: 専用ID確認済み (break/hit)
+  "break.froglight", "step.froglight", // cycle1215 a14: 専用ID確認済み (break/step。dig.froglight/hit.froglight は実在しない)
   "step.grass", "step.sand", "step.gravel", "step.cloth", "step.wood",
   "step.nether_wood", "step.stone", "step.netherrack", "step.nether_brick",
   "step.nether_gold_ore", "step.nylium", "step.iron",
@@ -182,7 +184,8 @@ export function materialOfTypeId(typeId) {
   if (id.includes("vines")) return "vines";                               // 11c (cycle1322): 複数形のみ。単数 vine は grass のまま (PLANT 側に "vines" を含む ID は無い)
   if (id.includes("coral")) return "coral";                               // 11d (cycle1322): 生死・形状の全数形を拾う (copper の後・既定の前)
   if (AMETHYST_IDS.has(id)) return "amethyst"; // cycle0606: 専用カテゴリ (stone 既定より前)
-  if (id === "shroomlight") return "shroomlight"; // cycle0936: 完全一致のみ (froglight 4形は巻き込まない)
+  if (id === "shroomlight") return "shroomlight"; // cycle0936: 完全一致のみ
+  if (id === "froglight" || id.endsWith("_froglight")) return "froglight"; // cycle1215: froglight 3形+素形を専用カテゴリへ (従来は stone 落ち)
   if (id === "honey_block") return "honey_block"; // cycle0955 R1: 完全一致のみ
   if (id === "lodestone") return "lodestone"; // cycle0955 R1: 完全一致のみ
   if (id === "deepslate_copper_ore") return "deepslate"; // cycle2117: 母岩優先 (深層岩鉱石は母岩が正、copper includes より前)

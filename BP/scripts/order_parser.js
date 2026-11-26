@@ -307,7 +307,7 @@ function n5GapOk(text, hit, idx) { try { const gap = text.slice(hit.end, idx); i
 function amountNear(text, hit) {
   const after = text.slice(hit.end, hit.end + 10);
   if (/^も?半スタック/.test(after)) return 32;
-  let m = after.match(/^[のがをもは]?\s*(\d+|[一二三四五六七八九十]+)\s*(個|本|枚|つ|体|匹|スタック|組|セット|箱)/);
+  let m = after.match(/^[のがをもは]?(?:だけ)?\s*(\d+|[一二三四五六七八九十]+)\s*(個|本|枚|つ|体|匹|スタック|組|セット|箱)/); // 0-C2 (cycle1215): 「石炭だけ10個」の だけ を数量の前置として許す (従来は数量が落ちていた)
   if (m) return amountValue(m[1], m[2]);
   m = after.match(/^[のがをもは]?(\d+)/); // 単位なしの裸の数字（「ダイヤ10掘って」）
   if (m) return parseInt(m[1], 10);
@@ -383,7 +383,7 @@ dispensationRe: /なくて(?:も)?(?:いい|よい)(?:です)?/g,
 referenceWords: ["それ", "これ", "あれ"],
 });
 
-const NEG_MORPHEME_RE = /(ないで|こないで|くるな|来ないで|るな|ない$|な$)/g;
+const NEG_MORPHEME_RE = /(ないで|こないで|くるな|来ないで|るな|ない$|な$|ずに|ず$)/g; // 0-C2 (cycle1215): 「掘らずに」型の ず/ずに 否定も形態素として数える (従来は未検出で禁止対象が主目標に反転していた)
 
 function hasGuardedForm(clause) {
 return /なくては|ないと(?!いう)|なければ/.test(clause);
@@ -530,6 +530,7 @@ function dispensationGapVerb(text, hit, markerIdx) {
 
 function extractNegations(clauses, hitsPerClause, opts = {}) {
 const negations = [];
+const caps = []; // 0-C2 (cycle1215): 「N体以上は狩らないで」型の上限。禁止に倒さず構造として保持する
 const quarantinedHits = new Set();
 const unresolved = [];
 let hostileNegated = false;
@@ -600,9 +601,9 @@ const hit = nearestHitBefore(hits.filter((h) =>!done.has(h)), idx);
 if (hit) {
 for (const ch of parallelChainBefore(hits.filter((h) =>!done.has(h)), hit, text)) {
 if (isGenericHostile(ch)) hostileNegated = true;
-pushNeg("not", ch, null, NEGATION_PATTERNS.exclusionMarker);
+const ng = pushNeg("not", ch, null, NEGATION_PATTERNS.exclusionMarker); ng.scope = "except"; // 0-C2: 除外された側が「唯一の許可対象」であることを保持 (禁止への反転防止)
 }
-for (const ch of carriedHits[ci] ?? []) { if (done.has(ch)) continue; if (isGenericHostile(ch)) hostileNegated = true; pushNeg("not", ch, null, NEGATION_PATTERNS.exclusionMarker); }
+for (const ch of carriedHits[ci] ?? []) { if (done.has(ch)) continue; if (isGenericHostile(ch)) hostileNegated = true; const ng = pushNeg("not", ch, null, NEGATION_PATTERNS.exclusionMarker); ng.scope = "except"; }
 }
 }
 }
@@ -663,8 +664,26 @@ for (const ch of carriedHits[ci]) { if (done.has(ch)) continue; if (isGenericHos
 }
 }
 
+// 0-C2 上限 (cycle1215): 「<対象>を N<単位>以上は <動詞>ないで」は一律禁止ではなく上限として保持する。
+// 対象 hit は隔離するが forbid 否定は作らない (禁止として記録されると意味が反転・拡大するため)。
+let capHandled = false;
+{
+const cm = text.match(/(\d+|[一二三四五六七八九十]+)\s*(?:個|体|本|枚|つ|匹)\s*以上/);
+if (cm && !hasGuardedForm(text)) {
+const nvCap = findNegatedVerb(text);
+if (nvCap && nvCap.index > text.indexOf(cm[0])) {
+const hitCap = nearestHitBefore(hits.filter((h) =>!done.has(h)), text.indexOf(cm[0]));
+const capN = parseNumberToken(cm[1]);
+if (hitCap && capN != null) {
+caps.push({ target: targetOfHit(hitCap), cap: capN, verb: nvCap.verb, clause: ci });
+quarantinedHits.add(hitCap); done.add(hitCap); capHandled = true;
+}
+}
+}
+}
+
 // N2/N3/N6 動詞否定
-if (!hasGuardedForm(text)) {
+if (!hasGuardedForm(text) && !capHandled) {
 const nv = findNegatedVerb(text);
 if (nv) {
 const hit = nearestHitBefore(hits.filter((h) =>!done.has(h)), nv.index + 1)
@@ -711,7 +730,7 @@ const corr = negations.filter((n) => NEGATION_PATTERNS.correctionMarkers.include
 unresolved.push({ slot: "target", reason: "correction_without_base", negations: corr});
 }
 
-return { negations, quarantinedHits, hostileNegated, unresolved};
+return { negations, quarantinedHits, hostileNegated, unresolved, caps };
 }
 
 // ---------------------------------------------------------------- 文法ガード
@@ -763,6 +782,25 @@ const DESIRE_RE = /欲しい|ほしい/;
 const DIRECTED_REQUEST_RE = /ください|下さい|ちょうだい|お願い/;
 const SOLILOQUY_RE = /(なあ|なぁ|いいな|すごく|とても|めっちゃ|本当に|ほんとに|いつか)/;
 
+// 0-C2 条件節 (cycle1215): 文頭の「〜たら／〜ている間」条件を Goal の構造として保持する。
+// 条件節側に対象メンションが無く、後続に対象メンションがある場合だけ条件と認める (汎用形)。
+function extractConditionPrefix(text) {
+  try {
+    const m = String(text ?? "").match(/^([^、。]{2,16}?(?:たら|なったら|になったら|降ったら|ている間|てる間))、?(.*)$/);
+    if (!m) return null;
+    const seg = m[1], rest = m[2];
+    if (!rest) return null;
+    if (scanMentions(seg, [MATERIAL_INDEX, ENTITY_INDEX]).length) return null;
+    if (!scanMentions(rest, [MATERIAL_INDEX, ENTITY_INDEX]).length) return null;
+    let kind = "custom";
+    if (/雨/.test(seg)) kind = "rain";
+    else if (/満腹|お腹いっぱい|腹いっぱい/.test(seg)) kind = "satiety";
+    else if (/夜/.test(seg)) kind = "night";
+    else if (/朝/.test(seg)) kind = "morning";
+    return { raw: seg, kind };
+  } catch { return null; }
+}
+
 // ---------------------------------------------------------------- 本体
 /**
  * parseOrder(text) -> 注文オブジェクト | null
@@ -802,14 +840,19 @@ export function parseOrder(input) {
   // 3) 帰還先（拠点へ届ける/置く等）
   const returnTo = /(拠点|倉庫|家)に(届け|持って行|持ってい|運ん|置い|入れて)/.test(text) ? "home" : "owner";
 
+  // 3.5) 0-C2 条件節 (cycle1215): 条件は constraints.condition へ保持し、即時発行しない根拠にする
+  const condition = extractConditionPrefix(text);
+  if (condition) constraints.condition = condition;
+
   // 4) 句ごとに候補を集める（過去・完了報告と質問文の句は候補にしない）
   const hasQuestionMark = /[？?]/.test(text);
   const clauses = text.split(/[、。,.!?！？]/).filter((s) => s.length > 0);
   // Phase 5: 否定抽出を候補決定の前に置く（手順3）。失敗時は否定なしで従来経路へ。
   const hitsPerClause = clauses.map((c) => scanMentions(c, [MATERIAL_INDEX, ENTITY_INDEX, STRUCTURE_INDEX]));
-  let negResult = { negations: [], quarantinedHits: new Set(), hostileNegated: false, unresolved: [] };
+  let negResult = { negations: [], quarantinedHits: new Set(), hostileNegated: false, unresolved: [], caps: [] };
   try { negResult = extractNegations(clauses, hitsPerClause, { hasQuestionMark }); } catch { /* 否定なしとして継続 */ }
   const negations = negResult.negations || [];
+  const caps = negResult.caps || [];
   const unresolved = [...(negResult.unresolved || [])];
   if (negResult.hostileNegated && constraints.hostiles === "default") constraints.hostiles = "ignore";
   const candidates = [];
@@ -841,11 +884,25 @@ export function parseOrder(input) {
   });
 
   // Phase 5 手順6: 正対象ゼロでも否定があれば消失させない（forbid / clarify）
+  if (candidates.length === 0 && caps.length > 0) { // 0-C2 (cycle1215): 上限だけの発話は禁止にも注文にも倒さず cap として返す
+    return { kind: "cap", target: null, amount: null, constraints, sideTasks: [], negations, unresolved, caps, returnTo, raw };
+  }
   if (candidates.length === 0 && (negations.length > 0 || negResult.hostileNegated)) { // cycle1832 C1: 総称敵の動詞否定単独形 (negations 空でも hostileNegated が立てば forbid/clarify として保持する)
     if (unresolved.length > 0) {
-      return { kind: "clarify", target: null, amount: null, constraints, sideTasks: [], negations, unresolved, returnTo, raw };
+      // 0-C2 (cycle1215): 「X以外は〜しないで」は X が唯一の許可対象 (allowOnly)。X を禁止として記録してはならない。
+      let allowOnly = null;
+      if (unresolved.some((u) => u.reason === "excluded_only")) {
+        for (const n of negations) {
+          if (n.marker !== NEGATION_PATTERNS.exclusionMarker) continue;
+          const cl = clauses[n.clause] || "";
+          const ai = cl.indexOf(NEGATION_PATTERNS.exclusionMarker);
+          const after = ai >= 0 ? cl.slice(ai + NEGATION_PATTERNS.exclusionMarker.length) : "";
+          if (/(ないで|こないで|るな|ない|ずに)/.test(after)) { allowOnly = { target: n.target || null, verb: n.verb ?? null }; break; }
+        }
+      }
+      return { kind: "clarify", target: null, amount: null, constraints, sideTasks: [], negations, unresolved, caps, allowOnly, returnTo, raw };
     }
-    return { kind: "forbid", target: null, amount: null, constraints, sideTasks: [], negations, unresolved, returnTo, raw };
+    return { kind: "forbid", target: null, amount: null, constraints, sideTasks: [], negations, unresolved, caps, returnTo, raw };
   }
 
   // 5) 対象ゼロなら、護衛/おまかせ の単独指示だけ拾う
@@ -933,6 +990,7 @@ export function parseOrder(input) {
     sideTasks: safeSides.slice(0, 2).map((c) => ({ target: c.target, amount: c.amount })),
     negations,
     unresolved,
+    caps,
     returnTo,
     raw,
   };

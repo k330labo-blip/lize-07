@@ -4496,7 +4496,7 @@ function parserOrderToMission(o) {
   const hostiles = o.constraints?.hostiles === "engage" ? "fight" : o.constraints?.hostiles === "ignore" ? "ignore" : "avoid";
   const sideTasks = (o.sideTasks || []).map((s) => { const st = s.target || {}; const id = typeof st === "string" ? st : (st.item || st.block || st.entity); return id ? { kind: s.kind === "hunt" ? "hunt" : "gather", target: id, amount: s.amount ?? 8 } : null; }).filter(Boolean);
   const forbiddenTargets = [...new Set((o.negations || []).map((n) => n?.target?.item || n?.target?.block || n?.target?.entity).filter(Boolean))].filter((id) => id !== (t.item || t.block || t.entity));
-  return { kind: o.kind === "hunt" ? "hunt" : "gather", target: t.item || t.block || t.entity || null, amount: o.amount ?? 32, constraints: { hostiles, forbiddenTargets }, sideTasks, returnTo: o.returnTo === "home" ? "home" : "owner", name: t.name || null };
+  return { kind: o.kind === "hunt" ? "hunt" : "gather", target: t.item || t.block || t.entity || null, amount: o.amount ?? 32, constraints: { hostiles, forbiddenTargets, caps: Array.isArray(o.caps) ? o.caps : [] }, sideTasks, returnTo: o.returnTo === "home" ? "home" : "owner", name: t.name || null }; // 0-C2 (cycle1215): caps を mission 制約へ同梱 (保持のみ)
 }
 
 // Phase5 否定配線 (NEGW): 禁止・聞き返しは mission を作らない。記録と復唱/聞き返しのみ。
@@ -4514,6 +4514,20 @@ function recordSessionForbids(bot, r, o) {
 }
 function forbidTargetName(n) { return n?.target?.name || nameOfItem(n?.target?.item || n?.target?.block || n?.target?.entity || ""); }
 function startOrderFromParser(p, bot, r, o) {
+  // 0-C2 (cycle1215): 条件付き注文は即時発行しない。条件を保持して保留し、その旨を返す。
+  if (o.constraints?.condition) {
+    try { r.pendingConditionOrder = { order: o, at: Date.now() }; } catch {}
+    say(p, bot, `分かりました。${o.constraints.condition.raw}、${o.target?.name || "その対象"}${o.amount ? o.amount + "個" : ""}の指示を始めます。今はまだ始めません`, true);
+    return;
+  }
+  // 0-C2 (cycle1215): 上限だけの発話 (kind:"cap") は禁止として記録せず、上限として保持する。
+  if (o.kind === "cap") {
+    const list = (o.caps || []).filter((c) => c?.target);
+    try { r.caps = [...(Array.isArray(r.caps) ? r.caps : []), ...list.map((c) => ({ target: c.target?.item || c.target?.block || c.target?.entity || null, cap: c.cap, verb: c.verb ?? null, at: Date.now() }))].slice(-16); } catch {}
+    if (list.length) say(p, bot, `分かりました。${list.map((c) => `${c.target?.name || ""}は${c.cap}までです`).join("。")}。それ以上はしません`, true);
+    else say(p, bot, "分かりました。その上限で止めます", true);
+    return;
+  }
   // Phase5 否定配線: build/gather の mission 実行中ガードより前に置くこと
   if (o.kind === "forbid") {
     recordSessionForbids(bot, r, o);
@@ -4529,6 +4543,12 @@ function startOrderFromParser(p, bot, r, o) {
     return;
   }
   if (o.kind === "clarify") {
+    // 0-C2 (cycle1215): 「X以外は〜しないで」は X が唯一の許可対象。X を禁止に記録せず allowOnly として保持する (逆転の是正)。
+    if (o.allowOnly?.target) {
+      try { r.allowOnly = { target: o.allowOnly.target?.item || o.allowOnly.target?.block || o.allowOnly.target?.entity || null, verb: o.allowOnly.verb ?? null, at: Date.now() }; } catch {}
+      say(p, bot, `分かりました。${forbidTargetName({ target: o.allowOnly.target })}以外は対象にしません`, true);
+      return;
+    }
     const reason = o.unresolved?.[0]?.reason || "";
     // Phase5 clarify保持: 聞き返した内容を会話状態へ1件だけ保持し、次の短い回答で再開できるようにする
     try {
