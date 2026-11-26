@@ -2684,6 +2684,22 @@ function startMission(bot, owner, r, mo, announce = true, opts = {}) {
   // 0-C5 R3 (cyc2122): 指示個数の上限10,000をチャット経路にも持たせる (UI経路 parseCount と同じ上限で非対称を解消)。leg は手段であり対象でないため除外。
   try { if (!mo.legsOnly && typeof mo.amount === "number" && Number.isFinite(mo.amount) && mo.amount > 10000) mo = { ...mo, amount: 10000 }; } catch {}
   if (!mo.legsOnly) r.toolPrepTotal = 0; // キュー0副次 R1 (cycle1421): 道具準備の通算上限は新規注文ごとに数え直す (leg 子ミッションでは消さない)
+  // 0-C4 RG-2 (cyc2377): 道具指定の clarify 判定は長期タスク分岐より前に置く。従来は plan が立つ注文が
+  // 分岐へ先に吸われ、未所持・作製不能でも黙って開始していた (ゲートは分岐の後ろにしか無かった)。
+  // ここでは clarify のみを判定し、equip/already/procure は従来経路 (分岐後ゲート/startLongTask) に任せる。
+  if (!mo.legsOnly && mo.tool) {
+    try {
+      const tidGate = toolItemIdOf(mo.tool);
+      if (tidGate) {
+        let eqGate = null; try { eqGate = equipCoreOf(bot, r)?.getEquipped("Mainhand")?.typeId || null; } catch {}
+        const invGate = countInv(bot);
+        if (eqGate !== tidGate && !(invGate[tidGate] > 0)) {
+          let feasGate = false; try { const plGate = planLongTask({ target: tidGate, amount: 1 }, invGate, invDurabilityOf(bot)); feasGate = !!(plGate && plGate.feasible); } catch {}
+          if (!feasGate) { if (announce && owner) say(owner, bot, `${nameOfItem(tidGate)}は持っていなくて、今は作れません。別の道具でよければ言ってください`, true); return null; }
+        }
+      }
+    } catch {}
+  }
   // 工程（クラフト/精錬/ツール自作）が要る注文は、長期自律タスクとして自分で手段を組み立てる
   if (!opts.noLongTask && !mo.legsOnly) {
     let ltPlan = null;
@@ -2730,7 +2746,7 @@ function startMission(bot, owner, r, mo, announce = true, opts = {}) {
 function clearPlanRecords(r) { try { r.planRunner?.cancelCurrent("superseded"); } catch {} try { r.toolNeed = null; r.lastPlan = null; r.lastPlanGate = null; r.lastPlanGateP3 = null; r.lastPlanRevalP4 = null; r.lastPlanGateUnified = null; r.lastPlanRevalFull = null; r.lastPlanRevalAdopt = null; r.lastPlanRevalFullAdopt = null; r.lastPlanGateUnifiedAdopt = null; r.lastGoal = null; r.lastPlanInspect = null; r.lastPlanAt = 0; r.planAdoptSeen = null; r.planAdoptShieldUsedFor = null; r.lastPlanAdoptEffect = null; r.tracePlanSeen = null; r.traceActSeen = null; } catch {} }
 function finishMission(bot, owner, r) {
   r.mission = null; clearPlanRecords(r);
-  try { r.requestedTool = null; } catch {} // R-C4-1: 道具指定は mission 単位。残留を仕様にしない
+  try { r.requestedTool = null; r.toolAppliedLegIdx = null; } catch {} // R-C4-1: 道具指定は mission 単位。残留を仕様にしない / RG-6 (cyc2377): leg 適用印も同様
   // 0-C4 R-C4-1 (cyc2375): 先行調達した指定道具が揃ったら、本来の注文を開始する (揃わなければ繋がない)
   try {
     if (r.pendingAfterTool && owner) {
@@ -2808,7 +2824,7 @@ function startLongTask(bot, owner, r, mo, plan, announce = true) {
   const ltName = (plan.target.name && !String(plan.target.name).includes(":")) ? plan.target.name : (mo.name || lname(plan.target.item)); // v0.4.67(外部): ID のまま表示しない
   r.longtask = { target: plan.target.item, name: ltName, amount: plan.target.count, legs: plan.legs, legIdx: 0, phase: "legs", returnTo: mo.returnTo || "owner", hostiles: mo.constraints?.hostiles || "avoid", forbiddenTargets: mo.constraints?.forbiddenTargets || [], startedAt: Date.now(), baseForbiddenTargets: Array.isArray(mo.baseForbiddenTargets) ? mo.baseForbiddenTargets : null, tool: mo.tool ?? null, placement: mo.placement ?? null }; // 0-C4 (cyc2020): 長期タスクでも道具指定・設置位置を保持する (従来は脱落していた)
   r.mission = null; clearPlanRecords(r); r.ltLegActive = false; r.mineLeg = null; r.spiral = null;
-  try { if (mo.tool) applyRequestedTool(bot, owner, r, mo.tool); } catch {} // R-C4-1: 長期タスクでも指定道具を装備へ接続する (調達は plan の工程に任せ、ここでは装備のみ)
+  try { if (mo.tool) { applyRequestedTool(bot, owner, r, mo.tool); r.toolAppliedLegIdx = 0; } } catch {} // R-C4-1: 長期タスクでも指定道具を装備へ接続する (調達は plan の工程に任せ、ここでは装備のみ) / RG-6 (cyc2377): 開始時適用済みの印を立て、初回 tick での二重適用を防ぐ
   persistMission(bot, r, true); saveLongTask(bot, r);
   dps(bot, "cb_order", JSON.stringify({ ...mo, longtask: true, startedAt: Date.now() }));
   if (announce) { const tn = r.toolUseNote || ""; r.toolUseNote = null; say(owner, bot, `承知しました。${ltName}を${plan.target.count}個ですね。手段は私が組み立てます。全${plan.legs.length}工程、まず「${legLabel(plan.legs[0], lname)}」から始めます。遠くへ行くかもしれませんが、呼び戻せば戻ります${tn ? `。${tn}` : ""}`, true); }
@@ -2819,7 +2835,7 @@ function completeLongTask(bot, owner, r, ok = true, note = "", msg = null) {
   else if (ok) say(owner, bot, `長期タスク、完了しました。${lt.name}を${lt.amount}個、${lt.returnTo === "home" ? "拠点へ入庫しました" : "お渡ししました"}${note}`, true);
   else say(owner, bot, `長期タスクは揃えたのですが、納品できませんでした。${note}`, true);
   r.longtask = null; r.mineLeg = null; r.spiral = null; r.ltLegActive = false;
-  try { r.requestedTool = null; } catch {} // R-C4-1: 掃除
+  try { r.requestedTool = null; r.toolAppliedLegIdx = null; } catch {} // R-C4-1: 掃除 / RG-6 (cyc2377)
   // 0-C4 R-C4-1 (cyc2375): 指定道具の調達が長期タスクで完了した場合、本来の注文へつなぐ
   try {
     if (ok && r.pendingAfterTool && owner) {
@@ -3358,8 +3374,13 @@ function tickLongTask(bot, owner, r, ctx) {
   if (lt.legIdx >= lt.legs.length) { lt.phase = "deliver"; lt.deliverSince = Date.now(); lt.deliverFails = 0; saveLongTask(bot, r); say(owner, bot, `${lt.name}が揃いました。お届けします`, true); return true; }
   return false;
 }
+// 0-C4 RG-1 (cyc2377): 道具調達の保留 (pendingAfterTool) と道具指定の印を畳む共通掃除。
+// clearPendingCondition と対で使う。中止・保留失効で残すと、無関係な次ミッションの完了時に
+// 中止したはずの本来注文が finishMission 経由で復活する (ゾンビ復活) ため、終了経路では必ず消す。
+function clearPendingTool(r) { try { r.pendingAfterTool = null; r.requestedTool = null; r.toolAppliedLegIdx = null; } catch {} }
 function cancelMission(bot, owner, r, silent = false) {
   clearPendingCondition(bot, r); // E-02+E-01: 中止は条件保留も畳む (保留だけが残って後で発火するのを防ぐ。DP 側も同時に消す)
+  clearPendingTool(r); // RG-1 (cyc2377): 中止は道具調達の保留も畳む (条件保留と同じ非対称の解消)
   if (r.mission) { r.mission = null; clearPlanRecords(r); persistMission(bot, r, true); dps(bot, "cb_order", ""); }
   r.work = null; r.workHoldLeg = null; r.workChain = null; // cycle0033 F2: cancelled work must not keep occupying tickAutonomy
   r.buildPlan = null;
@@ -4552,13 +4573,13 @@ system.runInterval(() => {
     if (!r.longtask && r.mission && r.mission.status === "suspended" && (r.mission.suspendReason === "cannot_recover" || r.mission.suspendReason === "inv_unreadable")) {
       const sres = tickSuspendedResume(bot, r);
       if (sres === "waiting") consumed = true;
-      else if (sres === "expired") { foldGatherBuildPlan(bot, p, r, "suspend_expired", r.mission); say(p, bot, `体力が回復しなかったため、指示を中断しました`, true); r.mission = null; clearPlanRecords(r); persistMission(bot, r, true); consumed = true; }
+      else if (sres === "expired") { foldGatherBuildPlan(bot, p, r, "suspend_expired", r.mission); say(p, bot, `体力が回復しなかったため、指示を中断しました`, true); r.mission = null; clearPlanRecords(r); clearPendingTool(r); persistMission(bot, r, true); consumed = true; }
     }
     // cycle0606 PLAIN-SUSPEND-NOEXIT: 単発 suspended 6理由の期限型出口 (別担い手 tickPlainSuspendExpiry、10分で終了掃除)
     if (!consumed && !r.longtask && r.mission && r.mission.status === "suspended") {
       const pres = tickPlainSuspendExpiry(bot, r);
       // waiting は消費しない (保留中も通常行動を妨げない。従来の suspended 単発の振る舞いを維持)
-      if (pres === "expired") { const rsn = r.mission.suspendReason; say(p, bot, `保留が長引いたため、指示を中断しました。${SUSPEND_JP[rsn] || "進めなくなりました"}`, true); noteFail(bot, "mission:plain_suspend_expired", new Error(rsn || "")); r.mission = null; clearPlanRecords(r); persistMission(bot, r, true); consumed = true; }
+      if (pres === "expired") { const rsn = r.mission.suspendReason; say(p, bot, `保留が長引いたため、指示を中断しました。${SUSPEND_JP[rsn] || "進めなくなりました"}`, true); noteFail(bot, "mission:plain_suspend_expired", new Error(rsn || "")); r.mission = null; clearPlanRecords(r); clearPendingTool(r); persistMission(bot, r, true); consumed = true; }
     }
     // キュー0副次 R1 (cycle1421): 単発ミッションの toolNeed は昇格接続が消費の入口になる (実装は tickLongTask 内の1か所のまま)
     if (!consumed && !r.longtask && r.toolNeed && tickToolPrepPromote(bot, p, r)) consumed = true;
