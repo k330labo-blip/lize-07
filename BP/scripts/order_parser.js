@@ -1094,7 +1094,7 @@ export function parseOrder(input) {
     if (WATCH_RE.test(text) && !/[？?]/.test(text) && !/(たら|れば|の間|間だけ|間は)/.test(text)) {
       return { kind: "watch", target: null, amount: null, constraints, sideTasks: [], negations, unresolved, returnTo, raw };
     }
-    if (ESCORT_RE.test(text)) {
+    if (ESCORT_RE.test(text) && !/[？?]/.test(text) && !/(たら|れば|の間|間だけ|間は)/.test(text)) {
       return { kind: "escort", target: null, amount: null, constraints, sideTasks: [], negations, unresolved, returnTo, raw };
     }
     return null;
