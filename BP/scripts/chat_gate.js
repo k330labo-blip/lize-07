@@ -24,6 +24,8 @@ function isNegatedDirective(t, re) {
   if (/(自動化|ライン).{0,10}(するな|組むな|すんな)/.test(t)) return true;
   if (/(んではだめ|んじゃだめ|んではダメ)/.test(t)) return true;
   if (/まだ.{0,8}(やめて|中止|止めて|キャンセル)/.test(t) && /ほしくない|ないで/.test(t)) return true;
+  // cyc2248 A02 G1 (0-C1): 否定素形 (しない/しません/はなし/禁止/はいけない/組まない/しなくていい/わけじゃない)
+  if (/(しない|しません|はしない|はなし|禁止|はいけない|組まない|しなくていい|わけじゃない)/.test(t)) return true;
   return false;
 }
 
@@ -33,6 +35,11 @@ function isNegatedDirective(t, re) {
 // 名詞中の偶然一致 (片仮名「タラ」、漢字＋「と」等) は拾わない。
 function isConditionalForm(t) {
   return /(したら|すると|すれば|たら|だら|れば|けば|げば|せば|てば|ねば|べば|めば|えば)/.test(t)
+    // cyc2248 A02 G2 (0-C1): 条件接続形 (なら/場合/次第/際に/間は) と とき・前に・だと+指令語
+    || /(なら|場合|次第|際に|間は|間だけ)/.test(t)
+    || /(とき|時に|ときは).{0,24}(中止|やめて|止めて|キャンセル|自動化|ライン)/.test(t)
+    || /前に.{0,6}(やめて|中止|止めて|キャンセル)/.test(t)
+    || /だと.{0,12}(中止|やめて|止めて|キャンセル|自動化|ライン)/.test(t)
     || /[うくぐすつぬぶむる]と(?=.{0,6}(中止|やめて|止めて|キャンセル|自動化|ライン))/.test(t);
 }
 // cyc2134 A02 (0-C1 R4): 熟慮形「〜かどうか＋迷ってる/考えて/検討/聞いて」は意思決定前の
@@ -43,6 +50,8 @@ function isDeliberating(t) {
   // 「しようかな/ようかな」「するか迷ってる」は意思決定前、「〜てもいい」は許可求め。
   if (/(しようかな|ようかな|するか迷|ようか迷|迷って|迷い中)/.test(t)) return true;
   if (/(てもいい|てもよい|ても大丈夫)[。．]?$/.test(t.trim())) return true;
+  // cyc2248 A02 G3 (0-C1): 熟慮変形 (しようか/考え中/検討中/まだ決めてない/すべきか/するか悩/決めかね/ても平気/〜かな許可求め)
+  if (/(しようか|考え中|検討中|まだ決めてない|すべきか|するか悩|決めかね|ても平気|てもいいかな|ても大丈夫かな|したほうがいいかな)/.test(t)) return true;
   return false;
 }
 // cyc2134 A02 (0-C1 R2/R3): 工場の後置先送り。「〜は…てからにして」(先送り構文) と
@@ -61,6 +70,8 @@ export function gateCancel(text) {
     if (isHypothetical(t)) return { fire: false, kind: "hypothetical" };
     // 部分スコープ: 「Aは続けて、Bだけやめて」は全体中止ではない
     if (/だけ(やめて|中止|止めて|キャンセル)/.test(t) || /(続けて|継続して).{0,16}(やめて|中止|止めて)/.test(t)) return { fire: false, kind: "partial" };
+    // cyc2248 A02 G4 (0-C1): 部分スコープの語順逆転・助詞挟み (だけを/のみ/中止は…だけにして/指令語の後に継続)
+    if (/だけを(やめて|中止|止めて|キャンセル)/.test(t) || /のみ(やめて|中止|止めて|キャンセル)/.test(t) || /中止は.{0,12}だけにして/.test(t) || /(やめて|中止して|止めて).{0,24}(他は|ほかは|採掘は|石炭集めは).{0,8}(続けて|継続)/.test(t)) return { fire: false, kind: "partial" };
     if (isNegatedDirective(t)) return { fire: false, kind: "negation" };
     if (isDeliberating(t)) return { fire: false, kind: "question" };
     if (isQuestionForm(t)) return { fire: false, kind: "question" };
@@ -101,6 +112,10 @@ export function isHowToRequest(text) {
     const t = s(text);
     if (/方法|やり方|集め方|作り方|掘り方|取り方/.test(t) && /(教えて|知りたい|聞きたい|説明)/.test(t)) return true;
     if (/どうやって/.test(t) && /(集め|作|掘|取|倒)/.test(t)) return true;
+    // cyc2248 A02 G5 (0-C1): howto 語彙拡張 (手順/仕方/仕組み/ポイント/つくり方) と どうすれば・どうしたら
+    if (/(手順|仕方|仕組み|ポイント|つくり方)/.test(t) && /(教えて|知りたい|聞きたい|説明)/.test(t)) return true;
+    if (/(どうすれば|どうしたら)/.test(t)) return true;
+    if (/(集め方|作り方|つくり方)は[？?]?$/.test(t.trim())) return true;
     return false;
   } catch { return false; }
 }
