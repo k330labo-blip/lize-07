@@ -55,6 +55,7 @@ export const SFX_TABLE = Object.freeze({
   dripstone_block:   { hit: "hit.dripstone_block",   break: "break.dripstone_block",   step: "step.dripstone_block" },   // POLISH-SND-CLASS-DRIPSTONE-01 (cyc2248): 3軸とも専用ID確認済み (Bedrock Wiki 1.21.70)。dig.* は実在しないため break.* 命名
   pointed_dripstone: { hit: "hit.pointed_dripstone", break: "break.pointed_dripstone", step: "step.pointed_dripstone" }, // POLISH-SND-CLASS-DRIPSTONE-01 (cyc2248): pointed は別ID群のため dripstone_block と分ける
   mud:            { hit: "hit.mud",   break: "dig.mud",           step: "step.mud" },          // POLISH-SND-CLASS-MUD-01 (cyc2313): 3軸とも専用ID (Bedrock の mud 音群)。従来は GRASS_IDS 経由で grass 落ち。完全一致 mud のみ、packed_mud/muddy_mangrove_roots は巻き込まない
+  sculk_catalyst: { hit: "hit.sculk_catalyst", break: "break.sculk_catalyst", step: "step.sculk_catalyst" }, // POLISH-SND-CLASS-SCULK-CATALYST-01 (cyc2330): 3軸とも専用ID確認済み (Bedrock Wiki 1.21.70)。dig.sculk_catalyst は実在しないため break.* 命名 (sculk 本体と同型)
 });
 
 // §1.2 で実在確認済みの ID (この表が参照する分 + 汎用分)
@@ -79,6 +80,7 @@ export const CONFIRMED_IDS = new Set([
   "hit.calcite", "break.calcite", "step.calcite", // cyc2232 A06: 専用ID確認済み (dig.calcite は実在しない)
   "hit.dripstone_block", "break.dripstone_block", "step.dripstone_block", "hit.pointed_dripstone", "break.pointed_dripstone", "step.pointed_dripstone", // cyc2248 A17: 専用ID確認済み (dig.* は実在しない)
   "hit.mud", "dig.mud", "step.mud", // cyc2313 MUD-01: 専用ID (mud 音群、実機確認待ち)
+  "hit.sculk_catalyst", "break.sculk_catalyst", "step.sculk_catalyst", // cyc2330 SCULK-CATALYST-01: 専用ID確認済み (dig.sculk_catalyst は実在しない)
   "break.froglight", "step.froglight", // cycle1215 a14: 専用ID確認済み (break/step。dig.froglight/hit.froglight は実在しない)
   "dig.deepslate_bricks", // cycle1256 a16: 専用ID確認済み (break のみ)
   "step.grass", "step.sand", "step.gravel", "step.cloth", "step.wood",
@@ -191,6 +193,7 @@ export function materialOfTypeId(typeId) {
   if (id === "azalea_leaves" || id === "flowering_azalea_leaves") return "azalea_leaves"; // 3c (cycle1532): ツツジの葉だけ専用音 (完全一致のみ。azalea_leaves_flowered は PLANT 側の grass を維持)
   if (id === "cherry_leaves") return "cherry_leaves"; // 3d (cyc1810): 桜の葉だけ専用音 (完全一致のみ。includes("cherry") は桜木材を巻き込むため不採用)
   if (id === "sculk") return "sculk"; // 3e (cyc1924): スカルク本体だけ専用音 (完全一致のみ。sculk_vein 等の族は別素材のため巻き込まない)
+  if (id === "sculk_catalyst") return "sculk_catalyst"; // 3f (cyc2330): 触媒だけ専用音 (完全一致のみ。族は巻き込まない)
   if (id.endsWith("_leaves") || id === "leaves" || id === "leaves2") return "grass"; // 4: 葉は草系 (cycle0832 a11 A1: レガシー素形 leaves/leaves2 も同素材)
   if (GRASS_IDS.has(id)) return "grass";                                 // 5: 土は grass グループ
   if (id === "moss_block" || id === "moss_carpet") return "moss"; // cycle1058 R2: PLANT_IDS (5b) より前に完全一致で抜く (pale_moss 系は巻き込まない)

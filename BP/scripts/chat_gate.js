@@ -9,6 +9,7 @@ function s(v) { return typeof v === "string" ? v : ""; }
 function isQuestionForm(t) {
   return /[？?]/.test(t)
     || /どうなる|どうする|どうやって|何をする|なんですか|ですか|でしょうか/.test(t)
+    || /ますか/.test(t) // cyc2330 G6: 「整理できますか」は「ですか」を含まない質問形
     || /(したら|すると|すれば|したらば).{0,12}(どう|何|なる)/.test(t);
 }
 function isHypothetical(t) {
@@ -26,6 +27,8 @@ function isNegatedDirective(t, re) {
   if (/まだ.{0,8}(やめて|中止|止めて|キャンセル)/.test(t) && /ほしくない|ないで/.test(t)) return true;
   // cyc2248 A02 G1 (0-C1): 否定素形 (しない/しません/はなし/禁止/はいけない/組まない/しなくていい/わけじゃない)
   if (/(しない|しません|はしない|はなし|禁止|はいけない|組まない|しなくていい|わけじゃない)/.test(t)) return true;
+  // cyc2330 A13 X2: 否定の意思表示 (〜するつもりはない)
+  if (/つもりはない|つもりはありません/.test(t)) return true;
   return false;
 }
 
@@ -37,7 +40,7 @@ function isConditionalForm(t) {
   return /(したら|すると|すれば|たら|だら|れば|けば|げば|せば|てば|ねば|べば|めば|えば)/.test(t)
     // cyc2248 A02 G2 (0-C1): 条件接続形 (なら/場合/次第/際に/間は) と とき・前に・だと+指令語
     || /(なら|場合|次第|際に|間は|間だけ)/.test(t)
-    || /(とき|時に|ときは).{0,24}(中止|やめて|止めて|キャンセル|自動化|ライン)/.test(t)
+    || /(とき|時に|ときは).{0,24}(中止|やめて|止めて|キャンセル|自動化|ライン|整理|仕分け)/.test(t)
     || /前に.{0,6}(やめて|中止|止めて|キャンセル)/.test(t)
     || /だと.{0,12}(中止|やめて|止めて|キャンセル|自動化|ライン)/.test(t)
     || /[うくぐすつぬぶむる]と(?=.{0,6}(中止|やめて|止めて|キャンセル|自動化|ライン))/.test(t);
@@ -52,6 +55,8 @@ function isDeliberating(t) {
   if (/(てもいい|てもよい|ても大丈夫)[。．]?$/.test(t.trim())) return true;
   // cyc2248 A02 G3 (0-C1): 熟慮変形 (しようか/考え中/検討中/まだ決めてない/すべきか/するか悩/決めかね/ても平気/〜かな許可求め)
   if (/(しようか|考え中|検討中|まだ決めてない|すべきか|するか悩|決めかね|ても平気|てもいいかな|ても大丈夫かな|したほうがいいかな)/.test(t)) return true;
+  // cyc2330 A13 X1: 熟慮口語形 (考えてる/検討してる)
+  if (/(考えてる|検討してる|考えています|検討しています)/.test(t)) return true;
   return false;
 }
 // cyc2134 A02 (0-C1 R2/R3): 工場の後置先送り。「〜は…てからにして」(先送り構文) と
@@ -102,6 +107,31 @@ export function gateFactory(text) {
     if (/(自動化|ライン).{0,40}(降ってから|なってから|たら|だら|れば)/.test(t)) return { fire: false, kind: "conditional" };
     // cyc2134 A02: 後置先送り (一般の「てからにして」/明日/後で) も即時開始しない
     if (isDeferredFactory(t)) return { fire: false, kind: "conditional" };
+    return { fire: true, kind: "start" };
+  } catch { return { fire: false, kind: "error" }; }
+}
+
+// 倉庫整理ゲート (cyc2330, 0-C1 G6): チャット直結経路は従来インライン正規表現のみで
+// 否定・熟慮・条件・質問形が runWarehouseSort へ漏れていた (cyc2313 A02 実測 W6系10件+X系9件)。
+// 共有述語へ寄せ、倉庫固有の否定2形 (整理/仕分け+するな・対象語+やめて) を追加する。
+const WAREHOUSE_RE = /(倉庫|チェスト).*(整理|仕分け)/;
+export function gateWarehouseSort(text) {
+  try {
+    const t = s(text);
+    if (!WAREHOUSE_RE.test(t)) return { fire: false, kind: "none" };
+    if (isHypothetical(t)) return { fire: false, kind: "hypothetical" };
+    if (/(整理|仕分け).{0,16}(やめて|止めて|するな|るな)/.test(t)) return { fire: false, kind: "negation" };
+    if (isNegatedDirective(t)) return { fire: false, kind: "negation" };
+    // cyc2330 A01 R6-1/R6-2: 旧インライン除外 (教えて) で遮断されていた形の後退是正。
+    // isHowToRequest は裸の「教えて」/「仕分け方」を拾わないため倉庫ゲート内で補う
+    if (/(教えて|知りたい|聞きたい|説明して)/.test(t)) return { fire: false, kind: "question" };
+    // cyc2330 A01 R6-4/R6-5: 後置・前置の先送りは即時開始しない
+    if (/(整理|仕分け).{0,40}(降ってから|なってから|てからにして|明日|後で|あとで|後日)/.test(t)) return { fire: false, kind: "conditional" };
+    if (/(明日|後で|あとで).{0,16}(整理|仕分け)/.test(t)) return { fire: false, kind: "conditional" };
+    if (isHowToRequest(t)) return { fire: false, kind: "question" };
+    if (isDeliberating(t)) return { fire: false, kind: "question" };
+    if (isQuestionForm(t)) return { fire: false, kind: "question" };
+    if (isConditionalForm(t)) return { fire: false, kind: "conditional" };
     return { fire: true, kind: "start" };
   } catch { return { fire: false, kind: "error" }; }
 }

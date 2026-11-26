@@ -121,7 +121,7 @@ import { createMission, advance, missionSummary, withdrawKeyOf, STEP_TYPES } fro
 import { selectWithdrawCandidate, candKeyForFirstStep } from "./withdraw_candidate.js"; // Phase3 candKey B1 (v0.4.26): 候補選定・射影の純粋関数
 import { scanOpportunities, noteAttempt, pruneCooldowns } from "./side_tasks.js";
 import { createSideChase, chaseTick, sideChaseRangeFor } from "./side_chase.js"; // SIDE-COOLDOWN-CHASE (cycle1134): 接近保持と終端クールダウン
-import { gateCancel, gateFactory, isHowToRequest } from "./chat_gate.js"; // 0-C1 (cycle1155): 質問・否定・仮定・部分スコープでは中止/工場/指示を発火しない共通ゲート
+import { gateCancel, gateFactory, gateWarehouseSort, isHowToRequest } from "./chat_gate.js"; // 0-C1 (cycle1155): 質問・否定・仮定・部分スコープでは中止/工場/指示を発火しない共通ゲート
 import { pickNearest as veinPickNearest, veinNeighbors, sameResource as veinSameResource } from "./vein_math.js"; // 0-D1 (cycle1400): 鉱脈継続・距離優先の純粋核
 import { classifyDescent as d2Classify, createSpiralAnchor as d2CreateAnchor, spiralStepAt as d2StepAt } from "./d2_spiral_math.js"; // 0-D2 (cycle1434): 発見後も螺旋降下
 import { allowedLogIds, countLogsForTarget } from "./tree_species_math.js";
@@ -5051,8 +5051,9 @@ function handleChatMessage(p, rawIn) {
     system.run(() => { say(p, bot, "露天掘りは、まだできません。範囲を層ごとに掘り下げる持続採掘が未実装です。個別の鉱石なら、個数を言えば集めます", true); try { conv.hear(raw, "open_pit_unsupported"); } catch {} });
     return;
   }
-  // ①.45 倉庫 W2 (cyc1939): 整理の依頼は注文パーサーへ流さず倉庫整理へ直結する (質問形・方法の相談は対象外)
-  if (/(倉庫|チェスト).*(整理|仕分け)/.test(raw) && !/(教えて|方法|どう|？|\?)/.test(raw)) {
+  // ①.45 倉庫 W2 (cyc1939): 整理の依頼は注文パーサーへ流さず倉庫整理へ直結する
+  // cyc2330 0-C1 G6: 判定は chat_gate の gateWarehouseSort へ一本化 (否定・熟慮・条件・質問形では発火しない)
+  if (gateWarehouseSort(raw).fire) {
     system.run(() => { runWarehouseSort(p, bot, r); try { conv.hear(raw, "warehouse_sort"); } catch {} });
     return;
   }
