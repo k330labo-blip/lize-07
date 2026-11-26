@@ -90,3 +90,25 @@ export function fillRunsNeeded(def, haveFilled, want) {
     return Math.max(0, w - h);
   } catch { return 0; }
 }
+
+// S3 (cyc2381): entity 媒体の選択 (純粋)。ban 形式は trunk_ban.js banKeyFor の実形式:
+// fill 媒体 (cow/water/lava) は幹・落下ブロックではないため常に cellKey
+// "floor(x),floor(y),floor(z)" (typeId なし)。trunk:/fall: 形式は fill では発生しない (cyc2380 A16 確定)。
+export function selectFillMedium(input) {
+  try {
+    const def = input?.def; if (!def || def.mediumKind !== "entity") return null;
+    const mediaIds = Array.isArray(input?.mediaIds) && input.mediaIds.length ? input.mediaIds : [def.medium];
+    const self = input?.selfPos; if (!self) return null;
+    const now = Number(input?.now) || 0;
+    const banned = (loc) => { try { if (!input?.banKey || !(now < (Number(input?.banUntil) || 0))) return false; return input.banKey === `${Math.floor(loc.x)},${Math.floor(loc.y)},${Math.floor(loc.z)}`; } catch { return false; } };
+    let best = null;
+    for (const a of input?.animals || []) {
+      if (!a || !mediaIds.includes(a.typeId) || !a.loc) continue;
+      if (banned(a.loc)) continue;
+      const d = Math.hypot(a.loc.x - self.x, a.loc.y - self.y, a.loc.z - self.z);
+      const rank = mediaIds.indexOf(a.typeId);
+      if (!best || d < best.d - 1e-9 || (Math.abs(d - best.d) <= 1e-9 && rank < best.rank)) best = { entityId: a.id ?? null, typeId: a.typeId, loc: a.loc, d, rank };
+    }
+    return best ? { entityId: best.entityId, typeId: best.typeId, loc: best.loc } : null;
+  } catch { return null; }
+}

@@ -130,7 +130,8 @@ import { selectWithdrawCandidate, candKeyForFirstStep } from "./withdraw_candida
 import { scanOpportunities, noteAttempt, pruneCooldowns } from "./side_tasks.js";
 import { createSideChase, chaseTick, sideChaseRangeFor } from "./side_chase.js"; // SIDE-COOLDOWN-CHASE (cycle1134): 接近保持と終端クールダウン
 import { gateCancel, gateFactory, gateWarehouseSort, gateTeachItemDest, isHowToRequest } from "./chat_gate.js"; // 0-C1 (cycle1155): 質問・否定・仮定・部分スコープでは中止/工場/指示を発火しない共通ゲート
-import { pickNearest as veinPickNearest, veinNeighbors, sameResource as veinSameResource } from "./vein_math.js"; // 0-D1 (cycle1400): 鉱脈継続・距離優先の純粋核
+import { pickNearest as veinPickNearest, veinNeighbors, sameResource as veinSameResource } from "./vein_math.js";
+import { fillDefOf, selectFillMedium } from "./fill_math.js"; // 0-C R-C4-4 S3 (cyc2381): 充填媒体の探索判定 (純粋核) // 0-D1 (cycle1400): 鉱脈継続・距離優先の純粋核
 import { classifyDescent as d2Classify, ensureSpiralAnchor as d2EnsureAnchor, spiralStepAt as d2StepAt } from "./d2_spiral_math.js"; // 0-D2 (cycle1434): 発見後も螺旋降下 / G2 (cyc2363): 起点は ensure で固定し対象キーで作り直さない
 import { allowedLogIds, countLogsForTarget } from "./tree_species_math.js";
 import { createWideScanFails, partitionWideIds, noteWideSuccess, noteWideIdFailure, noteWideGlobalFailure, wideIdBlocked } from "./wide_scan_fails.js"; // 0-D4 Bprime (cycle1455): wide scan failures isolated per typeId
@@ -2588,6 +2589,32 @@ function findMissionTarget(bot, r, scan, step, scanUnknown = false) {
   let anyUnknown = false;
   // Step 3b R3 (v0.4.13): unknown は記録だけでなく遮断する (後続 source/直接ID/ドロップへ素通りさせない)
   const noteScanState = (id) => { try { if (scanCachePeek(r, id).state === "unknown") { anyUnknown = true; return true; } } catch {} return false; };
+  // 0-C R-C4-4 S3 (cyc2381): 充填 (fill) 品目の目標探索。媒体を kind:"fill_medium" で返し work/entity へ接続しない。必ず return し後段の target 自身のブロック走査へ落とさない。
+  try {
+    const fillDef = fillDefOf(target);
+    const fillSources = sources.filter((x) => x && x.kind === "fill");
+    if (fillDef && fillSources.length) {
+      const dropped = (scan?.items || []).find((x) => itemTypeOf(x) === target);
+      if (dropped) return { found: true, kind: "item", loc: { ...dropped.location }, typeId: target, entity: dropped, detail: { state: "present", via: "fill_drop" } };
+      const media = fillSources.map((x) => ({ id: x.id, mediumKind: x.mediumKind || fillDef.mediumKind }));
+      const blockMedia = media.filter((md) => md.mediumKind === "block");
+      if (blockMedia.length) {
+        const blockCands = [];
+        for (const md of blockMedia) { const loc = scanBlockNear(bot, r, md.id); if (loc) blockCands.push({ loc, typeId: md.id }); else if (noteScanState(md.id)) return { found: false, detail: { state: "unknown" } }; }
+        const bp = veinPickNearest(blockCands, bot.location);
+        if (bp) return { found: true, kind: "fill_medium", loc: bp.loc, typeId: bp.typeId, fillItem: target, mediumKind: "block", entity: null, detail: { state: "present", via: "fill_scan" } };
+        const sv = lookupSurvey(bot, blockMedia.map((md) => md.id), Date.now() < (r.mBanUntil || 0) ? r.mBanKey : null);
+        if (sv) return { found: true, kind: "fill_medium", loc: sv.loc, typeId: sv.typeId, fillItem: target, mediumKind: "block", entity: null, detail: { state: "present", via: "fill_survey" } };
+        return { found: false, detail: { state: "absent" } };
+      }
+      const mediaIds = media.map((md) => md.id);
+      const animalCands = (scan?.animals || []).filter((e) => e && mediaIds.includes(e.typeId)).map((e) => ({ id: e.id, typeId: e.typeId, loc: { x: e.location.x, y: e.location.y, z: e.location.z }, entity: e }));
+      const pick = selectFillMedium({ def: fillDef, mediaIds, animals: animalCands, selfPos: bot.location, banKey: r.mBanKey, banUntil: r.mBanUntil, now: Date.now() });
+      if (pick) { const hit = animalCands.find((c) => c.id === pick.entityId); if (hit) return { found: true, kind: "fill_medium", loc: hit.loc, typeId: hit.typeId, fillItem: target, mediumKind: "entity", entity: hit.entity, detail: { state: "present", via: "fill_animals" } }; }
+      if (scanUnknown) return { found: false, detail: { state: "unknown" } };
+      return { found: false, detail: { state: "absent" } };
+    }
+  } catch {}
   // 0-D1 (cycle1400): 継続中の鉱脈があれば survey/遠方より優先する (実在を再確認し、消えた候補は捨てる)
   try { if (Array.isArray(r.veinCands) && r.veinCands.length && sources.some((s) => s.kind === "block")) { const live = []; for (const c of r.veinCands) { let t = null; try { t = bot.dimension.getBlock(c.loc)?.typeId || null; } catch {} if (t && veinSameResource(t, c.typeId) && sources.some((s) => s.kind === "block" && veinSameResource(s.id, t))) live.push({ loc: c.loc, typeId: t }); else if (!t) live.push(c); } const liveB = filterBanned(live, r.mBanKey, r.mBanUntil, Date.now());
   r.veinCands = liveB.filter((c) => { try { return bot.dimension.getBlock(c.loc)?.typeId; } catch { return true; } }); // cyc2232 A02 (0-D1): 書き戻しは workBan を含めない (短期 ban 失効後に鉱脈片側を再提示するため)
@@ -3678,7 +3705,8 @@ function applyDirective(bot, owner, r, ctx, scan, d) {
     }
     case "work": {
       if (d.step === "side_collect" && r.sideTask) { execSideTask(bot, owner, r, ctx, scan); r.moveAct = "follow"; break; }
-      if (r.mTargetKind === "entity" && r.mTargetEntity) { const e = r.mTargetEntity; r.target = { ...e.location }; if (dist(bot.location, e.location) < 3.2) zapEntity(bot, r, e); }
+      if (r.mTargetKind === "fill_medium") { const e = r.mTargetEntity; const dest = e ? { ...e.location } : { x: r.mTargetLoc.x + 0.5, y: r.mTargetLoc.y, z: r.mTargetLoc.z + 0.5 }; r.target = dest; try { r.lastFillApproach = { typeId: r.mTargetType, at: Date.now(), inRange: dist(bot.location, dest) <= 2.6 }; } catch {} } // R-C4-4 S3: 媒体へは接近だけ。zapEntity/startWork へ接続しない (充填txはS4)
+      else if (r.mTargetKind === "entity" && r.mTargetEntity) { const e = r.mTargetEntity; r.target = { ...e.location }; if (dist(bot.location, e.location) < 3.2) zapEntity(bot, r, e); }
       else if (r.mTargetKind === "item" && r.mTargetEntity) { const e = r.mTargetEntity; r.target = { x: e.location.x, y: e.location.y, z: e.location.z }; if (dist(bot.location, e.location) < 1.9) pickupItemEntity(bot, owner, e, ctx); }
       else if (r.mTargetLoc && r.mTargetKind === "block" && shouldTunnel(bot, r, r.mTargetLoc)) tickTunnel(bot, owner, r, ctx, r.mTargetLoc); // v0.4.66: 地中の対象へ掘り進む
       else if (r.mTargetLoc) { if (r.tunnel) r.tunnel = null; r.d2Anchor = null; if (startWork(bot, r, { x: r.mTargetLoc.x, y: r.mTargetLoc.y, z: r.mTargetLoc.z, typeId: r.mTargetType })) tickWork(bot, owner, r, ctx); else r.target = { x: r.mTargetLoc.x + 0.5, y: r.mTargetLoc.y, z: r.mTargetLoc.z + 0.5 }; }
@@ -3705,6 +3733,7 @@ function applyDirective(bot, owner, r, ctx, scan, d) {
 // 固定中のミッション目標がまだ実在するか（ブロックは同種か／エンティティ・アイテムは有効か）
 function missionTargetValid(bot, r) {
   if (!r.mTargetLoc) return false;
+  if (r.mTargetKind === "fill_medium" && !r.mTargetEntity) { let b = null; try { b = bot.dimension.getBlock(r.mTargetLoc); } catch {} return !!b && b.typeId === r.mTargetType; } // R-C4-4 S3: block媒体はセル再読で固定を解く。entity媒体は下の汎用entity検査へ落とす
   if (r.mTargetKind === "block") { let b = null; try { b = bot.dimension.getBlock(r.mTargetLoc); } catch {} return !!b && b.typeId === r.mTargetType; }
   if (r.mTargetEntity) { try { const valid = typeof r.mTargetEntity.isValid === "function" ? !!r.mTargetEntity.isValid() : !!r.mTargetEntity.isValid; if (!valid) return false; if (r.mTargetKind === "item") { // PICKUP-ITEMVALID-01 (cyc2365 A04): アイテム実体の typeId は常時 "minecraft:item" で依頼IDと一致しないため、種別照合はスタックの typeId で行う (従来は常時 false で固定が死に毎tick再走査＋見切り不発だった)
       let stackType = null; try { stackType = r.mTargetEntity.getComponent("minecraft:item")?.itemStack?.typeId || null; } catch {}
