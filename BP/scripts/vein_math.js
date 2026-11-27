@@ -1,6 +1,6 @@
 // vein_math.js — 0-D1 (cycle1400): 鉱脈継続性の純粋核。
 // 通常鉱石と深層鉱石を同一資源として扱い、候補は登録順でなく距離優先で選ぶ。
-// 鉱石を壊した後は6近傍の同資源を次候補として保持し、遠方の survey 結果より
+// 鉱石を壊した後は18近傍 (面+辺、角除外) の同資源を次候補として保持し、遠方の survey 結果より
 // 今の鉱脈を優先する。@minecraft/server を import しない。例外を投げない。
 export function resourceKeyOf(typeId) {
   try {
@@ -24,7 +24,23 @@ export function pickNearest(cands, from) {
     return best;
   } catch { return null; }
 }
-const DIRS = Object.freeze([[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]]);
+// 0-D1-R2 (cyc2396): 継続近傍は面6+辺12=18方向 (角8方向は含めない)。tree_cont_math と同一の構成式に揃える。
+const DIRS = Object.freeze((() => { const out = []; for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) { if (!dx && !dy && !dz) continue; if (Math.abs(dx) + Math.abs(dy) + Math.abs(dz) === 3) continue; out.push([dx, dy, dz]); } return out; })());
+export function capVeinCands(cands, from, cap = 32) {
+  try {
+    const out = []; const seen = new Set();
+    for (const c of (Array.isArray(cands) ? cands : [])) {
+      if (!c || !c.loc) continue;
+      const k = `${c.loc.x},${c.loc.y},${c.loc.z}`;
+      if (seen.has(k)) continue; seen.add(k); out.push(c);
+    }
+    const lim = Number.isFinite(cap) && cap > 0 ? Math.floor(cap) : 32;
+    const validFrom = from && Number.isFinite(from.x) && Number.isFinite(from.y) && Number.isFinite(from.z);
+    if (!validFrom) return out.slice(-lim);
+    const sorted = out.map((c, i) => [d2(from, c.loc), i, c]).sort((a, b) => (a[0] - b[0]) || (a[1] - b[1])).map((e) => e[2]);
+    return sorted.slice(0, lim);
+  } catch { return []; }
+}
 export function veinNeighbors(pos, brokenTypeId, typeIdAt) {
   try {
     if (!pos || typeof typeIdAt !== "function") return [];

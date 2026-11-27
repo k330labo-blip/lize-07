@@ -22,7 +22,8 @@ export function treeNeighbors(pos, brokenTypeId, typeIdAt, allowedIds) {
     return out;
   } catch { return []; }
 }
-export function mergeTreeCands(prev, found, cap = 32) {
+function td2(from, loc) { const dx = loc.x - from.x, dy = loc.y - from.y, dz = loc.z - from.z; return dx * dx + dy * dy + dz * dz; }
+export function mergeTreeCands(prev, found, cap = 32, from = null) {
   try {
     const out = []; const seen = new Set();
     for (const c of [...(Array.isArray(prev) ? prev : []), ...(Array.isArray(found) ? found : [])]) {
@@ -31,6 +32,10 @@ export function mergeTreeCands(prev, found, cap = 32) {
       if (seen.has(k)) continue; seen.add(k); out.push(c);
     }
     const lim = Number.isFinite(cap) && cap > 0 ? Math.floor(cap) : 32;
-    return out.slice(-lim);
+    // 0-D3-R5 (cyc2396): from が有効な場合のみ距離順に先頭 cap 件。null 時は現行互換 (末尾 cap 件)。
+    const validFrom = from && Number.isFinite(from.x) && Number.isFinite(from.y) && Number.isFinite(from.z);
+    if (!validFrom) return out.slice(-lim);
+    const sorted = out.map((c, i) => [td2(from, c.loc), i, c]).sort((a, b) => (a[0] - b[0]) || (a[1] - b[1])).map((e) => e[2]);
+    return sorted.slice(0, lim);
   } catch { return []; }
 }
