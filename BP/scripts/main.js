@@ -2779,7 +2779,7 @@ function startMission(bot, owner, r, mo, announce = true, opts = {}) {
       if (announce && owner) say(owner, bot, `${nameOfItem(tr.itemId)}を持っていないので、先に用意します`, true);
       r.pendingAfterTool = mo;
       savePendingTool(bot, r); // RG U3 (cyc2394): 設定と同時に DP へ保存する (再読込で本来注文が無言消失しない)
-      startMission(bot, owner, r, { kind: "gather", target: tr.itemId, amount: 1, constraints: { hostiles: "avoid", forbiddenTargets: [] }, sideTasks: [], returnTo: "owner", name: null, tool: null, placement: null }, false);
+      startMission(bot, owner, r, { kind: "gather", target: tr.itemId, amount: 1, constraints: { hostiles: "avoid", forbiddenTargets: [], window: mo.constraints?.window ? { raw: mo.constraints.window.raw || "", kind: mo.constraints.window.kind || "" } : null }, sideTasks: [], returnTo: "owner", name: null, tool: null, placement: null }, false); // WINDOW-END-CHAINPHASE-SCOPE-01 (cyc2432): 道具調達の子相へも window 写しを継承し、終了監視が調達相でも届くようにする
       return null;
     }
   }
@@ -2808,6 +2808,7 @@ function startMission(bot, owner, r, mo, announce = true, opts = {}) {
 // Phase3 stale是正 F2 (v0.4.22, cycle1301 A05/A16): ミッション終了・差替時に計画系レコードを無効化する。残留した allow を将来の読み手が使う事故を防ぐ (記録の掃除のみ、分岐には使わない)。
 function clearPlanRecords(r) { try { r.planRunner?.cancelCurrent("superseded"); } catch {} try { r.toolNeed = null; r.lastPlan = null; r.lastPlanGate = null; r.lastPlanGateP3 = null; r.lastPlanRevalP4 = null; r.lastPlanGateUnified = null; r.lastPlanRevalFull = null; r.lastPlanRevalAdopt = null; r.lastPlanRevalFullAdopt = null; r.lastPlanGateUnifiedAdopt = null; r.lastGoal = null; r.lastPlanInspect = null; r.lastPlanAt = 0; r.planAdoptSeen = null; r.planAdoptShieldUsedFor = null; r.lastPlanAdoptEffect = null; r.tracePlanSeen = null; r.traceActSeen = null; } catch {} }
 function finishMission(bot, owner, r) {
+  const prevWin = r.mission?.order?.constraints?.window || null; // WINDOW-END-CHAINPHASE-SCOPE-01 (cyc2432): mission を畳む前に window を捕捉し、次部位へ継承する
   r.mission = null; clearPlanRecords(r);
   r.tunnel = null; r.d2Anchor = null; // TUNNELEXIT-STALE-TUNNEL-01 (cyc2402): 終了経路で掘進状態を畳む (tunnelPath は帰還のため残す。残留すると exitTunnelIfNeeded の !r.tunnel が恒久的に偽になり帰還も clearPathAhead の救済も閉じる)
   try { r.requestedTool = null; r.toolAppliedLegIdx = null; } catch {} // R-C4-1: 道具指定は mission 単位。残留を仕様にしない / RG-6 (cyc2377): leg 適用印も同様
@@ -2829,7 +2830,7 @@ function finishMission(bot, owner, r) {
       const next = r.pendingGearSet.shift();
       if (!r.pendingGearSet.length) r.pendingGearSet = null;
       savePendingGearSet(bot, r); // 0-F R-2 (cyc2379): 消費後の残りを保存し直す (再読込で残りが消えない)
-      startMission(bot, owner, r, { kind: "gather", target: next, amount: 1, constraints: { hostiles: "avoid", forbiddenTargets: [] }, sideTasks: [], returnTo: "owner", name: null, tool: null, placement: null });
+      startMission(bot, owner, r, { kind: "gather", target: next, amount: 1, constraints: { hostiles: "avoid", forbiddenTargets: [], window: prevWin ? { raw: prevWin.raw || "", kind: prevWin.kind || "" } : null }, sideTasks: [], returnTo: "owner", name: null, tool: null, placement: null });
       persistMission(bot, r, true);
       return;
     }
@@ -2897,6 +2898,7 @@ function startLongTask(bot, owner, r, mo, plan, announce = true) {
 }
 function completeLongTask(bot, owner, r, ok = true, note = "", msg = null) {
   const lt = r.longtask;
+  const prevWin = lt?.window || null; // WINDOW-END-CHAINPHASE-SCOPE-01 (cyc2432): longtask を畳む前に window を捕捉し、次部位へ継承する
   if (msg) say(owner, bot, msg, true);
   else if (ok) say(owner, bot, `長期タスク、完了しました。${lt.name}を${lt.amount}個、${lt.returnTo === "home" ? "拠点へ入庫しました" : "お渡ししました"}${note}`, true);
   else say(owner, bot, `長期タスクは揃えたのですが、納品できませんでした。${note}`, true);
@@ -2919,7 +2921,7 @@ function completeLongTask(bot, owner, r, ok = true, note = "", msg = null) {
       const next = r.pendingGearSet.shift();
       if (!r.pendingGearSet.length) r.pendingGearSet = null;
       savePendingGearSet(bot, r);
-      startMission(bot, owner, r, { kind: "gather", target: next, amount: 1, constraints: { hostiles: "avoid", forbiddenTargets: [] }, sideTasks: [], returnTo: "owner", name: null, tool: null, placement: null });
+      startMission(bot, owner, r, { kind: "gather", target: next, amount: 1, constraints: { hostiles: "avoid", forbiddenTargets: [], window: prevWin ? { raw: prevWin.raw || "", kind: prevWin.kind || "" } : null }, sideTasks: [], returnTo: "owner", name: null, tool: null, placement: null });
       persistMission(bot, r, true);
     }
   } catch {}
