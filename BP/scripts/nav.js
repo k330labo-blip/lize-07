@@ -505,7 +505,10 @@ export function navTick(nav, pos, dtSec, opts = {}) {
   // --- 到達判定（経路ゴール圏内） ---
   const goalDist = dist2d(pos, nav.goal);
   const inGoalArea = Math.max(Math.abs(pcx - Math.floor(nav.goal.x)), Math.abs(pcz - Math.floor(nav.goal.z))) <= nav.arriveRadius;
-  if (inGoalArea || goalDist <= Math.max(0.6, nav.arriveRadius)) { out.arrived = true; }
+  // NAV-ARRIVE-YBLIND-01 (cyc2419): 到達は縦も見る。0-A バグ1 の 3D 化で stuck 側だけ直り到達側が水平のまま残った。
+  // goal.y が無い目標は従来どおり水平のみ (fail-open: 旧呼び出しの到達を壊さない)。
+  const dyGoal = typeof nav.goal?.y === "number" ? Math.abs(pos.y - nav.goal.y) : 0;
+  if ((inGoalArea || goalDist <= Math.max(0.6, nav.arriveRadius)) && dyGoal <= 2) { out.arrived = true; }
 
   // --- 再探索トリガー（仕様 §7） ---
   const w = nav.walker;
@@ -523,7 +526,7 @@ export function navTick(nav, pos, dtSec, opts = {}) {
     }
     walkerSetPath(w, res.points, pos);
     nav.mode = "path";
-    if (res.reached && !res.points.length) { out.arrived = true; out.mode = "path"; return out; }
+    if (res.reached && !res.points.length && dyGoal <= 2) { out.arrived = true; out.mode = "path"; return out; } // NAV-ARRIVE-YBLIND-01: findPath 到達経路も縦条件を通す
   }
   if (nav.mode === "direct") { out.mode = "direct"; return out; }
 
