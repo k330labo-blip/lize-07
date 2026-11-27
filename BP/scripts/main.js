@@ -3973,8 +3973,9 @@ function tickMission(bot, owner, ctx, scan) {
     } catch {}
   }
   const step = m.steps[m.currentStep];
-  // 0-C2 読み手 (cycle1337): 実行中に記録された上限も狩猟ステップへ届ける (need を上限へ寄せれば advance が通常経路で完了させる)
-  try { if (step && step.type === "hunt_entity") { const cpNow = capForTarget(mergeCaps(m.order?.constraints?.caps, r.caps), step.target, "hunt"); if (cpNow !== null && step.need > cpNow) step.need = cpNow; } } catch {}
+  // 0-C2 読み手 (cycle1337): 実行中に記録された上限もステップへ届ける (need を上限へ寄せれば advance が通常経路で完了させる)
+  // CAPS-MIDMISSION-GATHER-01 (cyc2424): 従来は狩猟ステップ専用＋verb "hunt" 固定で、採取の途中追加上限が発動0回だった。是正: verb をステップ種別へ対応させ、寄り道 (side_collect) の未完了ステップにも同じ再 clamp を回す。縮小のみで拡大はしない。
+  try { const capsNow = mergeCaps(m.order?.constraints?.caps, r.caps); if (capsNow.length) { const reclamp = (st) => { if (!st || st.status === "done") return; const verb = st.type === "hunt_entity" ? "hunt" : (st.type === "gather_block" || st.type === "side_collect") ? "gather" : null; if (!verb) return; const cpNow = capForTarget(capsNow, st.target, verb); if (cpNow !== null && st.need > cpNow) st.need = cpNow; }; reclamp(step); for (const ss of m.steps) if (ss && ss.type === "side_collect") reclamp(ss); } } catch {}
   let ft = { found: false };
   if (step && (step.type === "gather_block" || step.type === "hunt_entity" || step.type === "side_collect")) {
     // 進捗が増えたら見切りタイマーをリセット。45秒進捗なしの対象は60秒避けて探し直す（到達不能な1個に固着しない）
