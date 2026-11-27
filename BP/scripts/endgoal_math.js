@@ -8,6 +8,19 @@
 
 export const ENDGOAL_MILESTONES = ["エンド到達", "討伐", "帰還"];
 
+// B5 (ENDGOAL-PHASE-TIMEOUT-NOREADER-01, cyc2428): 相別滞在上限 (ms)。読み手は feeder 側
+// tickEndgoalShadow が核呼び出し前に endgoalPhaseTimedOut で判定し、既存 endReason 受け皿へ接続する。
+// pre_start / done は対象外 (上限なし)。値は shadow 段階の初期値で、誤終了を避けるため長めに置く。
+export const ENDGOAL_PHASE_LIMITS_MS = { seek_crystals: 3600000, dragon_fight: 7200000, seek_return_portal: 3600000 };
+
+export function endgoalPhaseTimedOut(phase, phaseSince, now) {
+  const lim = ENDGOAL_PHASE_LIMITS_MS[phase];
+  if (typeof lim !== "number") return false;
+  if (typeof phaseSince !== "number" || !Number.isFinite(phaseSince) || phaseSince <= 0) return false;
+  if (typeof now !== "number" || !Number.isFinite(now)) return false;
+  return now - phaseSince >= lim;
+}
+
 export function createEndgoalState() {
   return { phase: "pre_start", crystalsLeft: null, startedAt: null, failed: null };
 }

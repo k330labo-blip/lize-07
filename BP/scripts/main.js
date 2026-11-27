@@ -67,7 +67,7 @@ import { createYieldState, noteYield, sampleYield } from "./yield_math.js"; // P
 import { extractItemData, applyItemData, normalizeSavedInv } from "./inv_item_data.js"; // 0-C3 (cycle1238): 回収・再召喚で荷物の個別情報 (名前/エンチャント/消耗) を保持する
 import { applyRecallcheckPitch, isRecallcheckActive, shouldRecallcheck } from "./recallcheck_math.js"; // POLISH-ANIM-RECALLCHECK-01 (cycle1238)
 import { createLevelupNodState, noteOwnerLevel, applyLevelupNodPitch, isLevelupNodActive } from "./levelupnod_math.js"; // POLISH-ANIM-LEVELUPNOD-01 (cyc2059 pure core / cyc2122 feeder wiring)
-import { createEndgoalState, stepEndgoal, ENDGOAL_MILESTONES } from "./endgoal_math.js"; // ENDGOAL W-A (cyc2363): 段階1 shadow feeder (記録と節目ログのみ・実行はしない)
+import { createEndgoalState, stepEndgoal, ENDGOAL_MILESTONES, endgoalPhaseTimedOut } from "./endgoal_math.js"; // ENDGOAL W-A (cyc2363): 段階1 shadow feeder (記録と節目ログのみ・実行はしない)
 import { createShiverState, noteShiverSample, applyShiverYaw, isShiverActive } from "./shiver_math.js"; // POLISH-ANIM-SHIVER-01 (cyc2355): 寒冷時の小刻みな震え feeder (表示層のみ・実機確認待ち)
 import { createChestGlanceState } from "./chestglance_math.js"; // POLISH-ANIM-CHESTGLANCE-01 (cyc2363): 純粋核先行・記録のみ (feeder 未接続のため発火しない)
 import { createHeedState, noteHeed as noteHeedState, sampleHeed } from "./heed_math.js";
@@ -1958,7 +1958,7 @@ function persistEndgoal(bot, r, force = false) {
   try {
     const eg = r.endgoal;
     if (!eg || !eg.st || eg.st.phase === "pre_start") return;
-    const sig = [eg.st.phase, eg.st.failed || "", (eg.milestones || []).join(","), eg.endReason || ""].join("|");
+    const sig = [eg.st.phase, eg.st.failed || "", (eg.milestones || []).join(","), eg.endReason || "", eg.phaseSince || 0].join("|");
     if (!force && sig === r.endgoalSig) return;
     r.endgoalSig = sig;
     dps(bot, "cb_endgoal", JSON.stringify({ st: eg.st, milestones: eg.milestones || [], phaseSince: eg.phaseSince || 0, endReason: eg.endReason || null }));
@@ -2005,6 +2005,13 @@ function tickEndgoalShadow(bot, r, ctxOrNull) {
     const obs = buildEndgoalObs(bot, r); if (!obs) return;
     // 開始辺ガード: pre_start ではエンド内観測のときだけ核へ通す (核は pre_start+非エンドで即 LEFT_END_EARLY 粘着失敗になるため)
     if (eg.st.phase === "pre_start" && obs.inEnd !== true) return;
+    // B5 (ENDGOAL-PHASE-TIMEOUT-NOREADER-01, cyc2428): 相滞在時計 phaseSince の読み手。核呼び出し前に相別上限と比べ、
+    // 超過したら核の failed を汚さず既存 endReason 受け皿へ終了理由を1回だけ出す。phaseSince が無効な復元済み状態は
+    // この tick を起点に張り直し、過去に遡って即終了させない。
+    if (eg.st.phase !== "pre_start" && eg.st.phase !== "done") {
+      if (!(typeof eg.phaseSince === "number" && Number.isFinite(eg.phaseSince) && eg.phaseSince > 0)) eg.phaseSince = Date.now();
+      else if (endgoalPhaseTimedOut(eg.st.phase, eg.phaseSince, Date.now())) { emitEndgoalMilestone(bot, r, null, "phase_timeout:" + eg.st.phase); return; }
+    }
     // B3 ガード: 現在相の必須観測が null (UNKNOWN) の間は核を呼ばない
     if (eg.st.phase === "seek_crystals" && typeof obs.crystalsAlive !== "number") return;
     if (eg.st.phase === "dragon_fight" && typeof obs.dragonAlive !== "boolean") return;
