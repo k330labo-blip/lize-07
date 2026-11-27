@@ -2050,11 +2050,11 @@ const wideScanState = createWideScanFails(5); // 0-D4 Bprime: failures isolated 
 function wideQuery(bot, typeIds, skipFn = null) { // cyc2367 HARVEST-OCCLUDED-YOUNG-01: 任意 skip（既定 null で従来不変）
   // 戻り値: { ok, best: { typeId: {x,y,z}|null } }。ok=false は「測れなかった」(呼び出し側が従来走査へ)
   const best = {}; for (const id of typeIds) best[id] = null;
-  const part1455 = partitionWideIds(wideScanState, typeIds); const typeIdsQ = part1455.usable;
+  const part1455 = partitionWideIds(wideScanState, typeIds, Date.now()); const typeIdsQ = part1455.usable;
   if (!typeIdsQ.length) return { ok: false, best };
   const BV = mcServer.BlockVolume;
   const dim = bot.dimension;
-  if (!BV || typeof dim.getBlocks !== "function") { noteWideGlobalFailure(wideScanState); wideScanState.global = wideScanState.maxFails; return { ok: false, best }; }
+  if (!BV || typeof dim.getBlocks !== "function") { noteWideGlobalFailure(wideScanState, Date.now()); wideScanState.global = wideScanState.maxFails; wideScanState.globalAt = Date.now(); return { ok: false, best }; }
   let minY = -64, maxY = 319; try { minY = dim.heightRange.min; maxY = dim.heightRange.max - 1; } catch {}
   const bx = Math.floor(bot.location.x), by = Math.floor(bot.location.y), bz = Math.floor(bot.location.z);
   const want = new Set(typeIdsQ);
@@ -2092,8 +2092,8 @@ function wideQuery(bot, typeIds, skipFn = null) { // cyc2367 HARVEST-OCCLUDED-YO
     }
     if (any) break;
   }
-  if (okAny) { noteWideSuccess(wideScanState, typeIdsQ.filter((id) => !failedIds1455.has(id))); for (const id of failedIds1455) noteWideIdFailure(wideScanState, id); return { ok: true, best }; }
-  for (const id of (failedIds1455.size ? [...failedIds1455] : typeIdsQ)) noteWideIdFailure(wideScanState, id);
+  if (okAny) { noteWideSuccess(wideScanState, typeIdsQ.filter((id) => !failedIds1455.has(id))); for (const id of failedIds1455) noteWideIdFailure(wideScanState, id, Date.now()); return { ok: true, best }; }
+  for (const id of (failedIds1455.size ? [...failedIds1455] : typeIdsQ)) noteWideIdFailure(wideScanState, id, Date.now());
   if (LIZE_DEBUG) console.warn(`[LIZE] wide scan failed (per-id): ${lastErr}`);
   return { ok: false, best };
 }
