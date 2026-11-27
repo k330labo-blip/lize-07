@@ -404,16 +404,18 @@ function stats(bot) { try { return JSON.parse(dp(bot, "cb_stats", "{}")); } catc
 function saveStats(bot, s) { dps(bot, "cb_stats", JSON.stringify(s)); }
 function say(owner, bot, text, force = false) {
   const r = rt(bot); const now = Date.now();
-  if (!force && now - r.sayCd < 7000) return;
-  if (text === r.lastSay && now - r.sayCd < 30000) return;
+  if (!force && now - r.sayCd < 7000) return false;
+  if (text === r.lastSay && now - r.sayCd < (force ? 7000 : 30000)) return false;
   r.sayCd = now; r.lastSay = text;
   try { owner.sendMessage(`§b<リゼ>§r ${text}`); } catch {}
+  return true;
 }
 // 独り言（環境発話）の間引き: 大きなイベント以外は30分に1回まで（TANAKA指示 2026-11-24）
 function sayAmbient(owner, bot, text) {
   const r = rt(bot); const now = Date.now();
-  if (now - (r.lastAmbientAt || 0) < 30 * 60 * 1000) return;
-  r.lastAmbientAt = now; say(owner, bot, text);
+  if (now - (r.lastAmbientAt || 0) < 30 * 60 * 1000) return false;
+  if (say(owner, bot, text)) { r.lastAmbientAt = now; return true; }
+  return false;
 }
 function sayFromCategoryAmbient(owner, bot, cat) {
   const lines = ALL_LINES[cat]; if (!lines || !lines.length) return;
@@ -421,7 +423,7 @@ function sayFromCategoryAmbient(owner, bot, cat) {
 }
 function sayFromCategory(owner, bot, cat, force = false) {
   const lines = ALL_LINES[cat]; if (!lines || !lines.length) return;
-  say(owner, bot, pick(lines), force);
+  return say(owner, bot, pick(lines), force);
 }
 
 // ---------- 装備中核（equipment.js + equip_api.js） ----------
@@ -4837,7 +4839,7 @@ system.runInterval(() => {
     syncNavGoal(bot, r);
     applyGaze(bot, p, ctx, scan);
     try { r.gazeArgs = { owner: p, ctx, scan, at: Date.now() }; } catch {} // 0-E1: 視線レイヤー (2tick) が再適用するための最新引数の保持 (走査は増やさない)
-    if (ctx.x?.firstToday && ctx.danger.count === 0) { r.greetedDay = world.getDay(); sayFromCategory(p, bot, world.getTimeOfDay() < 12000 ? "greet_morning" : "greet_night"); }
+    if (ctx.x?.firstToday && ctx.danger.count === 0) { if (sayFromCategory(p, bot, world.getTimeOfDay() < 12000 ? "greet_morning" : "greet_night")) r.greetedDay = world.getDay(); }
   }
 }, 10);
 
