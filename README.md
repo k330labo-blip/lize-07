@@ -6,9 +6,9 @@ Minecraft 統合版（Bedrock）のアドオンです。言葉で指示すると
 
 ## ダウンロード
 
-最新の `Lize-07_v*.mcaddon` をダウンロードしてください。現在の最新版は **v0.5.186** です。
+最新の `Lize-07_v*.mcaddon` をダウンロードしてください。現在の最新版は **v0.5.187** です。
 
-- [Lize-07_v0.5.186.mcaddon をダウンロード](https://github.com/k330labo-blip/lize-07/raw/refs/heads/main/Lize-07_v0.5.186.mcaddon)
+- [Lize-07_v0.5.187.mcaddon をダウンロード](https://github.com/k330labo-blip/lize-07/raw/refs/heads/main/Lize-07_v0.5.187.mcaddon)
 - 過去の版は [Tags](https://github.com/k330labo-blip/lize-07/tags) からたどれます（各タグの時点のファイル一式が入っています）
 
 ## 導入方法

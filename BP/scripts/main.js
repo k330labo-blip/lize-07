@@ -26,6 +26,7 @@ import { chooseGoal } from "./planner.js";
 import createWorldMemory from "./world_memory.js";
 import { genSpeech } from "./gen_speech.js";
 import { parseOrder, resumeClarifyOrder, classifyClarifyUnmatched } from "./order_parser.js";
+import { orderAmountOrDefault } from "./qty_default_math.js"; // 0-N1 QTY-DEFAULT-01 (cyc2447): 数量省略時の対象別デフォルト (純粋核)
 import { resolveItem } from "./decomposer.js"; // 倉庫 W3-TEACH (cyc2355): 素材名→typeId の単一の正 (注文経路と共用)
 import { resolveRequestedTool, toolItemIdOf } from "./tool_request_math.js"; // 0-C4 R-C4-1 (cyc2375): 道具指定の実行側 reader 純粋核
 import { resolvePlacement, linkedPlacementCells, placementItemIdOf } from "./placement_resolve.js"; // 0-C4 R-C4-2 (cyc2376): 設置位置の実行側 reader 純粋核
@@ -5357,7 +5358,7 @@ function parserOrderToMission(o) {
   const sideTasks = (o.sideTasks || []).map((s) => { const st = s.target || {}; const id = typeof st === "string" ? st : (st.item || st.block || st.entity); return id ? { kind: s.kind === "hunt" ? "hunt" : "gather", target: id, amount: s.amount ?? 8 } : null; }).filter(Boolean);
   const forbiddenTargets = [...new Set((o.negations || []).map((n) => n?.target?.item || n?.target?.block || n?.target?.entity).filter(Boolean))].filter((id) => id !== (t.item || t.block || t.entity));
   const aoId = o.allowOnly?.target ? (typeof o.allowOnly.target === "string" ? o.allowOnly.target : (o.allowOnly.target.item || o.allowOnly.target.block || o.allowOnly.target.entity || null)) : null;
-  return { kind: o.kind === "hunt" ? "hunt" : "gather", target: t.item || t.block || t.entity || null, amount: o.amount ?? 32, constraints: { hostiles, forbiddenTargets, caps: Array.isArray(o.caps) ? o.caps : [], window: o.constraints?.window ? { raw: o.constraints.window.raw || "", kind: o.constraints.window.kind || "" } : null, allowOnly: aoId ? { target: aoId, verb: o.allowOnly.verb ?? null } : null }, sideTasks, returnTo: o.returnTo === "home" ? "home" : "owner", name: t.name || null, tool: o.tool ?? null, placement: o.placement ?? null, gearSet: Array.isArray(o.gearSet) ? o.gearSet : null }; // 0-C2 (cycle1215): caps を mission 制約へ同梱 (保持のみ)。0-C4 (cycle1321): 道具と設置位置も保持する。R-C2-4 (cyc2380): window 写しも保持する。R-C2-6 U6-2 (cyc2384): 注文自身の allowOnly も写す (永続化はしない)
+  return { kind: o.kind === "hunt" ? "hunt" : "gather", target: t.item || t.block || t.entity || null, amount: orderAmountOrDefault(o), constraints: { hostiles, forbiddenTargets, caps: Array.isArray(o.caps) ? o.caps : [], window: o.constraints?.window ? { raw: o.constraints.window.raw || "", kind: o.constraints.window.kind || "" } : null, allowOnly: aoId ? { target: aoId, verb: o.allowOnly.verb ?? null } : null }, sideTasks, returnTo: o.returnTo === "home" ? "home" : "owner", name: t.name || null, tool: o.tool ?? null, placement: o.placement ?? null, gearSet: Array.isArray(o.gearSet) ? o.gearSet : null }; // 0-C2 (cycle1215): caps を mission 制約へ同梱 (保持のみ)。0-C4 (cycle1321): 道具と設置位置も保持する。R-C2-4 (cyc2380): window 写しも保持する。R-C2-6 U6-2 (cyc2384): 注文自身の allowOnly も写す (永続化はしない)
 }
 
 // Phase5 否定配線 (NEGW): 禁止・聞き返しは mission を作らない。記録と復唱/聞き返しのみ。
