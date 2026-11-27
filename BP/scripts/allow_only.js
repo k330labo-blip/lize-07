@@ -38,6 +38,21 @@ export function isAllowedByAllowOnly(allowOnly, targetId, verb = null) {
 export function allowOnlyBlocks(allowOnly, targetId, verb = null) {
   try { return !isAllowedByAllowOnly(allowOnly, targetId, verb); } catch { return false; }
 }
+// U5-0 ruling (coordinator, cyc2387): the build entry is restricted ONLY by an
+// allowOnly whose verb is exactly "build". verb:null (e.g. "zombie igai wa
+// kougeki shinaide" -> clarify allowOnly) and gather/hunt allowOnly must NOT
+// block building; reading them with the generic verb rule would over-block.
+// legsOnly exemption in startMission is unchanged; cap is out of scope here.
+export function isBuildAllowedByAllowOnly(allowOnly, targetId) {
+  try {
+    const a = normalizeAllowOnly(allowOnly);
+    if (!a) return true;
+    if (a.verb !== "build") return true;
+    const t = normAllowId(targetId);
+    if (!t) return true;
+    return t === a.target;
+  } catch { return true; }
+}
 // --- cycle1604: persistence + release (0-C2). Persistence and release ship together:
 // a restriction that survives respawn must always be removable by the owner. ---
 // Serialize via normalizeAllowOnly as the single source of truth; verb:null is

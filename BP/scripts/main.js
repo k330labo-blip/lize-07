@@ -136,7 +136,7 @@ import { fillDefOf, selectFillMedium, checkFillPreconditions, verifyFillPost, fi
 import { classifyDescent as d2Classify, ensureSpiralAnchor as d2EnsureAnchor, spiralStepAt as d2StepAt } from "./d2_spiral_math.js"; // 0-D2 (cycle1434): 発見後も螺旋降下 / G2 (cyc2363): 起点は ensure で固定し対象キーで作り直さない
 import { allowedLogIds, countLogsForTarget } from "./tree_species_math.js";
 import { createWideScanFails, partitionWideIds, noteWideSuccess, noteWideIdFailure, noteWideGlobalFailure, wideIdBlocked } from "./wide_scan_fails.js"; // 0-D4 Bprime (cycle1455): wide scan failures isolated per typeId
-import { isAllowedByAllowOnly, serializeAllowOnly, restoreAllowOnly, clearAllowOnly } from "./allow_only.js"; // 0-C2 reader (cycle1455): allowOnly enforcement // 0-D3: 樹種指定時は対象選択・進捗をその樹種だけに限定する
+import { isAllowedByAllowOnly, isBuildAllowedByAllowOnly, serializeAllowOnly, restoreAllowOnly, clearAllowOnly } from "./allow_only.js"; // 0-C2 reader (cycle1455): allowOnly enforcement // 0-D3: 樹種指定時は対象選択・進捗をその樹種だけに限定する
 import { shouldReplayGaze, GAZE_REPLAY_INTERVAL_TICKS } from "./gaze_cadence_math.js"; // 0-E1 GAZE-CADENCE-01: 視線レイヤーを本体ループから分離する
 import { mergeCaps, capForTarget, serializeCaps, restoreCaps } from "./cap_guard_math.js"; // 0-C2 読み手 (cycle1337): セッション上限を mission へ届ける // cyc2020: caps の DP 永続化 (cb_caps)
 import { createWarehouseRegistry, serializeWarehouseRegistry, deserializeWarehouseRegistry, addCandidates, warehouseKeyOf, registerBox, removeCandidate, teachItemDest, markNeedsRecheck, confirmBox, canonicalKeyOf } from "./warehouse_registry.js"; // cyc2367 WH-RECHECK-01 // 倉庫 W1: 台帳の DP 永続化 (cb_warehouse)
@@ -1446,7 +1446,7 @@ function tickAutonomy(bot, owner, ctx, effMove) {
   if (!g) return;
   if (g.goal !== r.goal) { r.goal = g.goal; r.goalAt = Date.now(); if (mode === "free" && g.reason) say(owner, bot, g.reason); try { const gev = mapGoalEvent({ goal: g.goal, utility: g.utility, scores: Array.isArray(g.scores) ? g.scores.map((s) => [s?.goal, s?.utility]) : undefined, x: { hp: ctx.self?.hpPct ?? null, dg: ctx.danger?.count ?? null, scan: ctx.x?.obs?.scan ?? null, inv: ctx.x?.obs?.inv ?? null } }); if (gev) r.trace?.record(gev); } catch {} }
   switch (g.goal) {
-    case "gather_wood": case "mine_ore": case "farm_crops": case "gather_stone": { const t0628 = r.percTargets?.[GATHER_TARGETS[g.goal]]; let blocked0628 = false; try { blocked0628 = !!t0628 && isForbiddenWorkTarget(r.sessionForbids, t0628.typeId, dropOfWorkTarget); } catch {} if (blocked0628) wanderTo(r, bot, owner); else if (!startWork(bot, r, t0628)) wanderTo(r, bot, owner); break; } // forbids G6-c (cycle0628): 禁止対象は startWork へ渡さない (知覚選出の除外の防衛線)
+    case "gather_wood": case "mine_ore": case "farm_crops": case "gather_stone": { const t0628 = r.percTargets?.[GATHER_TARGETS[g.goal]]; let blocked0628 = false; try { blocked0628 = !!t0628 && isForbiddenWorkTarget(r.sessionForbids, t0628.typeId, dropOfWorkTarget); } catch {} try { if (t0628 && isAllowedByAllowOnly(r.allowOnly, t0628.typeId, "gather") === false) blocked0628 = true; } catch {} if (blocked0628) wanderTo(r, bot, owner); else if (!startWork(bot, r, t0628)) wanderTo(r, bot, owner); break; } // forbids G6-c (cycle0628): 禁止対象は startWork へ渡さない (知覚選出の除外の防衛線) + U5-1 (cyc2387): allowOnly 許可外の知覚対象も自律選出では startWork へ渡さない
     case "place_torch_dark": { // cycle2117 torchfix: 足元へ降りる目標を張り syncFlyGoal の interact 降下に載せる (張るだけでは消費しない)
       try { r.target = { x: Math.floor(bot.location.x) + 0.5, y: Math.floor(bot.location.y), z: Math.floor(bot.location.z) + 0.5 }; r.moveAct = "place_torch"; } catch {}
       placeTorch(bot, r, ctx); break; }
@@ -4117,6 +4117,8 @@ function computeMissing(bot, owner, summary) {
 function startBuild(bot, owner, r, name, cells, origin, gatherFirst) {
   const summary = Object.create(null);
   for (const cell of cells) { if (cell.skipCount) continue; const item = cell.item || resolveMaterialItem(cell.material); if (item) summary[item] = (summary[item] || 0) + 1; }
+  // U5-2 (cyc2387, U5-0 ruling): allowOnly verb="build" の限定がある場合のみ、対象外の材料を含む建築を開始しない。verb:null / gather / hunt の限定では建築を止めない (過剰ブロック防止)
+  try { const blockedBuildItem = Object.keys(summary).find((it) => isBuildAllowedByAllowOnly(r.allowOnly, it) === false); if (blockedBuildItem) { say(owner, bot, `その建築は開始できません。許可されている対象だけに限定されています`, true); return; } } catch {}
   const missing = computeMissing(bot, owner, summary);
   r.buildPlan = { name, cells, origin: { x: Math.floor(origin.x), y: Math.floor(origin.y), z: Math.floor(origin.z) }, dim: (() => { try { return owner?.dimension?.id || null; } catch { return null; } })(), idx: 0, placed: 0, skipped: [], stage: gatherFirst && missing.length ? "gather" : "build", missing, missingIdx: 0 }; // buildPlan次元ガード (cycle0821): 原点の次元は主人 (原点=主人位置) の完全IDで記録する
   r.buildStallKey = null; r.buildStallSince = 0; r.buildStallBest = null; r.buildDangerSince = null; r.buildDangerNoted = false; r.buildDimSince = null; r.buildDimNoted = false; r.buildProgressAt = Date.now(); r.buildProgressIdx = 0; r.buildProgressPlaced = 0; r.buildGatherProgIdx = 0; r.buildGatherProgInv = 0; r.buildUnknownSince = null; r.buildUnknownNoted = false; // 基礎 R-3 (v0.4.81, cycle0417-a04): 前の建築の stall/危険時計を持ち越さない + BUILD-HOLD-NOEXIT (cycle1343): 無進捗時計の起点 + GATHER-NOEXIT snapshot + F1 (cycle2200): buildUnknown も開始時に掃除する
