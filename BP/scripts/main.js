@@ -2581,6 +2581,24 @@ function tickTunnel(bot, owner, r, ctx, goal) {
   try { bot.teleport(tg.dest); } catch {}
   r.target = tg.dest; r.tunnel.steps++; r.tunnel.lastStepAt = Date.now(); r.mTargetSince = Date.now();
 }
+// PICKUP-MISSION-BAN-CELL-01 (cyc2455): ドロップ選出は走査順でなく最寄り＋見切り中実体を除外する
+function nearestMissionItem(items, pred, r, selfPos) {
+  try {
+    if (!Array.isArray(items) || !selfPos || typeof pred !== "function") return null;
+    let best = null, bestD = Infinity; const now = Date.now();
+    for (const x of items) {
+      if (!x || !x.location) continue;
+      let match = false; try { match = !!pred(x); } catch { match = false; }
+      if (!match) continue;
+      try { if (isEntityBanned(r?.mBanKey, r?.mBanUntil, now, x.id)) continue; } catch {}
+      try { if (isBanned(x.location, itemTypeOf(x), r?.mBanKey, r?.mBanUntil, now)) continue; } catch {}
+      const dx = x.location.x - selfPos.x, dy = x.location.y - selfPos.y, dz = x.location.z - selfPos.z;
+      const d = dx * dx + dy * dy + dz * dz;
+      if (d < bestD) { bestD = d; best = x; }
+    }
+    return best;
+  } catch { return null; }
+}
 function findMissionTarget(bot, r, scan, step, scanUnknown = false) {
   const target = step.target;
   if (step.type === "hunt_entity") {
@@ -2607,7 +2625,7 @@ function findMissionTarget(bot, r, scan, step, scanUnknown = false) {
     if (best) return { found: true, kind: "block", loc: best.loc, typeId: best.typeId, detail: { state: "present" } };
     if (sawUnknown) return { found: false, detail: { state: "unknown" } }; // Step 3b: 測れていない間はドロップへ逸れない
     { const sv = lookupSurvey(bot, ids, Date.now() < (r.mBanUntil || 0) ? r.mBanKey : null); if (sv) return { found: true, kind: "block", loc: sv.loc, typeId: sv.typeId, detail: { state: "present", via: "survey" } }; } // v0.4.66: チャンク調査の結果
-    const it = (scan?.items || []).find((x) => ids.includes(itemTypeOf(x))); // 0-D3: ドロップ回収も樹種指定に従う
+    const it = nearestMissionItem(scan?.items, (x) => ids.includes(itemTypeOf(x)), r, bot.location); // 0-D3: ドロップ回収も樹種指定に従う // PICKUP-MISSION-BAN-CELL-01 (cyc2455): 最寄り＋ban除外
     if (it) return { found: true, kind: "item", loc: { ...it.location }, typeId: target, entity: it, detail: { state: "present" } };
     return { found: false, detail: { state: "absent" } }; // ここへ来るのは全樹種 absent 確定時のみ (Step 3b)
   }
@@ -2621,7 +2639,7 @@ function findMissionTarget(bot, r, scan, step, scanUnknown = false) {
     const fillDef = fillDefOf(target);
     const fillSources = sources.filter((x) => x && x.kind === "fill");
     if (fillDef && fillSources.length) {
-      const dropped = (scan?.items || []).find((x) => itemTypeOf(x) === target);
+      const dropped = nearestMissionItem(scan?.items, (x) => itemTypeOf(x) === target, r, bot.location); // PICKUP-MISSION-BAN-CELL-01 (cyc2455)
       if (dropped) return { found: true, kind: "item", loc: { ...dropped.location }, typeId: target, entity: dropped, detail: { state: "present", via: "fill_drop" } };
       const media = fillSources.map((x) => ({ id: x.id, mediumKind: x.mediumKind || fillDef.mediumKind }));
       const blockMedia = media.filter((md) => md.mediumKind === "block");
@@ -2661,7 +2679,7 @@ function findMissionTarget(bot, r, scan, step, scanUnknown = false) {
     else if (s.kind === "entity") { const e = nearestEntityOfType([...(scan?.hostiles || []), ...(scan?.animals || [])], s.id, bot.location); if (e) return { found: true, kind: "entity", loc: { ...e.location }, typeId: target, entity: e, detail: { state: "present" } }; if (scanUnknown) anyUnknown = true; }
     else if (s.kind === "craft") {
       const loc = scanBlockNear(bot, r, s.id); if (loc) return { found: true, kind: "block", loc, typeId: s.id, detail: { state: "present" } }; if (noteScanState(s.id)) return { found: false, detail: { state: "unknown" } };
-      const it = (scan?.items || []).find((x) => itemTypeOf(x) === s.id); if (it) return { found: true, kind: "item", loc: { ...it.location }, typeId: s.id, entity: it, detail: { state: "present" } };
+      const it = nearestMissionItem(scan?.items, (x) => itemTypeOf(x) === s.id, r, bot.location); if (it) return { found: true, kind: "item", loc: { ...it.location }, typeId: s.id, entity: it, detail: { state: "present" } }; // PICKUP-MISSION-BAN-CELL-01 (cyc2455)
     }
   }
   { const blockIds = sources.filter((s) => s.kind === "block" || s.kind === "craft").map((s) => s.id); // v0.4.66: 近くに無ければチャンク調査の結果 (地下の鉱石も)
@@ -2669,7 +2687,7 @@ function findMissionTarget(bot, r, scan, step, scanUnknown = false) {
   if (target && target.includes(":")) { const loc = scanBlockNear(bot, r, target); if (loc) return { found: true, kind: "block", loc, typeId: target, detail: { state: "present" } }; if (noteScanState(target)) return { found: false, detail: { state: "unknown" } }; }
   if (anyUnknown) return { found: false, detail: { state: "unknown" } }; // R3 防御層: 将来の走査地点追加でもドロップ候補へ unknown を素通りさせない
   const dropId = sources[0]?.dropItem;
-  const cand = (scan?.items || []).find((x) => { const tid = itemTypeOf(x); return tid === target || (dropId && tid === dropId); });
+  const cand = nearestMissionItem(scan?.items, (x) => { const tid = itemTypeOf(x); return tid === target || (dropId && tid === dropId); }, r, bot.location); // PICKUP-MISSION-BAN-CELL-01 (cyc2455)
   if (cand) return { found: true, kind: "item", loc: { ...cand.location }, typeId: target, entity: cand, detail: { state: "present" } };
   return { found: false, detail: { state: anyUnknown ? "unknown" : "absent" } };
 }
@@ -4044,7 +4062,7 @@ function tickMission(bot, owner, ctx, scan) {
     const prevTS = r.mTargetState;
     if (r.mTargetSince && prevTS && (prevTS.state === "unknown" || prevTS.state === "pending") && prevTS.typeId === (step.target ?? null) && typeof prevTS.at === "number") { r.mTargetSince += Math.max(0, Math.min(Date.now() - prevTS.at, 10000)); }
     if (curHave !== r.mLastHave) { r.mLastHave = curHave; r.mTargetSince = Date.now(); }
-    else if (r.mTargetLoc && r.mTargetSince && Date.now() - r.mTargetSince > 45000 && !(r.tunnel && r.tunnel.key === r.mTargetKey && Date.now() - r.tunnel.lastStepAt < 15000)) { /* v0.4.66: 掘り進めている間は見切らない */ r.mBanKey = (((r.mTargetKind === "entity") || (r.mTargetKind === "fill_medium" && r.mTargetEntity)) && r.mTargetEntity?.id) ? (entityBanKey(r.mTargetEntity.id) || banKeyFor(r.mTargetLoc, r.mTargetType) || r.mTargetKey) : (banKeyFor(r.mTargetLoc, r.mTargetType) || r.mTargetKey); r.mBanUntil = Date.now() + 60000; r.mTargetLoc = null; r.mTargetKey = ""; r.mTargetSince = Date.now(); } // queue0-A bug2 (cycle1728): trunk-unit ban (was found-cell key, looped on same trunk) // HUNT-BAN-CELL-01 (cyc2385): 実体対象は ID 単位で ban (セルキーでは移動で即すり抜けた)
+    else if (r.mTargetLoc && r.mTargetSince && Date.now() - r.mTargetSince > 45000 && !(r.tunnel && r.tunnel.key === r.mTargetKey && Date.now() - r.tunnel.lastStepAt < 15000)) { /* v0.4.66: 掘り進めている間は見切らない */ r.mBanKey = (((r.mTargetKind === "entity") || (r.mTargetKind === "item") || (r.mTargetKind === "fill_medium" && r.mTargetEntity)) && r.mTargetEntity?.id) ? (entityBanKey(r.mTargetEntity.id) || banKeyFor(r.mTargetLoc, r.mTargetType) || r.mTargetKey) : (banKeyFor(r.mTargetLoc, r.mTargetType) || r.mTargetKey); r.mBanUntil = Date.now() + 60000; r.mTargetLoc = null; r.mTargetKey = ""; r.mTargetSince = Date.now(); } // queue0-A bug2 (cycle1728): trunk-unit ban (was found-cell key, looped on same trunk) // HUNT-BAN-CELL-01 (cyc2385): 実体対象は ID 単位で ban (セルキーでは移動で即すり抜けた)
     // 目標の固定: 一度狙った対象は、消える/壊れるまで変えない（毎tickの最寄り再選択による上下動・迷走を断つ）
     if (r.mTargetLoc && missionTargetValid(bot, r)) ft = { found: true, kind: r.mTargetKind, loc: r.mTargetLoc, typeId: r.mTargetType, entity: r.mTargetEntity, fillItem: r.mTargetFillItem || undefined, mediumKind: r.mTargetMediumKind || undefined, stand: r.mTargetFillStand || undefined };
     else {
