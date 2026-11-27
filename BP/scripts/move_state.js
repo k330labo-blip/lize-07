@@ -45,8 +45,9 @@ export function moveTrackStep(tr, pos, dtSec, ctx) {
     else if (speed > SPEED_FINE) mode = "fine";
     else mode = "idle";
     // phase: 距離駆動。fly/teleport/idle では進めない
+    // cyc2416 MOVE-FOOTSTEP-AIRBORNE-01 是正: footstep は接地した歩幅だけを数える。非接地 (空中・遊泳中) の水平変位では位相ごと凍結し、接地の再開後に続きから進む (浅水の接地歩行は grounded=true で不変)
     let phase = tr.state.phase;
-    if (mode !== "fly" && mode !== "teleport" && mode !== "idle" && hDist > 0) {
+    if (mode !== "fly" && mode !== "teleport" && mode !== "idle" && grounded && hDist > 0) {
       const before = phase;
       phase = (phase + hDist / STRIDE_LEN) % 1;
       // footstep: 位相が 0.5 / 1.0 境界を跨いだ回数ぶん。getSurface は歩あたり1回だけ呼んで共用する
