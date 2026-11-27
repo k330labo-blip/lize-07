@@ -148,7 +148,7 @@ export function createMission(order, sourcing = null) {
       kind: o.kind || "gather",
       target: o.target ?? null,
       amount: amountEff,
-      constraints: { hostiles, forbiddenTargets, caps: capsNorm },
+      constraints: { hostiles, forbiddenTargets, caps: capsNorm, window: o.constraints?.window ? { raw: o.constraints.window.raw || "", kind: o.constraints.window.kind || "" } : null }, // WINDOW-END-DROP-01 (cyc2421): window 写しも保持する (従来は生成時に脱落し終了監視が恒久不発だった)
       sideTasks: (Array.isArray(o.sideTasks) ? o.sideTasks : []).filter((t) => !isForbiddenId(t?.target)),
       returnTo: o.returnTo ?? "owner",
       legsOnly: !!o.legsOnly, // v0.4.67: 長期タスクの途中工程か (完了時に「お渡ししました」と言わないため。以前は書き写していなかった)
