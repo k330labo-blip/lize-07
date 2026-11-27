@@ -78,6 +78,7 @@ import { createSnowtreadState, noteSnowtread, snowtreadCurrentOffset, applySnowt
 import { createStepupState, noteStepup as noteStepupState, sampleStepup } from "./stepup_math.js";
 import { banKeyFor, matchesBan, isBanned, filterBanned, isTrunkType, entityBanKey, isEntityBanned } from "./trunk_ban.js"; // queue0-A bug2 (cycle1728, v0.5.19): trunk-unit ban // HUNT-BAN-CELL-01 (cyc2385): 実体 ban は ID 単位
 import { treeNeighbors, mergeTreeCands } from "./tree_cont_math.js"; // 0-D3 R1 (cycle0583): 同じ木の継続候補
+import { resolveTrunkBase } from "./trunk_descent_math.js"; // 0-C R-C6-2 (cyc2391): 幹下降補正の純粋核 (横枝から幹最下段へ)
 import { createTakeBanState, recordTakeBan, isTakeBanned, pruneTakeBans, clearAllTakeBans } from "./take_ban_math.js"; // TR2136-01 (cycle2200): 回収全量失敗の実行側見切り
 import { createWorkBanState, recordWorkBan, isWorkBanned, pruneWorkBans, filterWorkBanned } from "./work_ban_math.js"; // cycle0832 F5: work層の見切り ban (hold枯渇後に到達不能候補を選び直す無限ループの是正)
 import { createOreSpotState, noteOreSpot, sampleOreSpot } from "./orespot_math.js"; // POLISH-ANIM-ORESPOT-01 (cycle0832): 貴重鉱石への二度見 (表示層のみ・実機確認待ち)
@@ -1117,11 +1118,10 @@ function startWork(bot, r, target, opts = {}) {
   if (!target) return false;
   // v0.4.59 (外部レビュー指摘1): 原木/幹は、同じ幹の一番下を対象にする。上の原木を狙うと
   // 葉の上でホバーして掘る距離 (3D 2.9) に届かず詰む。進捗保持の同一判定より前に寄せる。
-  if (target.typeId && (target.typeId.includes("_log") || (target.typeId.endsWith("_stem") && /(crimson|warped)/.test(target.typeId)))) {
+  if (target.typeId && isTrunkType(target.typeId)) {
     try {
-      let y = target.y;
-      while (y > target.y - 32) { const b = bot.dimension.getBlock({ x: target.x, y: y - 1, z: target.z }); if (!b || b.typeId !== target.typeId) break; y--; }
-      if (y !== target.y) target = { ...target, y };
+      const res = resolveTrunkBase(target, (p) => { const b = bot.dimension.getBlock(p); return b ? b.typeId : null; });
+      if (res && res.resolved && res.loc && (res.loc.x !== target.x || res.loc.y !== target.y || res.loc.z !== target.z)) target = { ...target, x: res.loc.x, y: res.loc.y, z: res.loc.z };
     } catch {}
   }
   // cycle0832 F5: work層 ban 中の対象は立てない (hold枯渇で見切った到達不能候補の再選出ループを断つ)
