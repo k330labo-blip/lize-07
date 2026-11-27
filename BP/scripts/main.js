@@ -2709,7 +2709,7 @@ function applyRequestedTool(bot, owner, r, tool) {
         const core = equipCoreOf(bot, r);
         const sr = core?.setEquip("Mainhand", { typeId: res.itemId, amount: 1 });
         okEq = !!(sr && sr.ok);
-        if (okEq) { try { okEq = core.getEquipped("Mainhand")?.typeId === res.itemId; } catch { okEq = false; } }
+        if (okEq) { try { core.refresh(); } catch {} try { okEq = core.getEquipped("Mainhand")?.typeId === res.itemId; } catch { okEq = false; } } // RG U2 (cyc2393): RG-3 V3 実測化。同一内部状態の同値確認でなく、refresh で実コンポーネントから読み直してから装備を実測する
       } catch { okEq = false; }
       r.lastToolRequest = { itemId: res.itemId, action: "equip", ok: okEq, at: Date.now() };
       if (okEq) r.toolUseNote = `${nameOfItem(res.itemId)}でやります。`;
