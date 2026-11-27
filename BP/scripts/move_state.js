@@ -28,9 +28,13 @@ export function moveTrackStep(tr, pos, dtSec, ctx) {
     if (tr.wasWet === null || c.engine === "teleport") tr.wasWet = wet;
     else if (wet !== tr.wasWet) { pushEvent(tr, { kind: "splash", enter: wet, at: fin(c.nowMs) ?? 0 }); tr.wasWet = wet; }
     // land: 累積下降 >= LAND_DROP (0.6) で接地に戻った時1回。cyc2412 MOVE-LAND-LASTSTEP-EXCLUDE-01 是正: 接地した歩の下降も数える (旧形は非接地歩のみ蓄積し、最後の1歩の下降が常に対象外で1歩落下が発火しなかった)
-    if (dy < 0) tr.airDrop += -dy;
-    if (grounded && tr.prevPos && tr.airDrop >= LAND_DROP) pushEvent(tr, { kind: "land", drop: tr.airDrop, at: fin(c.nowMs) ?? 0 });
-    if (grounded) tr.airDrop = 0;
+    // cyc2415 MOVE-LAND-TELEPORT-01 是正: teleport 歩は不連続であり落下ではない。dy を数えず、発火判定より前に蓄積をリセットする (splash の teleport 再基準化と同型。リセットを判定後に置くと事前蓄積で偽発火が残る)
+    if (c.engine === "teleport") tr.airDrop = 0;
+    else {
+      if (dy < 0) tr.airDrop += -dy;
+      if (grounded && tr.prevPos && tr.airDrop >= LAND_DROP) pushEvent(tr, { kind: "land", drop: tr.airDrop, at: fin(c.nowMs) ?? 0 });
+      if (grounded) tr.airDrop = 0;
+    }
     // mode (先勝ち。climb/drop/bridge/dig は生成しない)
     let mode;
     if (c.engine === "teleport") mode = "teleport";
