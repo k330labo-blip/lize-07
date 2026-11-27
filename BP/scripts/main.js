@@ -3944,8 +3944,7 @@ function tickMission(bot, owner, ctx, scan) {
   if (m.invUnreadObs) m.invUnreadObs = 0; // readable tick resets the consecutive counter
   // 寄り道の機会走査（side ステップがある間だけ）
   r.sideTask = null;
-  // TAKEBAN-PRUNE-SIDE-GATED / TAKEBAN-NO-RELEASE (cyc2364 A05, cyc2365 統合): prune は寄り道ステップ依存だったため通常経路で到達しなかった。常時経路へ移設し、在庫が満杯でなくなったら ban を一括解除する (最大60秒の盲窓解消)。
-  try { if (r.takeBan) { pruneTakeBans(r.takeBan, Date.now()); if (ctx?.inv && !ctx.inv.full) clearAllTakeBans(r.takeBan); } } catch {}
+  // TAKEBAN 早期解除は本体ループの常時経路へ移設済み (TAKEBAN-RELEASE-MISSIONGATED-01, cyc2406)。ここには置かない (単一の正)。
   const sideSteps = m.steps.filter((s) => s.type === "side_collect" && s.status !== "done");
   if (sideSteps.length) {
     const sideOrders = sideSteps.map((s) => ({ item: s.target, amount: s.need, have: s.have || 0, target: s.target, label: nameOfItem(s.target) }));
@@ -4757,6 +4756,8 @@ system.runInterval(() => {
     const r = rt(bot);
     const { ctx, scan } = buildContext(bot, p);
     r.lastCtx = ctx;
+    // TAKEBAN-RELEASE-MISSIONGATED-01 (cyc2391 A13 確定, cyc2406 統合): 早期解除は従来 tickMission の active ゲート内にしか無く、ミッション外で付いた ban は在庫が空いても最大60秒残った。本体ループの常時経路 (buildContext 直後・在庫は同一 ctx) へ移設し、ミッション有無に無関係に評価する。条件 (inv 読めて満杯でない) は従来どおり。
+    try { if (r.takeBan) { pruneTakeBans(r.takeBan, Date.now()); if (ctx?.inv && !ctx.inv.full) clearAllTakeBans(r.takeBan); } } catch {}
     try { tickEndgoalShadow(bot, r, ctx); } catch {} // ENDGOAL W-A C1 (cyc2363): shadow 駆動 (オンライン経路)
     const { move, speech } = decide(ctx);
     if (speech) {
