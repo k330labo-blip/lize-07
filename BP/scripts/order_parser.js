@@ -909,20 +909,32 @@ const TOOL_IDS = new Set([
 ]);
 // 「<道具>で<動詞>」: 道具 hit は対象候補から外し、手段として返す。
 // 「を」を含む句 (目的語が先行する形) と、動詞が後続しない句では発動しない。
+const TOOL_CONNECTORS = ["を使いながら", "を使って", "を用いて", "を使用して", "を使い"];
 function toolPhraseOf(clause, hits, verbClass) {
   try {
-    const de = clause.indexOf("で");
-    if (de < 0) return null;
-    if (/を/.test(clause.slice(0, de))) return null;
     // C4-TOOLMEANS-VERB-01 (cyc2435): 動詞判定は呼び出し側の classifyVerb 結果を正とする。
     // 旧来の文字ゲート (倒|掘|…) は採取系の文字 (集・取・採・拾・収穫) を欠き、
     // 「集めて」等の既定形で道具が主目標へ逆転していた。verbClass が無い場合のみ旧ゲートを使う。
-    const verbOk = verbClass ? (verbClass === "gather" || verbClass === "hunt")
-      : /(倒|掘|狩|切|壊|攻撃|刈|伐|殴)/.test(clause.slice(de + 1));
-    if (!verbOk) return null;
-    const hit = (hits || []).find((h) => h.kind === "material" && TOOL_IDS.has(h.def?.[0]) && h.end <= de && de - h.end <= 1);
-    if (!hit) return null;
-    return { hit, tool: targetOf(hit) };
+    const verbOkAt = (rest) => verbClass ? (verbClass === "gather" || verbClass === "hunt")
+      : /(倒|掘|狩|切|壊|攻撃|刈|伐|殴|集|取|採|拾|収穫)/.test(rest);
+    const de = clause.indexOf("で");
+    if (de >= 0 && !/を/.test(clause.slice(0, de)) && verbOkAt(clause.slice(de + 1))) {
+      const hit = (hits || []).find((h) => h.kind === "material" && TOOL_IDS.has(h.def?.[0]) && h.end <= de && de - h.end <= 1);
+      if (hit) return { hit, tool: targetOf(hit) };
+    }
+    // C4-TOOLMEANS-USING-01 (cyc2438): 「<道具>を使って/を用いて/を使用して/を使い(ながら)」
+    // 接続表現には助詞「で」が現れず、道具 hit が主目標へ逆転していた (VERB-01 と同型)。
+    // 道具 hit の直後に接続表現が続き、その後ろに「を」を伴う目的語がある場合のみ手段へ分離する。
+    for (const h of hits || []) {
+      if (h.kind !== "material" || !TOOL_IDS.has(h.def?.[0])) continue;
+      const conn = TOOL_CONNECTORS.find((c) => clause.startsWith(c, h.end));
+      if (!conn) continue;
+      const rest = clause.slice(h.end + conn.length);
+      if (!/を/.test(rest)) continue;
+      if (!verbOkAt(rest)) continue;
+      return { hit: h, tool: targetOf(h) };
+    }
+    return null;
   } catch { return null; }
 }
 const PLACE_DIR_RE = /^(上|右|左|前|後ろ|後|下|隣|となり|横)$/;
