@@ -472,6 +472,8 @@ deliverNegationRe: /持って(?:こないで|くるな|来ないで)/,
 // N-1 (cycle0936): 免除・不要形「〜なくて(も)いい/よい」。意味は N5 unwanted と同族で、
 // 産出は N5 と同じ pendingUnwanted 経路へ合流させる。形態素形としての汎用パターン。
 dispensationRe: /なくて(?:も)?(?:いい|よい)(?:です)?/g,
+// 0-N3 KURENAI-REQ-01: 丁寧な依頼形「〜て(きて)くれない／もらえない／いただけない」は受益表現であり禁止ではない。一般規則として節末形だけを対象にする。
+politeRequestRe: /(?:て|で)(?:きて|来て)?(?:くれ|もらえ|いただけ|頂け)ない(?:かな|か|ですか|です|よね)?$/,
 referenceWords: ["それ", "これ", "あれ"],
 });
 
@@ -527,7 +529,10 @@ function findNegatedVerb(clause) {
 if (hasGuardedForm(clause)) return null;
 const deliverHit = clause.match(NEGATION_PATTERNS.deliverNegationRe);
 if (deliverHit) return { verb: "deliver", index: deliverHit.index};
+const politeHit = clause.match(NEGATION_PATTERNS.politeRequestRe);
+const politeRange = politeHit ? [politeHit.index, politeHit.index + politeHit[0].length] : null;
 for (const pos of negationMorphemePositions(clause)) {
+if (politeRange && pos.index >= politeRange[0] && pos.index < politeRange[1]) continue;
 let best = null;
 for (const [cls, stems] of VERB_STEMS) {
 for (const stem of stems) {
