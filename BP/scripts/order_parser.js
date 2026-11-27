@@ -1107,20 +1107,39 @@ export function parseOrder(input) {
           matOf.push(curMat);
         }
         const first = mentions[0], last = mentions[mentions.length - 1];
-        // 純列挙性: メンション間は接続詞・素材接頭辞・「を」だけ。個数句があれば譲る
+        // 純列挙性: メンション間は接続詞・素材接頭辞・「を」だけ。
         // U-F-TAILQTY-01 (cyc2403): 検査窓は末尾個数 (最後の部位の直後〜作製動詞) まで広げる。
         // 末尾窓の終端は gearEnumCountOf と同一 (最初の作製動詞/句読点)。単位は 個|つ。
+        // U-F-PARTQTY-01 (cyc2411): 非末尾区間に個数句がある文は譲らず、部位ごと個数を
+        // gearCounts として保持して受ける。末尾区間だけに個数句がある文は従来どおり
+        // 通常経路へ譲る (TAILQTY の着地点)。非末尾に個数がある文では末尾の個数句は
+        // 最後の部位の個数として読む。いずれかの部位が 0 個なら clarify zero_amount。
         let pure = matOk;
+        let partCounts = null, partQtyZero = false;
+        const tailRest = text.slice(last.end);
+        const tailM = tailRest.match(/(作って|作る|ください|欲しい|ちょうだい|お願い|、|。)/);
+        const winEnd = tailM ? last.end + tailM.index : text.length;
         if (pure) {
-          const tailRest = text.slice(last.end);
-          const tailM = tailRest.match(/(作って|作る|ください|欲しい|ちょうだい|お願い|、|。)/);
-          const winEnd = tailM ? last.end + tailM.index : text.length;
-          if (/(\d+|[一二三四五六七八九十]+)\s*(個|つ)/.test(text.slice(first.start, winEnd))) pure = false;
+          const rawQty = mentions.map((m, k) => {
+            const segEnd = k + 1 < mentions.length ? mentions[k + 1].start : winEnd;
+            const qm = text.slice(m.end, segEnd).match(/(\d+|[一二三四五六七八九十]+)\s*(個|つ)/);
+            return qm ? (parseNumberToken(qm[1]) ?? 1) : null;
+          });
+          const hasNonTailQty = rawQty.slice(0, -1).some((v) => v != null);
+          if (!hasNonTailQty) {
+            if (/(\d+|[一二三四五六七八九十]+)\s*(個|つ)/.test(text.slice(first.start, winEnd))) pure = false;
+          } else {
+            const byPid = new Map();
+            mentions.forEach((m, k) => { if (!byPid.has(m.pid)) byPid.set(m.pid, rawQty[k] ?? 1); });
+            partCounts = distinct.map((pid) => byPid.get(pid) ?? 1);
+            if (partCounts.some((v) => v === 0)) partQtyZero = true;
+          }
         }
         if (pure) {
           for (let k = 1; k < mentions.length; k++) {
             let between = text.slice(mentions[k - 1].end, mentions[k].start);
             for (const [word] of GEAR_MATS) between = between.split(word).join("");
+            between = between.replace(/(\d+|[一二三四五六七八九十]+)\s*(個|つ)/g, "");
             between = between.replace(/(の|と|、|・|を|\s)/g, "");
             if (between) { pure = false; break; }
           }
@@ -1129,7 +1148,7 @@ export function parseOrder(input) {
         // ただし先頭メンション直前の素材接頭辞と文頭条件節は対象句ではない。
         if (pure) {
           const before = text.slice(0, first.start);
-          const after = text.slice(last.end).replace(/(\d+|[一二三四五六七八九十]+)\s*(セット|組|人分)/g, "");
+          const after = text.slice(last.end).replace(/(\d+|[一二三四五六七八九十]+)\s*(セット|組|人分)/g, "").replace(/(\d+|[一二三四五六七八九十]+)\s*(個|つ)/g, "");
           // before 側は素材接頭辞 (GEAR_MATS の素材語そのもの) のヒットだけ許容し、
           // after 側は対象ヒットが1件でもあれば副次句ありとして通常経路へ譲る
           const matWords = new Set(GEAR_MATS.map(([w]) => w));
@@ -1141,12 +1160,14 @@ export function parseOrder(input) {
             const enumCond = extractConditionPrefix(text);
             if (enumCond) constraints.condition = enumCond;
             const enumSets = gearEnumCountOf(text, last.end);
-            if (enumSets === 0) return { kind: "clarify", target: null, amount: null, constraints, sideTasks: [], negations: [], unresolved: [{ slot: "amount", reason: "zero_amount" }], caps: [], returnTo: "owner", raw };
+            if (enumSets === 0 || partQtyZero) return { kind: "clarify", target: null, amount: null, constraints, sideTasks: [], negations: [], unresolved: [{ slot: "amount", reason: "zero_amount" }], caps: [], returnTo: "owner", raw };
             const ids = distinct.map((pid) => `${gm.mid}_${pid}`);
             const firstName = GEAR_PARTS.find(([pid]) => pid === distinct[0])?.[1] ?? distinct[0];
             // U-F-SPEECH-01 (cyc2407): 列挙由来の印として規範名の部位名列を返す (F2/単品には付けない)
             const gearPartNames = distinct.map((pid) => GEAR_PARTS.find(([p]) => p === pid)?.[1] ?? pid);
-            return { kind: "build", target: { item: ids[0], block: null, entity: null, name: `${gm.disp}の${firstName}` }, amount: enumSets, constraints, sideTasks: [], negations: [], unresolved: [], caps: [], tool: null, placement: null, gearSet: ids, gearMaterial: gm.disp, gearPartNames, returnTo: "owner", raw };
+            // U-F-PARTQTY-01 (cyc2411): 部位ごと個数は gearCounts として並行に返す
+            // (個数指定が無い文では付けず、現行形と完全一致を保つ)
+            return { kind: "build", target: { item: ids[0], block: null, entity: null, name: `${gm.disp}の${firstName}` }, amount: enumSets, constraints, sideTasks: [], negations: [], unresolved: [], caps: [], tool: null, placement: null, gearSet: ids, gearMaterial: gm.disp, gearPartNames, ...(partCounts ? { gearCounts: partCounts } : {}), returnTo: "owner", raw };
           }
         }
       }

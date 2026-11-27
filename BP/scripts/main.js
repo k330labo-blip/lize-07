@@ -5488,11 +5488,15 @@ function startOrderFromParser(p, bot, r, o) {
       if (Array.isArray(o.gearSet) && o.gearSet.length > 1) {
         // 0-F R-7b U7-3 (cyc2398): セット数ぶん部位列を展開し、既存 pendingGearSet へ流す
         // (sets=1 では従来と完全一致)。検証はセット数ぶんの amount で行う。
+        // U-F-PARTQTY-01 (cyc2411): 部位ごと個数 gearCounts がある場合は、展開は
+        // 「セット数 × 各部位をその部位の個数ぶん繰り返す」、検証 amount は部位ごとに
+        // (個数 × セット数) とする。gearCounts が無い場合は従来と完全一致。
         const gearSetsN = Math.max(1, Math.floor(o.amount ?? 1));
+        const gearCounts = Array.isArray(o.gearCounts) ? o.gearCounts : null;
         const gearSeq = [];
-        for (let i = 0; i < gearSetsN; i++) for (const gid of o.gearSet) gearSeq.push(gid);
+        for (let i = 0; i < gearSetsN; i++) o.gearSet.forEach((gid, gi) => { const n = Math.max(1, Math.floor(gearCounts?.[gi] ?? 1)); for (let j = 0; j < n; j++) gearSeq.push(gid); });
         let allOk = true;
-        for (const gid of o.gearSet) { let ok = false; try { const pl = planLongTask({ target: "minecraft:" + gid, amount: gearSetsN }, countInv(bot), invDurabilityOf(bot)); ok = !!(pl && pl.feasible); } catch {} if (!ok) { allOk = false; break; } }
+        for (let gi = 0; gi < o.gearSet.length; gi++) { const gid = o.gearSet[gi]; let ok = false; try { const pl = planLongTask({ target: "minecraft:" + gid, amount: Math.max(1, Math.floor(gearCounts?.[gi] ?? 1)) * gearSetsN }, countInv(bot), invDurabilityOf(bot)); ok = !!(pl && pl.feasible); } catch {} if (!ok) { allOk = false; break; } }
         if (!allOk) { if (Array.isArray(o.gearPartNames) && o.gearPartNames.length) say(p, bot, `${o.gearMaterial || ""}の${o.gearPartNames.join("と")}は、今の調達経路では作りきれません`, true); else say(p, bot, `${o.gearMaterial || ""}の一式は、今の調達経路では作りきれません。部位ごとに頼んでください`, true); return; }
         if (r.mission && r.mission.status === "active") { say(p, bot, "今の指示の途中です。やめるなら「やめて」と言ってください", true); return; }
         r.pendingGearSet = gearSeq.slice(1).map((gid) => "minecraft:" + gid);
