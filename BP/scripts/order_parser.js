@@ -909,12 +909,17 @@ const TOOL_IDS = new Set([
 ]);
 // 「<道具>で<動詞>」: 道具 hit は対象候補から外し、手段として返す。
 // 「を」を含む句 (目的語が先行する形) と、動詞が後続しない句では発動しない。
-function toolPhraseOf(clause, hits) {
+function toolPhraseOf(clause, hits, verbClass) {
   try {
     const de = clause.indexOf("で");
     if (de < 0) return null;
     if (/を/.test(clause.slice(0, de))) return null;
-    if (!/(倒|掘|狩|切|壊|攻撃|刈|伐|殴)/.test(clause.slice(de + 1))) return null;
+    // C4-TOOLMEANS-VERB-01 (cyc2435): 動詞判定は呼び出し側の classifyVerb 結果を正とする。
+    // 旧来の文字ゲート (倒|掘|…) は採取系の文字 (集・取・採・拾・収穫) を欠き、
+    // 「集めて」等の既定形で道具が主目標へ逆転していた。verbClass が無い場合のみ旧ゲートを使う。
+    const verbOk = verbClass ? (verbClass === "gather" || verbClass === "hunt")
+      : /(倒|掘|狩|切|壊|攻撃|刈|伐|殴)/.test(clause.slice(de + 1));
+    if (!verbOk) return null;
     const hit = (hits || []).find((h) => h.kind === "material" && TOOL_IDS.has(h.def?.[0]) && h.end <= de && de - h.end <= 1);
     if (!hit) return null;
     return { hit, tool: targetOf(hit) };
@@ -1246,7 +1251,7 @@ export function parseOrder(input) {
     const side = SIDE_START_RE.test(clause);
     const hits = nonOrder ? [] : hitsPerClause[ci];
     // 0-C4: 道具 hit と設置アンカー hit は対象候補にしない
-    const toolInfo = nonOrder ? null : toolPhraseOf(clause, hitsPerClause[ci]);
+    const toolInfo = nonOrder ? null : toolPhraseOf(clause, hitsPerClause[ci], verbClass);
     if (toolInfo && !orderTool) orderTool = toolInfo.tool;
     const anchorInfo = nonOrder ? null : anchorHitOf(clause, hitsPerClause[ci]);
     const fillSrcInfo = nonOrder ? null : fillSourceHitOf(clause, hitsPerClause[ci], verbClass); // 0-C R-C4-4 S6 (cyc2385)
