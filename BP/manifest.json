@@ -2,9 +2,9 @@
   "format_version": 2,
   "header": {
     "name": "リゼ (LIZE-07) / BP",
-    "description": "Companion LIZE-07 v0.5.175",
+    "description": "Companion LIZE-07 v0.5.176",
     "uuid": "c6df6526-2532-46f2-b843-dfa55efa1296",
-    "version": [0, 5, 175],
+    "version": [0, 5, 176],
     "min_engine_version": [
       1,
       21,
@@ -15,20 +15,20 @@
     {
       "type": "data",
       "uuid": "68dd6cf4-aa88-4ffa-828f-a8a15cea48d7",
-      "version": [0, 5, 175]
+      "version": [0, 5, 176]
     },
     {
       "type": "script",
       "language": "javascript",
       "entry": "scripts/main.js",
       "uuid": "9b80c8b7-1c63-4021-8a3c-b2fd07fc4680",
-      "version": [0, 5, 175]
+      "version": [0, 5, 176]
     }
   ],
   "dependencies": [
     {
       "uuid": "eea159df-01a6-4ff3-9ebc-b711e962cd96",
-      "version": [0, 5, 175]
+      "version": [0, 5, 176]
     },
     {
       "module_name": "@minecraft/server",

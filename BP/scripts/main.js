@@ -3931,7 +3931,7 @@ function tickPendingCondition(bot, owner, r, ctx) {
 function tickConditionWindow(bot, owner, r, ctx) {
   try {
     // WINDOW-END-LONGTASK-SCOPE-01 (cyc2426) + WINDOW-END-BUILDPLAN-SCOPE-01 (cyc2429)
-    const missionWin = r.mission?.status === "active" ? r.mission?.order?.constraints?.window : null;
+    const missionWin = (r.mission?.status === "active" || r.mission?.status === "suspended") ? r.mission?.order?.constraints?.window : null; // WINDOW-END-SUSPENDED-SCOPE-01 (cyc2436): 保留中も window 終了監視の対象にする (畳み先は cancelMission 流用)
     const ltWin = !missionWin && r.longtask ? r.longtask.window : null;
     const bpWin = !missionWin && !ltWin && r.buildPlan ? r.buildPlan.window : null;
     const win = missionWin || ltWin || bpWin;
@@ -3951,6 +3951,7 @@ function tickConditionWindow(bot, owner, r, ctx) {
       // WINDOW-END-BUILDPLAN-SCOPE-01 (cyc2429): 建築相の畳み。材料集め相の子 mission も一緒に畳む。
       if (r.mission) { r.mission = null; clearPlanRecords(r); persistMission(bot, r, true); }
       r.buildPlan = null; r.buildStallKey = null; r.buildStallSince = 0; r.buildStallBest = null; r.buildDangerSince = null; r.buildDangerNoted = false; r.buildDimSince = null; r.buildDimNoted = false; r.buildProgressAt = null; r.buildProgressIdx = null; r.buildProgressPlaced = null; r.buildUnknownSince = null; r.buildUnknownNoted = false;
+      clearPendingTool(bot, r); clearPendingGearSet(bot, r); r.tunnel = null; r.d2Anchor = null; // WINDOW-END-BUILDPLAN-CHAINRESIDUE-01 (cyc2436): ltWin/cancelMission と同型に後続チェーンと tunnel も畳む
       try { if (typeof clearBuildGateHold === "function" && r.buildGateHold) clearBuildGateHold(r.buildGateHold); if (typeof clearBuildGateSkipStreak === "function" && r.buildGateSkipStreak) clearBuildGateSkipStreak(r.buildGateSkipStreak); } catch {}
     }
     else {
