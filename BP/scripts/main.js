@@ -2652,7 +2652,7 @@ function findMissionTarget(bot, r, scan, step, scanUnknown = false) {
           if (bp.typeId === "minecraft:lava") { const stand = fillSafeStand(bot, bp.loc); if (stand) return { found: true, kind: "fill_medium", loc: bp.loc, typeId: bp.typeId, fillItem: target, mediumKind: "block", entity: null, stand, detail: { state: "present", via: "fill_scan" } }; }
           else return { found: true, kind: "fill_medium", loc: bp.loc, typeId: bp.typeId, fillItem: target, mediumKind: "block", entity: null, detail: { state: "present", via: "fill_scan" } };
         }
-        const sv = lookupSurvey(bot, blockMedia.map((md) => md.id), Date.now() < (r.mBanUntil || 0) ? r.mBanKey : null);
+        const sv = lookupSurvey(bot, blockMedia.map((md) => md.id), Date.now() < (r.mBanUntil || 0) ? r.mBanKey : null, (loc, id) => !!(r.workBan && isWorkBanned(r.workBan, loc, id, Date.now()))); // SURVEY-WORKBAN-GENERAL-01 (cyc2462): workBan を survey 段へも通す (原木呼び出しと同形)
         if (sv) { if (sv.typeId === "minecraft:lava") { const stand = fillSafeStand(bot, sv.loc); if (stand) return { found: true, kind: "fill_medium", loc: sv.loc, typeId: sv.typeId, fillItem: target, mediumKind: "block", entity: null, stand, detail: { state: "present", via: "fill_survey" } }; } else return { found: true, kind: "fill_medium", loc: sv.loc, typeId: sv.typeId, fillItem: target, mediumKind: "block", entity: null, detail: { state: "present", via: "fill_survey" } }; }
         return { found: false, detail: { state: "absent" } };
       }
@@ -2677,14 +2677,14 @@ function findMissionTarget(bot, r, scan, step, scanUnknown = false) {
   }
   for (const s of sources) {
     if (s.kind === "block") { continue; }
-    else if (s.kind === "entity") { const e = nearestEntityOfType([...(scan?.hostiles || []), ...(scan?.animals || [])], s.id, bot.location); if (e) return { found: true, kind: "entity", loc: { ...e.location }, typeId: target, entity: e, detail: { state: "present" } }; if (scanUnknown) anyUnknown = true; }
+    else if (s.kind === "entity") { const e = nearestEntityOfType([...(scan?.hostiles || []), ...(scan?.animals || [])].filter((x) => !isEntityBanned(r.mBanKey, r.mBanUntil, Date.now(), x?.id)), s.id, bot.location); if (e) return { found: true, kind: "entity", loc: { ...e.location }, typeId: target, entity: e, detail: { state: "present" } }; if (scanUnknown) anyUnknown = true; }
     else if (s.kind === "craft") {
       const loc = scanBlockNear(bot, r, s.id); if (loc) return { found: true, kind: "block", loc, typeId: s.id, detail: { state: "present" } }; if (noteScanState(s.id)) return { found: false, detail: { state: "unknown" } };
       const it = nearestMissionItem(scan?.items, (x) => itemTypeOf(x) === s.id, r, bot.location); if (it) return { found: true, kind: "item", loc: { ...it.location }, typeId: s.id, entity: it, detail: { state: "present" } }; // PICKUP-MISSION-BAN-CELL-01 (cyc2455)
     }
   }
   { const blockIds = sources.filter((s) => s.kind === "block" || s.kind === "craft").map((s) => s.id); // v0.4.66: 近くに無ければチャンク調査の結果 (地下の鉱石も)
-    if (blockIds.length && !anyUnknown) { const sv = lookupSurvey(bot, blockIds, Date.now() < (r.mBanUntil || 0) ? r.mBanKey : null); if (sv) return { found: true, kind: "block", loc: sv.loc, typeId: sv.typeId, detail: { state: "present", via: "survey" } }; } }
+    if (blockIds.length && !anyUnknown) { const sv = lookupSurvey(bot, blockIds, Date.now() < (r.mBanUntil || 0) ? r.mBanKey : null, (loc, id) => !!(r.workBan && isWorkBanned(r.workBan, loc, id, Date.now()))); if (sv) return { found: true, kind: "block", loc: sv.loc, typeId: sv.typeId, detail: { state: "present", via: "survey" } }; } }
   if (target && target.includes(":")) { const loc = scanBlockNear(bot, r, target); if (loc) return { found: true, kind: "block", loc, typeId: target, detail: { state: "present" } }; if (noteScanState(target)) return { found: false, detail: { state: "unknown" } }; }
   if (anyUnknown) return { found: false, detail: { state: "unknown" } }; // R3 防御層: 将来の走査地点追加でもドロップ候補へ unknown を素通りさせない
   const dropId = sources[0]?.dropItem;
@@ -4071,7 +4071,7 @@ function tickMission(bot, owner, ctx, scan) {
       ft = findMissionTarget(bot, r, scan, step, ctx.x?.obs ? ctx.x.obs.scan !== "ok" : ctx.x?.scanOk === false);
       if (ft.found && ft.loc && (isBanned(ft.loc, ft.typeId, r.mBanKey, r.mBanUntil, Date.now()) || isEntityBanned(r.mBanKey, r.mBanUntil, Date.now(), ft.entity?.id))) { // queue0-A bug2 (cycle1728) // HUNT-BAN-CELL-01 (cyc2385): 実体は ID で照合
         // v0.4.66: 一番近いものを避けている時は、調査結果から次に近いものを選ぶ (隣の鉱石を見落とさない)
-        let alt = null; try { if (ft.kind === "block" && ft.typeId) alt = lookupSurvey(bot, [ft.typeId], r.mBanKey); } catch {}
+        let alt = null; try { if (ft.kind === "block" && ft.typeId) alt = lookupSurvey(bot, [ft.typeId], r.mBanKey, (loc, id) => !!(r.workBan && isWorkBanned(r.workBan, loc, id, Date.now()))); } catch {}
         ft = alt ? { found: true, kind: "block", loc: alt.loc, typeId: alt.typeId, detail: { state: "present", via: "survey" } } : { found: false };
       }
     }
