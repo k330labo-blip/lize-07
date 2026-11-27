@@ -3921,12 +3921,18 @@ function tickPendingCondition(bot, owner, r, ctx) {
 // unknown は streak を増やしも戻しもしない。停止は cancelMission (silent) を再利用し、条件終了の専用文を1回言う。
 // WINDOW-END-LONGTASK-SCOPE-01 (cyc2426): 対象を長期タスク相へ拡張する。mission の window が無ければ
 // r.longtask.window を読み、ended 連続2回で既存の長期タスク中断形 (子 mission を畳み r.longtask を null +
-// saveLongTask) へつなぐ。専用文はどちらの相でも1回だけ。buildPlan 相は未実測のため対象外のまま。
+// saveLongTask) へつなぐ。専用文はどちらの相でも1回だけ。
+// WINDOW-END-BUILDPLAN-SCOPE-01 (cyc2429): 対象を建築相へ拡張する。mission / longtask の window が無ければ
+// r.buildPlan.window を読み、ended 連続2回で既存の建築畳み形 (材料集め子 mission を畳み buildPlan と
+// 建築時計一式を掃除) へつなぐ。保持先は buildPlan を単一の正とし、材料集め子 mission へは写さない
+// (読み手が buildPlan を見るため gather 相でも届く)。
 function tickConditionWindow(bot, owner, r, ctx) {
   try {
-    // WINDOW-END-LONGTASK-SCOPE-01 (cyc2426)
+    // WINDOW-END-LONGTASK-SCOPE-01 (cyc2426) + WINDOW-END-BUILDPLAN-SCOPE-01 (cyc2429)
     const missionWin = r.mission?.status === "active" ? r.mission?.order?.constraints?.window : null;
-    const win = missionWin || (r.longtask ? r.longtask.window : null);
+    const ltWin = !missionWin && r.longtask ? r.longtask.window : null;
+    const bpWin = !missionWin && !ltWin && r.buildPlan ? r.buildPlan.window : null;
+    const win = missionWin || ltWin || bpWin;
     if (!win) { r.windowEndStreak = 0; return false; }
     const now = Date.now();
     if (now - (r.windowCheckAt || 0) < 3000) return false;
@@ -3939,6 +3945,12 @@ function tickConditionWindow(bot, owner, r, ctx) {
     const raw = win.raw || "その間";
     r.windowEndStreak = 0; r.windowCheckAt = 0;
     if (missionWin) cancelMission(bot, owner, r, true);
+    else if (bpWin) {
+      // WINDOW-END-BUILDPLAN-SCOPE-01 (cyc2429): 建築相の畳み。材料集め相の子 mission も一緒に畳む。
+      if (r.mission) { r.mission = null; clearPlanRecords(r); persistMission(bot, r, true); }
+      r.buildPlan = null; r.buildStallKey = null; r.buildStallSince = 0; r.buildStallBest = null; r.buildDangerSince = null; r.buildDangerNoted = false; r.buildDimSince = null; r.buildDimNoted = false; r.buildProgressAt = null; r.buildProgressIdx = null; r.buildProgressPlaced = null; r.buildUnknownSince = null; r.buildUnknownNoted = false;
+      try { if (typeof clearBuildGateHold === "function" && r.buildGateHold) clearBuildGateHold(r.buildGateHold); if (typeof clearBuildGateSkipStreak === "function" && r.buildGateSkipStreak) clearBuildGateSkipStreak(r.buildGateSkipStreak); } catch {}
+    }
     else {
       if (r.mission) { r.mission = null; clearPlanRecords(r); persistMission(bot, r, true); }
       r.ltLegActive = false; r.mineLeg = null; r.spiral = null; r.longtask = null; saveLongTask(bot, r);
@@ -4167,13 +4179,13 @@ function computeMissing(bot, owner, summary) {
   const invB = countInv(bot); // BLD-01 (cycle1133): 判定は設置・消費するリゼ単独の在庫で見る (主人所持との合算は gather→全量納品で在庫0に戻り設置不能になる)
   return Object.entries(summary).filter(([item, n]) => (invB[item] || 0) < n).map(([item, n]) => ({ item, amount: n - (invB[item] || 0) }));
 }
-function startBuild(bot, owner, r, name, cells, origin, gatherFirst) {
+function startBuild(bot, owner, r, name, cells, origin, gatherFirst, win = null) { // cyc2429: win は window 写し (任意)
   const summary = Object.create(null);
   for (const cell of cells) { if (cell.skipCount) continue; const item = cell.item || resolveMaterialItem(cell.material); if (item) summary[item] = (summary[item] || 0) + 1; }
   // U5-2 (cyc2387, U5-0 ruling): allowOnly verb="build" の限定がある場合のみ、対象外の材料を含む建築を開始しない。verb:null / gather / hunt の限定では建築を止めない (過剰ブロック防止)
   try { const blockedBuildItem = Object.keys(summary).find((it) => isBuildAllowedByAllowOnly(r.allowOnly, it) === false); if (blockedBuildItem) { say(owner, bot, `その建築は開始できません。許可されている対象だけに限定されています`, true); return; } } catch {}
   const missing = computeMissing(bot, owner, summary);
-  r.buildPlan = { name, cells, origin: { x: Math.floor(origin.x), y: Math.floor(origin.y), z: Math.floor(origin.z) }, dim: (() => { try { return owner?.dimension?.id || null; } catch { return null; } })(), idx: 0, placed: 0, skipped: [], stage: gatherFirst && missing.length ? "gather" : "build", missing, missingIdx: 0 }; // buildPlan次元ガード (cycle0821): 原点の次元は主人 (原点=主人位置) の完全IDで記録する
+  r.buildPlan = { name, cells, origin: { x: Math.floor(origin.x), y: Math.floor(origin.y), z: Math.floor(origin.z) }, dim: (() => { try { return owner?.dimension?.id || null; } catch { return null; } })(), idx: 0, placed: 0, skipped: [], stage: gatherFirst && missing.length ? "gather" : "build", missing, missingIdx: 0, window: win ? { raw: win.raw || "", kind: win.kind } : null }; // buildPlan次元ガード (cycle0821) + cyc2429 window 写し保持
   r.buildStallKey = null; r.buildStallSince = 0; r.buildStallBest = null; r.buildDangerSince = null; r.buildDangerNoted = false; r.buildDimSince = null; r.buildDimNoted = false; r.buildProgressAt = Date.now(); r.buildProgressIdx = 0; r.buildProgressPlaced = 0; r.buildGatherProgIdx = 0; r.buildGatherProgInv = 0; r.buildUnknownSince = null; r.buildUnknownNoted = false; try { if (r.buildGateHold) clearBuildGateHold(r.buildGateHold); if (r.buildGateSkipStreak) clearBuildGateSkipStreak(r.buildGateSkipStreak); } catch {} // BUILD-GATE-STATE-LEAK-01 (cyc2427): gate見切り2状態も開始時に掃除し別建築へ持ち越さない + 基礎 R-3 (v0.4.81, cycle0417-a04): 前の建築の stall/危険時計を持ち越さない + BUILD-HOLD-NOEXIT (cycle1343): 無進捗時計の起点 + GATHER-NOEXIT snapshot + F1 (cycle2200): buildUnknown も開始時に掃除する
   if (r.buildPlan.stage === "gather") { say(owner, bot, `承知しました。${name}ですね。材料が${missing.length}種、足りません。先に集めてきます`, true); startNextGather(bot, owner, r); }
   else say(owner, bot, `承知しました。${name}を建てます。場所は、あなたの今の位置です`, true);
@@ -5504,7 +5516,7 @@ function startOrderFromParser(p, bot, r, o) {
         const relCells = amount > 1 ? linkedPlacementCells(amount, placementSnap.viewDir) : [{ dx: 0, dy: 0, dz: 0 }];
         const cells = relCells.map((c) => ({ ...c, item: itemId }));
         if (amount > 1) say(p, bot, `${nm}を${amount}個、置きます`, true);
-        startBuild(bot, p, r, nm || "設置", cells, res.cell, true);
+        startBuild(bot, p, r, nm || "設置", cells, res.cell, true, o.constraints?.window || null); // WINDOW-END-BUILDPLAN-SCOPE-01 (cyc2429)
         return;
       }
     }
@@ -5544,7 +5556,7 @@ function startOrderFromParser(p, bot, r, o) {
       return;
     }
     if (r.mission && r.mission.status === "active") { say(p, bot, "今の指示の途中です。やめるなら「やめて」と言ってください", true); return; }
-    startBuild(bot, p, r, bp.name, buildOrderOf(bp.blocks), p.location, true);
+    startBuild(bot, p, r, bp.name, buildOrderOf(bp.blocks), p.location, true, o.constraints?.window || null); // WINDOW-END-BUILDPLAN-SCOPE-01 (cyc2429)
     return;
   }
   const mo = parserOrderToMission(o);
