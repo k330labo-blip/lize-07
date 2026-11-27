@@ -268,9 +268,10 @@ export function planLongTask(order, invCounts, invDurability) { // cycle2311: �
   let inv = null;
   try { inv = decideLongtaskInvestment(dec, order, invCounts || {}, invDurability || {}, reqLevel); } catch { inv = null; }
   const investTierArg = inv ? (inv.invest && inv.candidate ? fromInvestTier(inv.candidate.tier) : null) : undefined;
+  const investKindArg = (investTierArg && inv?.candidate?.toolClass) ? inv.candidate.toolClass : undefined; // SHOVEL-INVEST-DROP-01 (cyc2420): worth 時のみ種も中継する。判定層が決めた種を捨てると dig 系は bootstrap の kinds が空になり投資計画が落ちる
 
   let boot = null;
-  try { boot = planBootstrap({ invCounts: invCounts || {}, invDurability: invDurability || {}, goal: { targetItem: dec.target.item, ...(reqTier ? { targetTier: reqTier } : {}), ...(investTierArg !== undefined ? { investTier: investTierArg } : {}), activity: "gather", amount } }); } catch { boot = null; } // cycle2311: amount も中継 (消費見積もり・数量予備が従来は届いていなかった)
+  try { boot = planBootstrap({ invCounts: invCounts || {}, invDurability: invDurability || {}, goal: { targetItem: dec.target.item, ...(reqTier ? { targetTier: reqTier } : {}), ...(investTierArg !== undefined ? { investTier: investTierArg } : {}), ...(investKindArg ? { tools: [investKindArg] } : {}), activity: "gather", amount } }); } catch { boot = null; } // cycle2311: amount も中継 (消費見積もり・数量予備が従来は届いていなかった)
 
   const legs = [];
   if (boot && boot.status !== "ready" && Array.isArray(boot.steps)) for (const s of boot.steps) legs.push(normalizeBootStep(s));
