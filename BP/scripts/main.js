@@ -3984,6 +3984,16 @@ function tickMission(bot, owner, ctx, scan) {
   /* forbids G6-a (cycle1058): 開始後に記録された禁止も実行中 mission の寄り道・引き出しゲートへ届ける (G6-b の longtask 和集合パターンの横展開)。
      和集合は単調増加のみ。G3 の解除が入ったら置換へ見直すこと */
   try { if (m.order) { const kind579 = m.order?.kind || "gather"; if (!Array.isArray(m.baseForbiddenTargets)) m.baseForbiddenTargets = deriveBaseForbiddenIds(m.order?.constraints?.forbiddenTargets, r.sessionForbids, kind579); const fbNow = recomputeForbiddenIds(m.baseForbiddenTargets, r.sessionForbids, kind579); m.order.constraints = { ...(m.order.constraints || {}), forbiddenTargets: fbNow }; } } catch {} // v0.5.79: 置換式の再計算 (旧コメントの「解除が入ったら置換へ見直す」を実施。base は注文由来のみ、セッション分は現行値で出し入れ)
+  // FORBID-SUSPENDED-SCOPE-01 + ALLOWONLY-SUSPENDED-SCOPE-01 (cyc2446): 受理時の即時反映は active 限定で、保留中に受理した禁止・限定は再開担い手 (tickSuspendedResume) も入口ゲート (startMission) も経由せず主目標へ届かなかった。是正: caps 再 clamp と同層のここで、再計算済み禁止リストと現行 allowOnly で主目標を毎 tick 再検査する (再開・DP復元・実行中追加の全経路を拾う)。ltLegActive (長期タスクの手段 leg) は即時反映分岐と同形に免除する。
+  try {
+    if (!r.ltLegActive && m.order?.target) {
+      const tgtId = typeof m.order.target === "string" ? m.order.target : (m.order.target?.item || m.order.target?.block || m.order.target?.entity || null);
+      const fbList = Array.isArray(m.order?.constraints?.forbiddenTargets) ? m.order.constraints.forbiddenTargets : [];
+      if (tgtId && fbList.some((id) => normForbiddenId(id) === normForbiddenId(tgtId))) { cancelMission(bot, owner, r, true); say(owner, bot, `今の指示も止めました。${nameOfItem(tgtId)}が対象でした`, true); return true; }
+      if (r.allowOnly && !isAllowedByAllowOnly(r.allowOnly, m.order.target, m.order?.kind)) { cancelMission(bot, owner, r, true); say(owner, bot, "今の指示も止めました。許可された対象ではありませんでした", true); return true; }
+      if (r.allowOnly) { const pruned = pruneDisallowedSideSteps(m, r.allowOnly); if (pruned > 0) persistMission(bot, r, true); }
+    }
+  } catch {}
   // 所持品が読めない時は「0個」と誤認して進めない（unknown を 0 と混同しない）
   if (ctx.x && ctx.x.invOk === false) {
     // cycle0033 F3: count consecutive unreadable on mission (persisted); suspend over limit; throttled noteFail
