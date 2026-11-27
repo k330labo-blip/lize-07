@@ -991,7 +991,7 @@ export function parseOrder(input) {
   // 鎖防具はバニラでクラフト不可、ネザライトはダイヤ部位への鍛冶強化であり直接クラフトではない。
   try {
     if (!/[？?]/.test(text) && !/(何個|いくつ|要る|必要|コスト)/.test(text) && /(作って|作る|ください|欲しい|ちょうだい|お願い)/.test(text)) {
-      const PART_RE = /(チェストプレート|胸当て|ヘルメット|兜|かぶと|レギンス|ブーツ)/;
+      const PART_RE = /(チェストプレート|胸当て|ヘルメット|兜|かぶと|レギンス|ブーツ|ズボン|靴)/;
       if (PART_RE.test(text)) {
         const craftableMat = /(ダイヤモンド|ダイヤ|鉄|アイアン|金|ゴールド|革|レザー)/.test(text);
         if (/鎖|チェーン/.test(text)) return { kind: "clarify", target: null, amount: null, constraints, sideTasks: [], negations: [], unresolved: [{ slot: "material", reason: "chainmail_not_craftable" }], caps: [], returnTo: "owner", raw };
