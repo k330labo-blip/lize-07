@@ -41,6 +41,26 @@ const MATERIAL_DEFS = [
   ["ancient_debris", "block", "古代の残骸", ["古代の残骸", "残骸"]],
   ["quartz", "item", "ネザークォーツ", ["ネザークォーツ", "クォーツ", "石英"]],
   ["amethyst_shard", "item", "アメジストの欠片", ["アメジストの欠片", "アメジスト"]],
+  // PLACE-ANCHOR-01 (0-N6, cyc2451): 素材ブロックの複合名。辞書に無いと「ダイヤ」等の
+  // 途中ヒットで止まり、設置アンカー認定 (直後が「の」) が恒常的に失敗し、素材が
+  // 副目標へ混入していた。集める/作る形の対象もブロックとして解決されるのが正。
+  ["diamond_block", "block", "ダイヤモンドブロック", ["ダイヤモンドブロック", "ダイヤブロック"]],
+  ["iron_block", "block", "鉄ブロック", ["鉄ブロック", "アイアンブロック"]],
+  ["gold_block", "block", "金ブロック", ["金ブロック", "ゴールドブロック"]],
+  ["copper_block", "block", "銅ブロック", ["銅ブロック"]],
+  ["emerald_block", "block", "エメラルドブロック", ["エメラルドブロック", "エメブロック"]],
+  ["redstone_block", "block", "レッドストーンブロック", ["レッドストーンブロック"]],
+  ["lapis_block", "block", "ラピスラズリブロック", ["ラピスラズリブロック", "ラピスブロック"]],
+  ["netherite_block", "block", "ネザライトブロック", ["ネザライトブロック"]],
+  ["coal_block", "block", "石炭ブロック", ["石炭ブロック"]],
+  ["quartz_block", "block", "クォーツブロック", ["クォーツブロック", "ネザークォーツブロック", "石英ブロック"]],
+  ["amethyst_block", "block", "アメジストブロック", ["アメジストブロック"]],
+  ["honey_block", "block", "ハチミツブロック", ["ハチミツブロック", "蜂蜜ブロック"]],
+  ["bone_block", "block", "骨ブロック", ["骨ブロック"]],
+  ["dried_kelp_block", "block", "乾燥昆布ブロック", ["乾燥昆布ブロック", "昆布ブロック"]],
+  ["hay_block", "block", "干草の俵", ["干草の俵", "ヘイブロック", "干草ブロック"]],
+  ["target", "block", "ターゲット", ["ターゲット", "ターゲットブロック"]],
+  ["magma", "block", "マグマブロック", ["マグマブロック"]],
   ["obsidian", "block", "黒曜石", ["黒曜石", "こくようせき"]],
   ["glowstone", "block", "グロウストーン", ["グロウストーン"]],
   ["glowstone_dust", "item", "グロウストーンダスト", ["グロウストーンダスト"]],
@@ -69,7 +89,7 @@ const MATERIAL_DEFS = [
   ["gravel", "block", "砂利", ["砂利"]],
   ["dirt", "block", "土", ["土"]],
   ["clay_ball", "item", "粘土", ["粘土"]],
-  ["glass", "block", "ガラス", ["ガラス"]],
+  ["glass", "block", "ガラス", ["ガラス", "ガラスブロック"]],
   ["bricks", "block", "レンガ", ["レンガブロック", "レンガ", "煉瓦"]],
   ["netherrack", "block", "ネザーラック", ["ネザーラック"]],
   ["soul_sand", "block", "ソウルサンド", ["ソウルサンド"]],
@@ -1051,12 +1071,30 @@ function anchorHitOf(clause, hits) {
     return null;
   } catch { return null; }
 }
+// PLACE-ANCHOR-01 副形A (0-N6, cyc2451): 素材アイテムがアンカー位置に来た場合は
+// そのブロック形を基準物とする (「ダイヤの上に置いて」= ダイヤモンドブロックの上)。
+// アイテムIDのまま実行側のブロック探索へ渡すと恒常的に見つからず誤った不在扱いになる。
+const ANCHOR_BLOCK_OF = { diamond: "diamond_block", iron_ingot: "iron_block", gold_ingot: "gold_block", copper_ingot: "copper_block", emerald: "emerald_block", redstone: "redstone_block", lapis_lazuli: "lapis_block", netherite_ingot: "netherite_block", coal: "coal_block", quartz: "quartz_block", amethyst_shard: "amethyst_block", bone: "bone_block" };
+function anchorTargetOf(hit) {
+  const t = targetOf(hit);
+  try {
+    if (t && t.item && ANCHOR_BLOCK_OF[t.item]) {
+      const def = MATERIAL_DEFS.find((d) => d[0] === ANCHOR_BLOCK_OF[t.item]);
+      if (def) return { item: null, block: def[0], entity: null, name: def[2] };
+    }
+  } catch { /* 変換できなければ元の対象のまま */ }
+  return t;
+}
 // 設置位置の保持: ここ=発話者の現在位置、アンカー付きは相対位置として保持する。
 function placementOf(clause, anchorInfo) {
   try {
     if (!/(置|おい)/.test(clause)) return null;
-    if (anchorInfo) return { mode: "relative", anchor: targetOf(anchorInfo.hit), dir: anchorInfo.dir };
+    if (anchorInfo) return { mode: "relative", anchor: anchorTargetOf(anchorInfo.hit), dir: anchorInfo.dir };
     if (/ここに/.test(clause)) return { mode: "here", anchor: null, dir: null };
+    // PLACE-ANCHOR-01 (0-N6, cyc2451): 「<名詞>の<方向>に置いて」で名詞が辞書に無い場合は
+    // 未解決アンカーとして保持し、発話者基準へ無言で倒さない (実行側が明示返答する)。
+    const um = clause.match(/([一-龯ぁ-んァ-ヶーA-Za-z0-9]{2,24})の(上|右|左|前|後ろ|後|下|隣|となり|横)に(?=[^。]*?(置|おい))/);
+    if (um) { const noun = String(um[1]).split(/[をがはにへとや]/).pop() || ""; if (noun.length >= 2) return { mode: "relative", anchor: null, dir: um[2], anchorUnresolved: true, anchorName: noun }; }
     const dm = clause.match(/(上|右|左|前|後ろ|後|下|隣|となり|横)に(?=置|おい)/);
     if (dm) return { mode: "relative", anchor: null, dir: dm[1] };
     // 0-C4 R-C4-2 Step 0 (cyc2376): 位置語なしの設置動詞も設置指示として保持する (第4形)。
@@ -1490,6 +1528,20 @@ export function parseOrder(input) {
     rest.push(c);
   });
   const main = candidates[mainIdx];
+
+  // PLACE-ANCHOR-01 副形C (0-N6, cyc2451): 設置指示では数量が方向句の後ろ
+  // (「…の上に3個置いて」) にあり amountNear の対象近傍窓に入らない。設置位置が
+  // 保持され主数量が無い場合に限り、設置動詞直前の数量句を主数量として回収する。
+  if (orderPlacement && main.amount == null) {
+    try {
+      const cl = clauses[main.clause] || "";
+      const qm = cl.match(new RegExp(`${QTY_PHRASE_RE.source}\\s*(?:置いて|置く|おいて|おく)`));
+      if (qm) {
+        const r = amount_parse(qm[0].replace(/(?:置いて|置く|おいて|おく)\\s*$/, "").trim(), { itemId: main.target?.item ?? main.target?.block ?? null });
+        if (r && r.ok) { main.amount = r.total; main.amountDetail = r; }
+      }
+    } catch { /* 回収できなければ数量なしのまま */ }
+  }
 
   // 8) kind の決定（動詞優先、無ければ対象の種類から推定）
   let kind;

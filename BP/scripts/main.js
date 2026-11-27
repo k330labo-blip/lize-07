@@ -5529,6 +5529,9 @@ function startOrderFromParser(p, bot, r, o) {
       if (!bp) {
         if (r.mission && r.mission.status === "active") { say(p, bot, "今の指示の途中です。やめるなら「やめて」と言ってください", true); return; }
         const itemId = placementItemIdOf(o.target);
+        // PLACE-ANCHOR-01 (0-N6, cyc2451): 基準物が辞書で解決できなかった設置は、
+        // 発話者基準へ無言で倒さず明示して止める (0-C7 の原則)。
+        if (o.placement.anchorUnresolved) { say(p, bot, `設置先の「${o.placement.anchorName || "基準"}」が何か分かりませんでした。分かる名前で教えてください`, true); return; }
         const anchorExpected = !!(o.placement.anchor && (o.placement.anchor.block || o.placement.anchor.item));
         let anchorCell = null;
         if (anchorExpected) { try { anchorCell = scanBlockNear(bot, r, placementItemIdOf(o.placement.anchor)); } catch {} }
