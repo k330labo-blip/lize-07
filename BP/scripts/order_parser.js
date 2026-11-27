@@ -975,6 +975,28 @@ function toolPhraseOf(clause, hits, verbClass) {
       if (!verbOkAt(rest)) continue;
       return { hit: h, tool: targetOf(h) };
     }
+    // C4-TOOLMEANS-POSTPOSED-01 (cyc2445): 後置形「<対象>を<道具>で/を使って<動詞>」。
+    // 前置2分岐は目的語先行形では構造的に不発で、道具が side 化し道具句後ろの数量が落ちていた。
+    // 主目標候補 (同句の最初の非道具 hit) に付いた道具だけを手段へ分離する (複合文の
+    // side 対象に付いた道具は対象外)。build は前置形と同範囲で対象外。
+    for (const h of hits || []) {
+      if (h.kind !== "material" || !TOOL_IDS.has(h.def?.[0])) continue;
+      // 直前の非道具 hit が同句の最初の候補である場合のみ (複合文の side 対象付随は対象外)
+      let mainHit = null;
+      for (const x of hits || []) { if (x.start < h.start && !(x.kind === "material" && TOOL_IDS.has(x.def?.[0]))) mainHit = x; }
+      if (!mainHit || mainHit !== (hits || [])[0]) continue;
+      if (!clause.slice(mainHit.end, h.start).includes("を")) continue;
+      let connLen = 0;
+      if (clause[h.end] === "で") connLen = 1;
+      else { const conn = TOOL_CONNECTORS.find((c) => clause.startsWith(c, h.end)); if (conn) connLen = conn.length; }
+      if (!connLen) continue;
+      const rest = clause.slice(h.end + connLen);
+      // 句が読点で割れ動詞が後続句にある形 (「…で10個、いや3個掘って」) は、その句に
+      // 動詞分類が無く数量句が接続直後に続く場合に限り発動する。
+      const qtyFirst = !verbClass && new RegExp(`^\\s*${QTY_PHRASE_RE.source}`).test(rest);
+      if (!verbOkAt(rest) && !qtyFirst) continue;
+      return { hit: h, tool: targetOf(h), postponed: true, mainHit, amountPos: h.end + connLen };
+    }
     return null;
   } catch { return null; }
 }
@@ -1304,7 +1326,7 @@ export function parseOrder(input) {
     const side = SIDE_START_RE.test(clause);
     const hits = nonOrder ? [] : hitsPerClause[ci];
     // 0-C4: 道具 hit と設置アンカー hit は対象候補にしない
-    const toolInfo = nonOrder ? null : toolPhraseOf(clause, hitsPerClause[ci], verbClass);
+    const toolInfo = nonOrder ? null : toolPhraseOf(clause, (hitsPerClause[ci] || []).filter((h) => !negResult.quarantinedHits?.has(h)), verbClass);
     if (toolInfo && !orderTool) orderTool = toolInfo.tool;
     const anchorInfo = nonOrder ? null : anchorHitOf(clause, hitsPerClause[ci]);
     const fillSrcInfo = nonOrder ? null : fillSourceHitOf(clause, hitsPerClause[ci], verbClass); // 0-C R-C4-4 S6 (cyc2385)
@@ -1320,11 +1342,26 @@ export function parseOrder(input) {
       // 建築物は「〜を/が」に続くか直後に作/建が来る場合だけ採用
       // （「拠点に届けて」「拠点に置いて」のような句で拠点自体が対象に化けるのを防ぐ）
       if (hit.kind === "structure" && !/[をが]/.test(clause[hit.end] ?? "") && !/^(作|建)/.test(clause.slice(hit.end))) continue;
+      let candAmount = amountNear(clause, hit);
+      let candDetail = hit.amountDetail ?? null;
+      // C4-TOOLMEANS-POSTPOSED-01 (cyc2445): 後置形では数量が道具句の後ろにあり amountNear が
+      // 照合できない。主目標候補の amount が null の場合のみ、接続表現直後へ核を適用する。
+      if (candAmount == null && toolInfo?.postponed && hit === toolInfo.mainHit) {
+        try {
+          const seg = clause.slice(toolInfo.amountPos, toolInfo.amountPos + 18);
+          const qm = seg.match(new RegExp(`^\\s*(?:あと\\s*[、,]?\\s*(?:もう\\s*)?)?${QTY_PHRASE_RE.source}`));
+          if (qm) {
+            const t0 = targetOf(hit);
+            const r = amount_parse(qm[0].trim(), { itemId: t0?.item ?? t0?.block ?? null });
+            if (r && r.ok) { candAmount = r.total; candDetail = r; }
+          }
+        } catch { /* 付け替え失敗は数量なしのまま */ }
+      }
       candidates.push({
         target: targetOf(hit),
         generic: hit.kind === "entity" && hit.def[0] === "hostile",
-        amount: amountNear(clause, hit),
-        amountDetail: hit.amountDetail ?? null, // 0-C5 (cycle1256): 反復・相対・訂正・0個の保持
+        amount: candAmount,
+        amountDetail: candDetail, // 0-C5 (cycle1256): 反復・相対・訂正・0個の保持
         verbClass,
         clause: ci,
         side: side || !first, // 1句に複数対象があれば2件目以降は寄り道扱い
@@ -1399,6 +1436,23 @@ export function parseOrder(input) {
   // 数量つきの正規の注文（「ラピスラズリ10個欲しい」）は数量があるため対象外。
   if (!anyVerb && DESIRE_RE.test(text) && !DIRECTED_REQUEST_RE.test(text)
     && candidates.every((c) => c?.amount == null) && SOLILOQUY_RE.test(text)) return null;
+
+  // C4-TOOLMEANS-POSTPOSED-01 (cyc2445): 読点で句が割れた後置接続形
+  // (「ダイヤを3個、鉄のツルハシを使って掘って」) は道具候補が別句に孤立する。
+  // その句が道具メンション+接続表現+動詞だけで構成され、先行句に主目標候補がある場合のみ手段へ分離する。
+  if (!orderTool) {
+    try {
+      const ti = candidates.findIndex((c) => {
+        const id = c.target?.item ?? c.target?.block ?? null;
+        if (!id || !TOOL_IDS.has(id)) return false;
+        if (!candidates.some((x) => x !== c && x.clause < c.clause)) return false;
+        if (candidates.some((x) => x !== c && x.clause === c.clause)) return false;
+        const cl = clauses[c.clause] || "";
+        return TOOL_CONNECTORS.some((conn) => cl.includes(conn)) && !!classifyVerb(cl);
+      });
+      if (ti >= 0) { orderTool = candidates[ti].target; candidates.splice(ti, 1); }
+    } catch { /* 分離失敗は従来形のまま */ }
+  }
 
   // 7) 主目的の決定。「敵（総称）」候補は、素材側の主目的がある場合は制約 engage に化ける
   let mainIdx = candidates.findIndex((c) => !c.side);
