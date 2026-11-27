@@ -974,6 +974,32 @@ function gearSetCountOf(text) {
   return n == null ? 1 : n;
 }
 
+// 0-F R-4a (cyc2399): 部位列挙プリパス用の別名つき部位走査表 (GEAR_PARTS は書き換えない。
+// 別名は辞書と R-3a の PART_RE で確定済みの語彙)。
+const GEAR_PART_ALIASES = [["helmet", ["ヘルメット", "兜", "かぶと"]], ["chestplate", ["チェストプレート", "胸当て"]], ["leggings", ["レギンス", "ズボン"]], ["boots", ["ブーツ", "靴"]]];
+function scanGearPartMentions(text) {
+  const out = [];
+  for (const [pid, words] of GEAR_PART_ALIASES) {
+    for (const w of words) {
+      let i = text.indexOf(w);
+      while (i >= 0) { out.push({ pid, start: i, end: i + w.length }); i = text.indexOf(w, i + w.length); }
+    }
+  }
+  out.sort((a, b) => a.start - b.start);
+  // 重なり (長い別名の中の短い別名) は先に始まる方を残す
+  return out.filter((m, idx) => !out.some((o, j) => j !== idx && o.start <= m.start && o.end >= m.end && (o.end - o.start) > (m.end - m.start)));
+}
+// 列挙版のセット数: 最後の部位メンション終了位置から最初の作製動詞/句読点までの窓だけを見る。
+function gearEnumCountOf(text, fromIndex) {
+  const rest = text.slice(fromIndex);
+  const em = rest.match(/(作って|作る|ください|欲しい|ちょうだい|お願い|、|。)/);
+  const win = em ? rest.slice(0, em.index) : rest;
+  const m = win.match(/(\d+|[一二三四五六七八九十]+)\s*(セット|組|人分)/);
+  if (!m) return 1;
+  const n = parseNumberToken(m[1]);
+  return n == null ? 1 : n;
+}
+
 // ---------------------------------------------------------------- 本体
 /**
  * parseOrder(text) -> 注文オブジェクト | null
@@ -1057,6 +1083,66 @@ export function parseOrder(input) {
       }
     }
   } catch { /* 一式として解釈できなければ従来経路へ */ }
+
+  // 0-F R-4a (cyc2399): 部位列挙プリパス。「ダイヤのヘルメットとブーツ作って」のような
+  // 単一素材・防具部位のみの純列挙を、通常経路で後続部位が脱落する前に gearSet として受ける。
+  // 発火ガードは全て AND: 質問/コスト除外・引用ゲート・作製動詞・部位2種以上・素材単一一致・
+  // 純列挙性 (列挙外に対象句なし)・部位ごと個数なし (D-4a-1: 個数つきは通常経路へ譲る)。
+  // 混在素材・非防具混在・副次つきは現行の候補/sideTasks で届いているため対象外。
+  try {
+    if (!/[？?]/.test(text) && !/(何個|いくつ|要る|必要|コスト)/.test(text) && !GEAR_QUOTE_RE.test(text) && /(作って|作る|ください|欲しい|ちょうだい|お願い)/.test(text)) {
+      const mentions = scanGearPartMentions(text);
+      const distinct = [...new Set(mentions.map((m) => m.pid))];
+      if (mentions.length >= 2 && distinct.length >= 2) {
+        // 各メンションの素材: 直前セグメントの「<素材>の」を拾い、無ければ直前の素材を継承する
+        let curMat = null, matOk = true;
+        const matOf = [];
+        for (let k = 0; k < mentions.length; k++) {
+          const segStart = k === 0 ? 0 : mentions[k - 1].end;
+          const seg = text.slice(segStart, mentions[k].start);
+          let found = null;
+          for (const [word, mid, disp] of GEAR_MATS) { const wi = seg.lastIndexOf(word); if (wi >= 0 && (!found || wi > found.wi)) found = { wi, mid, disp }; }
+          if (found) { if (curMat && curMat.mid !== found.mid) matOk = false; curMat = found; }
+          if (!curMat) matOk = false;
+          matOf.push(curMat);
+        }
+        const first = mentions[0], last = mentions[mentions.length - 1];
+        // 純列挙性: メンション間は接続詞・素材接頭辞・「を」だけ。列挙範囲内に個数句があれば譲る
+        let pure = matOk;
+        if (pure && /(\d+|[一二三四五六七八九十]+)\s*個/.test(text.slice(first.start, last.end))) pure = false;
+        if (pure) {
+          for (let k = 1; k < mentions.length; k++) {
+            let between = text.slice(mentions[k - 1].end, mentions[k].start);
+            for (const [word] of GEAR_MATS) between = between.split(word).join("");
+            between = between.replace(/(の|と|、|・|を|\s)/g, "");
+            if (between) { pure = false; break; }
+          }
+        }
+        // 列挙外に対象メンション (素材/エンティティ/構造物) があれば通常経路へ譲る。
+        // ただし先頭メンション直前の素材接頭辞と文頭条件節は対象句ではない。
+        if (pure) {
+          const before = text.slice(0, first.start);
+          const after = text.slice(last.end).replace(/(\d+|[一二三四五六七八九十]+)\s*(セット|組|人分)/g, "");
+          // before 側は素材接頭辞 (GEAR_MATS の素材語そのもの) のヒットだけ許容し、
+          // after 側は対象ヒットが1件でもあれば副次句ありとして通常経路へ譲る
+          const matWords = new Set(GEAR_MATS.map(([w]) => w));
+          const badBefore = (scanMentions(before, [MATERIAL_INDEX, ENTITY_INDEX, STRUCTURE_INDEX]) || []).filter((h) => !matWords.has(h.alias));
+          const badAfter = scanMentions(after, [MATERIAL_INDEX, ENTITY_INDEX, STRUCTURE_INDEX]) || [];
+          if (badBefore.length || badAfter.length) pure = false;
+          if (pure && matOf[0]) {
+            const gm = matOf[0];
+            const enumCond = extractConditionPrefix(text);
+            if (enumCond) constraints.condition = enumCond;
+            const enumSets = gearEnumCountOf(text, last.end);
+            if (enumSets === 0) return { kind: "clarify", target: null, amount: null, constraints, sideTasks: [], negations: [], unresolved: [{ slot: "amount", reason: "zero_amount" }], caps: [], returnTo: "owner", raw };
+            const ids = distinct.map((pid) => `${gm.mid}_${pid}`);
+            const firstName = GEAR_PARTS.find(([pid]) => pid === distinct[0])?.[1] ?? distinct[0];
+            return { kind: "build", target: { item: ids[0], block: null, entity: null, name: `${gm.disp}の${firstName}` }, amount: enumSets, constraints, sideTasks: [], negations: [], unresolved: [], caps: [], tool: null, placement: null, gearSet: ids, gearMaterial: gm.disp, returnTo: "owner", raw };
+          }
+        }
+      }
+    }
+  } catch { /* 列挙として解釈できなければ従来経路へ */ }
 
   // 1) 制約句を抽出して除去（先に見つかった明示指定を優先し、上書きしない）
   for (const [re, value] of CONSTRAINT_PHRASES) {
