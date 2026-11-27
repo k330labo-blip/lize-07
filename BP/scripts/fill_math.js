@@ -129,11 +129,11 @@ export function selectFillMedium(input) {
     const mediaIds = Array.isArray(input?.mediaIds) && input.mediaIds.length ? input.mediaIds : [def.medium];
     const self = input?.selfPos; if (!self) return null;
     const now = Number(input?.now) || 0;
-    const banned = (loc) => { try { if (!input?.banKey || !(now < (Number(input?.banUntil) || 0))) return false; return input.banKey === `${Math.floor(loc.x)},${Math.floor(loc.y)},${Math.floor(loc.z)}`; } catch { return false; } };
+    const banned = (loc, id) => { try { if (!input?.banKey || !(now < (Number(input?.banUntil) || 0))) return false; if (typeof input.banKey === "string" && input.banKey.startsWith("ent:")) return id != null && input.banKey === `ent:${id}`; return input.banKey === `${Math.floor(loc.x)},${Math.floor(loc.y)},${Math.floor(loc.z)}`; } catch { return false; } }; // FILL-BAN-CELL-01 (cyc2409): ent: キーは実体IDで照合 (セルキーでは移動で即すり抜けた)
     let best = null;
     for (const a of input?.animals || []) {
       if (!a || !mediaIds.includes(a.typeId) || !a.loc) continue;
-      if (banned(a.loc)) continue;
+      if (banned(a.loc, a.id)) continue;
       const d = Math.hypot(a.loc.x - self.x, a.loc.y - self.y, a.loc.z - self.z);
       const rank = mediaIds.indexOf(a.typeId);
       if (!best || d < best.d - 1e-9 || (Math.abs(d - best.d) <= 1e-9 && rank < best.rank)) best = { entityId: a.id ?? null, typeId: a.typeId, loc: a.loc, d, rank };
