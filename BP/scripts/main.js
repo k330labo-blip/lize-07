@@ -133,7 +133,7 @@ import { createSideChase, chaseTick, sideChaseRangeFor } from "./side_chase.js";
 import { gateCancel, gateFactory, gateWarehouseSort, gateTeachItemDest, isHowToRequest } from "./chat_gate.js"; // 0-C1 (cycle1155): 質問・否定・仮定・部分スコープでは中止/工場/指示を発火しない共通ゲート
 import { pickNearest as veinPickNearest, veinNeighbors, sameResource as veinSameResource } from "./vein_math.js";
 import { fillDefOf, selectFillMedium, checkFillPreconditions, verifyFillPost, fillRunsNeeded, isSourceMediumCell, selectSafeFillStand, fillStandUnsafe } from "./fill_math.js"; // 0-C R-C4-4 S3 (cyc2381): 充填媒体の探索判定 (純粋核) // 0-D1 (cycle1400): 鉱脈継続・距離優先の純粋核
-import { classifyDescent as d2Classify, ensureSpiralAnchor as d2EnsureAnchor, spiralStepAt as d2StepAt } from "./d2_spiral_math.js"; // 0-D2 (cycle1434): 発見後も螺旋降下 / G2 (cyc2363): 起点は ensure で固定し対象キーで作り直さない
+import { classifyDescent as d2Classify, ensureSpiralAnchor as d2EnsureAnchor, spiralStepAt as d2StepAt, spiralStepIndexAt as d2StepIndexAt, resolveSpiralDesync as d2Desync } from "./d2_spiral_math.js"; // 0-D2 (cycle1434): 発見後も螺旋降下 / G2 (cyc2363): 起点は ensure で固定し対象キーで作り直さない
 import { allowedLogIds, countLogsForTarget } from "./tree_species_math.js";
 import { createWideScanFails, partitionWideIds, noteWideSuccess, noteWideIdFailure, noteWideGlobalFailure, wideIdBlocked } from "./wide_scan_fails.js"; // 0-D4 Bprime (cycle1455): wide scan failures isolated per typeId
 import { isAllowedByAllowOnly, isBuildAllowedByAllowOnly, serializeAllowOnly, restoreAllowOnly, clearAllowOnly } from "./allow_only.js"; // 0-C2 reader (cycle1455): allowOnly enforcement // 0-D3: 樹種指定時は対象選択・進捗をその樹種だけに限定する
@@ -2514,16 +2514,23 @@ function tickTunnel(bot, owner, r, ctx, goal) {
       return;
     }
   }
-  let next, cells;
+  let next, cells, spiralOff = false;
   // 0-D2 (cycle1434): 深い真下対象は1x1垂直掘りにせず螺旋階段で降りる。現在位置が階段の段と一致するときだけ委譲し、それ以外は従来分岐 (露出・浅い対象は従来どおり直接掘り)。
+  // D2-R1-U1 (cyc2390): spiral 分類のときは段との整合を先に判定する。階段上にいて steps だけずれている (対象 key 変化で steps が 0 に戻る等) 場合は steps を実位置へ再同期して螺旋を続行し、階段上にいない場合は縦穴フォールバックへ落とさず明示中断する (D2_OFF_STAIRCASE)。anchor は作り直さない (G2)。
   try {
     const plan = d2Classify({ x: bx, y: by, z: bz }, { x: goal.x, y: goal.y, z: goal.z }, {});
     if (plan && plan.mode === "spiral") {
       r.d2Anchor = d2EnsureAnchor(r.d2Anchor, { x: bx, y: by, z: bz }, { x: goal.x, y: goal.y, z: goal.z }); // G2: 既存起点があれば対象が変わっても同一参照 (作り直さない)
-      const cur = d2StepAt(r.d2Anchor, r.tunnel.steps), nxt = d2StepAt(r.d2Anchor, r.tunnel.steps + 1);
-      if (cur && nxt && cur.x === bx && cur.y === by && cur.z === bz && Math.abs(nxt.x - bx) + Math.abs(nxt.z - bz) <= 1) { next = { x: nxt.x, y: nxt.y, z: nxt.z }; cells = [next, { x: next.x, y: next.y + 1, z: next.z }]; r.tunnel.d2Spiral = true; }
+      const dsy = d2Desync(r.d2Anchor, r.tunnel.steps, { x: bx, y: by, z: bz });
+      if (dsy && dsy.action === "resync") { r.tunnel.steps = dsy.index; r.tunnel.d2Resyncs = (r.tunnel.d2Resyncs || 0) + 1; }
+      else if (dsy && dsy.action === "off") spiralOff = true;
+      if (!spiralOff) {
+        const cur = d2StepAt(r.d2Anchor, r.tunnel.steps), nxt = d2StepAt(r.d2Anchor, r.tunnel.steps + 1);
+        if (cur && nxt && cur.x === bx && cur.y === by && cur.z === bz && Math.abs(nxt.x - bx) + Math.abs(nxt.z - bz) <= 1) { next = { x: nxt.x, y: nxt.y, z: nxt.z }; cells = [next, { x: next.x, y: next.y + 1, z: next.z }]; r.tunnel.d2Spiral = true; }
+      }
     }
   } catch {}
+  if (spiralOff) { abandonTunnel(bot, owner, r, "D2_OFF_STAIRCASE"); return; } // D2-R1-U1: 掘削セルを作る前に明示中断 (縦穴を作らない)
   if (!next) {
   if (Math.abs(dx) <= 1 && Math.abs(dz) <= 1 && dy < -1) { next = { x: bx, y: by - 1, z: bz }; cells = [next]; }                       // 真下へ
   else if (Math.abs(dx) <= 1 && Math.abs(dz) <= 1 && dy > 2) { next = { x: bx, y: by + 1, z: bz }; cells = [{ x: bx, y: by + 2, z: bz }]; } // 真上へ

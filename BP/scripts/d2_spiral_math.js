@@ -173,6 +173,38 @@ export function spiralStepAt(anchor, stepIndex) {
 }
 
 /**
+ * spiralStepAt の逆関数 (純粋関数、0-D2 D2-R1-U1 cyc2390)。
+ * 段の y は step ごとに厳密に -1 ずつ下がるため候補は一意:
+ * k = floor(anchor.y) - floor(pos.y)。k < 0 なら -1。
+ * spiralStepAt(anchor, k) が floor した pos と完全一致すれば k、しなければ -1。
+ * O(1) (走査なし)、例外を投げない (anchor/pos 不正は -1)、入力不変。
+ */
+export function spiralStepIndexAt(anchor, pos) {
+  if (!anchor || !Number.isFinite(anchor.x) || !Number.isFinite(anchor.y) ||
+      !Number.isFinite(anchor.z) || !isPos(pos)) {
+    return -1;
+  }
+  const f = floorPos(pos);
+  const k = Math.floor(anchor.y) - f.y;
+  if (k < 0) return -1;
+  const s = spiralStepAt(anchor, k);
+  return s && s.x === f.x && s.y === f.y && s.z === f.z ? k : -1;
+}
+
+/**
+ * 現在位置と記録済み steps のずれの判定 (純粋関数、0-D2 D2-R1-U1 cyc2390)。
+ * aligned: 階段上にいて steps も一致。resync: 階段上にいるが steps がずれている
+ * (対象 key 変化で steps だけリセットされた等) ので steps を index へ直せば続行できる。
+ * off: 階段上にいない。黙って縦穴へ落とさず、呼び出し側が明示中断する。
+ */
+export function resolveSpiralDesync(anchor, steps, pos) {
+  const idx = spiralStepIndexAt(anchor, pos);
+  if (idx < 0) return { action: "off", index: -1 };
+  if (idx === steps) return { action: "aligned", index: idx };
+  return { action: "resync", index: idx, from: steps };
+}
+
+/**
  * 起点から targetY に達するまでの階段セル列 (起点を含む、新規配列)。
  * targetY が起点以上なら [起点] のみ。歩いて戻れることの検証は
  * isWalkableReturn() で行う。
