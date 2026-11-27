@@ -5302,8 +5302,10 @@ function recordSessionForbids(bot, r, o) {
     const nid = normForbiddenId(id); // forbids G4-3 (cycle0505): 記録側も norm してから dedupe/保存する
     if (!r.sessionForbids.some((f) => normForbiddenId(f.target) === nid && f.verb === (n.verb ?? null))) r.sessionForbids.push({ target: nid, verb: n.verb ?? null, at: Date.now() });
   }
-  if (r.sessionForbids.length > 32) r.sessionForbids = r.sessionForbids.slice(-32);
+  let evictedForbids = []; // EVICT-U1-b (cyc2408): 切り捨てで脱落した禁止対象を呼び出し側へ返し、受理発話で通知する (無言脱落の解消。枠32と意味論は不変)
+  if (r.sessionForbids.length > 32) { const keptF = r.sessionForbids.slice(-32); evictedForbids = [...new Set(r.sessionForbids.filter((f) => !keptF.includes(f)).map((f) => f.target))]; r.sessionForbids = keptF; }
   try { dps(bot, "cb_forbids", serializeForbids(r.sessionForbids)); } catch {} // Phase5 (cycle1923): 再召喚・再起動を跨いで禁止を保持する // cycle2036: 保存を serializeForbids へ統一 (非文字列 verb の復元時拡大を防ぐ)
+  return evictedForbids;
 }
 function forbidTargetName(n) { return n?.target?.name || nameOfItem(n?.target?.item || n?.target?.block || n?.target?.entity || ""); }
 // 0-C2 (cycle1604): allowOnly の代入と DP 保存は必ずこの1点を通す (保存漏れで再召喚時に静かに消える事故の再発防止)
@@ -5356,8 +5358,9 @@ function startOrderFromParser(p, bot, r, o) {
   // 0-C2 (cycle1215): 上限だけの発話 (kind:"cap") は禁止として記録せず、上限として保持する。
   if (o.kind === "cap") {
     const list = (o.caps || []).filter((c) => c?.target);
-    try { setCaps(bot, r, [...(Array.isArray(r.caps) ? r.caps : []), ...list.map((c) => ({ target: c.target?.item || c.target?.block || c.target?.entity || null, cap: c.cap, verb: c.verb ?? null, at: Date.now() }))].slice(-16)); } catch {}
-    if (list.length) say(p, bot, `分かりました。${list.map((c) => `${c.target?.name || ""}は${c.cap}までです`).join("。")}。それ以上はしません`, true);
+    let evictedCaps = []; // EVICT-U1 (cyc2408): (a) 蓄積を mergeCaps 経由にして同一 target+verb の言い直しが席を消費しないようにする (mergeCaps は at を落とすが caps の読み手・serialize は at を使わない) (b) 17件超で脱落した古い上限は受理発話で通知する。枠16は不変 (枠拡大は EVICT-U2 裁定待ち)
+    try { const mergedCapsNow = mergeCaps(Array.isArray(r.caps) ? r.caps : [], list.map((c) => ({ target: c.target?.item || c.target?.block || c.target?.entity || null, cap: c.cap, verb: c.verb ?? null, at: Date.now() }))); const keptCapsNow = mergedCapsNow.slice(-16); evictedCaps = mergedCapsNow.filter((c) => !keptCapsNow.includes(c)).map((c) => nameOfItem(c.target) || c.target); setCaps(bot, r, keptCapsNow); } catch {}
+    if (list.length) say(p, bot, `分かりました。${list.map((c) => `${c.target?.name || ""}は${c.cap}までです`).join("。")}。それ以上はしません${evictedCaps.length ? `。古い上限が件数の上限のため外れました: ${evictedCaps.join("、")}` : ""}`, true);
     else say(p, bot, "分かりました。その上限で止めます", true);
     return;
   }
@@ -5371,11 +5374,11 @@ function startOrderFromParser(p, bot, r, o) {
   }
   // Phase5 否定配線: build/gather の mission 実行中ガードより前に置くこと
   if (o.kind === "forbid") {
-    recordSessionForbids(bot, r, o);
+    const evictedForbids = recordSessionForbids(bot, r, o) || []; // EVICT-U1-b (cyc2408): 脱落した古い禁止は受理発話で通知する
     const list = (o.negations || []).filter((n) => n?.target);
     if (list.length === 0) { say(p, bot, "分かりました。その件はしません", true); return; }
     const parts = list.map((n) => `${forbidTargetName(n)}は${n.verb ? (FORBID_VERB_JP[n.verb] || "しません") : "対象にしません"}`);
-    say(p, bot, `分かりました。${parts.join("。")}。`, true);
+    say(p, bot, `分かりました。${parts.join("。")}。${evictedForbids.length ? `古い禁止が件数の上限のため外れました: ${evictedForbids.map((id) => nameOfItem(id) || id).join("、")}` : ""}`, true);
     const m = r.mission;
     if (m && m.status === "active" && !r.ltLegActive) {
       const hit = list.find((n) => (n.target?.item || n.target?.block || n.target?.entity) === m.order?.target && (n.verb == null || n.verb === m.order?.kind || (n.verb === "deliver" && m.order?.kind === "gather")));
