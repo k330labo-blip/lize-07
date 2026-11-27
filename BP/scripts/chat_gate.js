@@ -149,6 +149,24 @@ function nonCommandKind(k) {
 export function isBareExplainRequest(t) {
   return /(教えて|知りたい|聞きたい|説明して)/.test(t);
 }
+// cyc2461 (GATE-EXPLAIN-OVERBLOCK-01): 主節命令＋後続節のみ説明語彙の節境界。
+// 「やめて、終わったら教えて」は主節の指令であり素の説明要求ではない。文頭から
+// 最初の読点・句点までの主節がゲート対象の命令形で完結し、主節内に説明語彙が無く、
+// 説明語彙が後続節にのみ現れる場合に限り、その主節を返す (呼び出し側が以後
+// 説明系・質問・条件判定を主節へスコープするために使う)。安全側述語は全文で先に通す。
+const EXPLAIN_VOCAB_RE = /(教えて|知りたい|聞きたい|説明して)/;
+function postClauseExplainHead(t, headRe, entryRe) {
+  const m = /[、,。.]/.exec(t); if (!m) return null;
+  const head = t.slice(0, m.index).trim();
+  const tail = t.slice(m.index + 1);
+  if (!entryRe.test(head) || !headRe.test(head)) return null;
+  if (EXPLAIN_VOCAB_RE.test(head)) return null;
+  if (!EXPLAIN_VOCAB_RE.test(tail)) return null;
+  return head;
+}
+const CANCEL_HEAD_RE = /(やめて|中止して|止めて|キャンセルして)(ほしい|ください)?$/;
+const FACTORY_HEAD_RE = /(自動化して|ラインを組んで|ライン化して)$/;
+const WAREHOUSE_HEAD_RE = /(整理して|仕分けして)$/;
 
 // 中止ゲート: {fire, kind} kind: none|cancel|question|hypothetical|negation|partial|conditional
 export function gateCancel(text) {
@@ -168,16 +186,17 @@ export function gateCancel(text) {
     // cyc2363 A06 (0-C1 N5): cancel 側にも先送り「〜た後に＋指令語」遮断を入れる (factory と対称)
     if (/(た後に|だ後に|なった後に|の後に).{0,16}(やめて|中止|止めて|キャンセル)/.test(t)) return { fire: false, kind: "conditional" };
     if (isNegatedDirective(t)) return { fire: false, kind: "negation" };
+    const tc = postClauseExplainHead(t, CANCEL_HEAD_RE, CANCEL_RE) ?? t;
     // cyc2347 A06 R-E (0-C1): gateCancel にも howto 遮断を入れ3ゲート対称にする
-    if (isHowToRequest(t)) return { fire: false, kind: "question" };
+    if (isHowToRequest(tc)) return { fire: false, kind: "question" };
     // cyc2433 (GATE-EXPLAIN-BARE-01): 素の説明要求「中止について教えて」も質問
-    if (isBareExplainRequest(t)) return { fire: false, kind: "question" };
+    if (isBareExplainRequest(tc)) return { fire: false, kind: "question" };
     // cyc2347 A06 R-F3 (0-C1): 「まだ今じゃない」は即時中止ではない
-    if (/まだ今じゃない|まだ今ではない/.test(t)) return { fire: false, kind: "conditional" };
-    if (isDeliberating(t)) return { fire: false, kind: "question" };
-    if (isQuestionForm(t)) return { fire: false, kind: "question" };
+    if (/まだ今じゃない|まだ今ではない/.test(tc)) return { fire: false, kind: "conditional" };
+    if (isDeliberating(tc)) return { fire: false, kind: "question" };
+    if (isQuestionForm(tc)) return { fire: false, kind: "question" };
     // cyc2003 A13 + cyc2134 A01: 条件節 (たら/だら/れば一般/動詞＋と) では発火しない
-    if (isConditionalForm(t)) return { fire: false, kind: "conditional" };
+    if (isConditionalForm(tc)) return { fire: false, kind: "conditional" };
     return { fire: true, kind: "cancel" };
   } catch { return { fire: false, kind: "error" }; }
 }
@@ -193,23 +212,24 @@ export function gateFactory(text) {
     // (「自動化するのやめて」「鉄の自動化はやめて」「ラインを組むのはやめて」)。
     if (/(自動化|ライン).{0,20}やめて/.test(t)) return { fire: false, kind: "negation" };
     if (isNegatedDirective(t)) return { fire: false, kind: "negation" };
+    const tf = postClauseExplainHead(t, FACTORY_HEAD_RE, FACTORY_RE) ?? t;
     // cycle1722 A13 R1: 「自動化の方法を教えて」は説明要求。工場経路は通常解釈より先に呼ばれるため、ここでも howto を止める
-    if (isHowToRequest(t)) return { fire: false, kind: "question" };
+    if (isHowToRequest(tf)) return { fire: false, kind: "question" };
     // cyc2433 (GATE-EXPLAIN-BARE-01): 素の説明要求「鉄の自動化について教えて/説明して」も質問 (建築を開始しない)
-    if (isBareExplainRequest(t)) return { fire: false, kind: "question" };
-    if (isDeliberating(t)) return { fire: false, kind: "question" };
-    if (isQuestionForm(t)) return { fire: false, kind: "question" };
-    if (/(なったら|たら|だら|れば|ときは|時は).{0,20}(自動化|ライン)/.test(t)) return { fire: false, kind: "conditional" };
+    if (isBareExplainRequest(tf)) return { fire: false, kind: "question" };
+    if (isDeliberating(tf)) return { fire: false, kind: "question" };
+    if (isQuestionForm(tf)) return { fire: false, kind: "question" };
+    if (/(なったら|たら|だら|れば|ときは|時は).{0,20}(自動化|ライン)/.test(tf)) return { fire: false, kind: "conditional" };
     // cyc2134 A01: 前置条件の一般形 (動詞＋と/れば一般) も中止側と対称に止める
-    if (isConditionalForm(t)) return { fire: false, kind: "conditional" };
+    if (isConditionalForm(tf)) return { fire: false, kind: "conditional" };
     // cyc2003 A13: 後置条件 (「自動化するのは雨が降ってからにして」) も条件節
-    if (/(自動化|ライン).{0,40}(降ってから|なってから|たら|だら|れば)/.test(t)) return { fire: false, kind: "conditional" };
+    if (/(自動化|ライン).{0,40}(降ってから|なってから|たら|だら|れば)/.test(tf)) return { fire: false, kind: "conditional" };
     // cyc2134 A02: 後置先送り (一般の「てからにして」/明日/後で) も即時開始しない
-    if (isDeferredFactory(t)) return { fire: false, kind: "conditional" };
+    if (isDeferredFactory(tf)) return { fire: false, kind: "conditional" };
     // cyc2347 A06 R-F1/R-F3 (0-C1): 「〜の後に＋工場語」と「まだ今じゃない」も即時開始しない
     // cyc2363 A06 (0-C1 N5): 完了形「〜た後に」も先送りとして一般化
-    if (/(なった後|の後に|た後に|だ後に).{0,20}(自動化|ライン)/.test(t)) return { fire: false, kind: "conditional" };
-    if (/まだ今じゃない|まだ今ではない/.test(t)) return { fire: false, kind: "conditional" };
+    if (/(なった後|の後に|た後に|だ後に).{0,20}(自動化|ライン)/.test(tf)) return { fire: false, kind: "conditional" };
+    if (/まだ今じゃない|まだ今ではない/.test(tf)) return { fire: false, kind: "conditional" };
     return { fire: true, kind: "start" };
   } catch { return { fire: false, kind: "error" }; }
 }
@@ -226,16 +246,17 @@ export function gateWarehouseSort(text) {
     if (isHypothetical(t)) return { fire: false, kind: "hypothetical" };
     if (/(整理|仕分け).{0,16}(やめて|止めて|するな|るな)/.test(t)) return { fire: false, kind: "negation" };
     if (isNegatedDirective(t)) return { fire: false, kind: "negation" };
+    const tw = postClauseExplainHead(t, WAREHOUSE_HEAD_RE, WAREHOUSE_RE) ?? t;
     // cyc2330 A01 R6-1/R6-2: 旧インライン除外 (教えて) で遮断されていた形の後退是正。
     // isHowToRequest は裸の「教えて」/「仕分け方」を拾わないため倉庫ゲート内で補う
-    if (isBareExplainRequest(t)) return { fire: false, kind: "question" }; // cyc2433: 共有述語へ寄せた (判定は不変)
+    if (isBareExplainRequest(tw)) return { fire: false, kind: "question" }; // cyc2433: 共有述語へ寄せた (判定は不変)
     // cyc2330 A01 R6-4/R6-5: 後置・前置の先送りは即時開始しない
-    if (/(整理|仕分け).{0,40}(降ってから|なってから|てからにして|明日|後で|あとで|後日)/.test(t)) return { fire: false, kind: "conditional" };
-    if (/(明日|後で|あとで).{0,16}(整理|仕分け)/.test(t)) return { fire: false, kind: "conditional" };
-    if (isHowToRequest(t)) return { fire: false, kind: "question" };
-    if (isDeliberating(t)) return { fire: false, kind: "question" };
-    if (isQuestionForm(t)) return { fire: false, kind: "question" };
-    if (isConditionalForm(t)) return { fire: false, kind: "conditional" };
+    if (/(整理|仕分け).{0,40}(降ってから|なってから|てからにして|明日|後で|あとで|後日)/.test(tw)) return { fire: false, kind: "conditional" };
+    if (/(明日|後で|あとで).{0,16}(整理|仕分け)/.test(tw)) return { fire: false, kind: "conditional" };
+    if (isHowToRequest(tw)) return { fire: false, kind: "question" };
+    if (isDeliberating(tw)) return { fire: false, kind: "question" };
+    if (isQuestionForm(tw)) return { fire: false, kind: "question" };
+    if (isConditionalForm(tw)) return { fire: false, kind: "conditional" };
     return { fire: true, kind: "start" };
   } catch { return { fire: false, kind: "error" }; }
 }
