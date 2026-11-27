@@ -163,6 +163,15 @@ const MATERIAL_DEFS = [
   ["diamond_axe", "item", "ダイヤの斧", ["ダイヤの斧", "ダイヤのオノ", "ダイヤのおの", "ダイヤモンドの斧", "ダイヤモンドのオノ", "ダイヤモンドのおの"]],
   ["diamond_shovel", "item", "ダイヤのシャベル", ["ダイヤのシャベル", "ダイヤのスコップ", "ダイヤモンドのシャベル", "ダイヤモンドのスコップ"]],
   ["diamond_sword", "item", "ダイヤの剣", ["ダイヤの剣", "ダイヤのソード", "ダイヤモンドの剣", "ダイヤモンドのソード"]],
+  // GEAR-NETHERITE-TOOL-01 (cyc2434): ネザライト道具の合成語。辞書に無いと素材別名
+  // 「ネザライト」(netherite_ingot) だけが当たり、作製・手段の両位置でインゴットへ誤目標化した。
+  // 作製位置は下の単品ガードが clarify netherite_upgrade_only へ先に倒すため、ここへの到達は
+  // 手段位置 (〜で掘って) と所持確認等の非作製経路に限られる。
+  ["netherite_pickaxe", "item", "ネザライトのツルハシ", ["ネザライトのツルハシ", "ネザライトのつるはし", "ネザライトのピッケル"]],
+  ["netherite_axe", "item", "ネザライトの斧", ["ネザライトの斧", "ネザライトのオノ", "ネザライトのおの"]],
+  ["netherite_shovel", "item", "ネザライトのシャベル", ["ネザライトのシャベル", "ネザライトのスコップ"]],
+  ["netherite_sword", "item", "ネザライトの剣", ["ネザライトの剣", "ネザライトのソード"]],
+  ["netherite_hoe", "item", "ネザライトのクワ", ["ネザライトのクワ", "ネザライトの鍬", "ネザライトのくわ"]],
   // 0-F1 (cyc2003): 防具の素材×部位合成。道具だけ辞書にあり防具が無く、「ダイヤのチェストプレート」が
   // 素材そのもの (diamond) ＋副目標チェストへ誤分解していた非対称を是正する。
   ["leather_helmet", "item", "革のヘルメット", ['革のヘルメット', '革の兜', '革のかぶと', 'レザーのヘルメット', 'レザーの兜', 'レザーのかぶと']],
@@ -1048,6 +1057,10 @@ export function parseOrder(input) {
   try {
     if (!/[？?]/.test(text) && !/(何個|いくつ|要る|必要|コスト)/.test(text) && /(作って|作る|ください|欲しい|ちょうだい|お願い)/.test(text)) {
       const PART_RE = /(チェストプレート|胸当て|ヘルメット|兜|かぶと|レギンス|ブーツ|ズボン|靴)/;
+      // GEAR-NETHERITE-TOOL-01 (cyc2434): 道具単品も防具と同型に倒す。PART_RE は防具部位のみで
+      // 道具語が素通りし、素材別名「ネザライト」が netherite_ingot 作製へ誤目標化していた。
+      const TOOL_RE = /(ツルハシ|つるはし|ピッケル|剣|ソード|斧|オノ|おの|シャベル|スコップ|クワ|鍬|くわ)/;
+      if (/ネザライト/.test(text) && TOOL_RE.test(text)) return { kind: "clarify", target: null, amount: null, constraints, sideTasks: [], negations: [], unresolved: [{ slot: "material", reason: "netherite_upgrade_only" }], caps: [], returnTo: "owner", raw };
       if (PART_RE.test(text)) {
         const craftableMat = /(ダイヤモンド|ダイヤ|鉄|アイアン|金|ゴールド|革|レザー)/.test(text);
         if (/鎖|チェーン/.test(text)) return { kind: "clarify", target: null, amount: null, constraints, sideTasks: [], negations: [], unresolved: [{ slot: "material", reason: "chainmail_not_craftable" }], caps: [], returnTo: "owner", raw };
