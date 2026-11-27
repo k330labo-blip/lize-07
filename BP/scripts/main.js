@@ -132,7 +132,7 @@ import { createMission, advance, missionSummary, withdrawKeyOf, STEP_TYPES } fro
 import { selectWithdrawCandidate, candKeyForFirstStep } from "./withdraw_candidate.js"; // Phase3 candKey B1 (v0.4.26): 候補選定・射影の純粋関数
 import { scanOpportunities, noteAttempt, pruneCooldowns } from "./side_tasks.js";
 import { createSideChase, chaseTick, sideChaseRangeFor } from "./side_chase.js"; // SIDE-COOLDOWN-CHASE (cycle1134): 接近保持と終端クールダウン
-import { gateCancel, gateFactory, gateWarehouseSort, gateTeachItemDest, isHowToRequest } from "./chat_gate.js"; // 0-C1 (cycle1155): 質問・否定・仮定・部分スコープでは中止/工場/指示を発火しない共通ゲート
+import { gateCancel, gateFactory, gateWarehouseSort, gateTeachItemDest, isHowToRequest, classifyNonCommand } from "./chat_gate.js"; // 0-C1 (cycle1155): 質問・否定・仮定・部分スコープでは中止/工場/指示を発火しない共通ゲート
 import { pickNearest as veinPickNearest, veinNeighbors, capVeinCands, sameResource as veinSameResource } from "./vein_math.js";
 import { fillDefOf, selectFillMedium, checkFillPreconditions, verifyFillPost, fillRunsNeeded, isSourceMediumCell, selectSafeFillStand, fillStandUnsafe } from "./fill_math.js"; // 0-C R-C4-4 S3 (cyc2381): 充填媒体の探索判定 (純粋核) // 0-D1 (cycle1400): 鉱脈継続・距離優先の純粋核
 import { classifyDescent as d2Classify, ensureSpiralAnchor as d2EnsureAnchor, spiralStepAt as d2StepAt, spiralStepIndexAt as d2StepIndexAt, resolveSpiralDesync as d2Desync } from "./d2_spiral_math.js"; // 0-D2 (cycle1434): 発見後も螺旋降下 / G2 (cyc2363): 起点は ensure で固定し対象キーで作り直さない
@@ -5712,7 +5712,7 @@ function handleChatMessage(p, rawIn) {
   // 0-C7 (cycle1337): 未対応の依頼は知識・計算・別作業へ流さず、その場で「できないこと」を返す (調停より前)
   const uns = (() => { try { return detectUnsupportedIntent(raw, { parsedKind: parsed?.kind ?? null, hasTarget: !!parsed?.target }); } catch { return null; } })();
   if (uns) { system.run(() => { say(p, bot, uns.reply, true); try { conv.hear(raw, "unsupported_" + uns.kind); } catch {} }); return; }
-  const ordProp = isHowToRequest(raw) ? null : adaptOrder(parsed); if (ordProp) proposals.push(ordProp);
+  const ordProp = (isHowToRequest(raw) || classifyNonCommand(raw)) ? null : adaptOrder(parsed); if (ordProp) proposals.push(ordProp);
   let latest = null; try { latest = detectLatestTopic(raw); } catch {}
   if (latest) {
     let line = null; try { line = pickHonestyLine(latest, r.usedHonesty || []); } catch {}

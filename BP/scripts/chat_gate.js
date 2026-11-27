@@ -85,6 +85,27 @@ function isDeferredFactory(t) {
     || /(自動化|ライン).{0,24}(明日から|明日やって|明日以降|後で|あとで|後日)/.test(t);
 }
 
+// cyc2450 (0-N2 NONCMD-GATE-01): 発話種別の共有非命令分類。過去形・報告／能力質問／
+// 引用・伝聞／完了報告／翻訳等のメタ依頼は、文の形 (動詞の活用と文末形) で一般に判定し、
+// 例文・対象名は直書きしない。通常パーサー経路と側経路ゲートの両方がこの述語を使う。
+// 戻り値: "past_report"|"ability_question"|"quote_hearsay"|"completion_report"|"meta_request"|null
+export function classifyNonCommand(text) {
+  try {
+    const t = s(text).trim();
+    if (!t) return null;
+    if (isHypothetical(t) || /(って言ってた|と言ってた|って言ってました|と言ってました|って聞いた|と言われた|という話)/.test(t)) return "quote_hearsay";
+    if (/を(英訳|翻訳)(して|しなさい|してください|してくれ)?/.test(t) || /(英訳|翻訳)(して|してください)[。．]?$/.test(t)) return "meta_request";
+    if (/(せますか|できますか|れますか|ますか)[？?。．]?$/.test(t)) return "ability_question";
+    if (/(もう|すでに|既に).{0,24}(した|済んだ|終わった|片付けた)(よ|ね|です|ます)?[。．]?$/.test(t)) return "completion_report";
+    if (/(整理|仕分け|片付け)(した|済ませた)(よ|ね|です)?[。．]?$/.test(t)) return "completion_report";
+    if (/(てきた|てきました|ってきた|ってきました)[。．]?$/.test(t)) return "past_report";
+    return null;
+  } catch { return null; }
+}
+function nonCommandKind(k) {
+  return k === "quote_hearsay" ? "hypothetical" : (k === "ability_question" || k === "meta_request") ? "question" : "noncommand";
+}
+
 // cyc2433 (GATE-EXPLAIN-BARE-01): 素の説明要求 (教えて/知りたい/聞きたい/説明して だけの形)。
 // isHowToRequest は「方法+教えて」等の複合形しか拾わず、倉庫ゲートだけが cyc2330 で
 // この補いを持っていた非対称を共有化し、cancel/factory へ横展開する。
@@ -97,6 +118,7 @@ export function gateCancel(text) {
   try {
     const t = s(text);
     if (!CANCEL_RE.test(t)) return { fire: false, kind: "none" };
+    const nc0 = classifyNonCommand(t); if (nc0) return { fire: false, kind: nonCommandKind(nc0) };
     if (isHypothetical(t)) return { fire: false, kind: "hypothetical" };
     // 部分スコープ: 「Aは続けて、Bだけやめて」は全体中止ではない
     if (/だけ(やめて|中止|止めて|キャンセル)/.test(t) || /(続けて|継続して).{0,16}(やめて|中止|止めて)/.test(t)) return { fire: false, kind: "partial" };
@@ -128,6 +150,7 @@ export function gateFactory(text) {
   try {
     const t = s(text);
     if (!FACTORY_RE.test(t)) return { fire: false, kind: "none" };
+    const nc1 = classifyNonCommand(t); if (nc1) return { fire: false, kind: nonCommandKind(nc1) };
     if (isHypothetical(t)) return { fire: false, kind: "hypothetical" };
     // cyc2221 A15 R-1 (0-C1): 工場対象＋「やめて」は工場への否定であり開始ではない
     // (「自動化するのやめて」「鉄の自動化はやめて」「ラインを組むのはやめて」)。
@@ -162,6 +185,7 @@ export function gateWarehouseSort(text) {
   try {
     const t = s(text);
     if (!WAREHOUSE_RE.test(t)) return { fire: false, kind: "none" };
+    const nc2 = classifyNonCommand(t); if (nc2) return { fire: false, kind: nonCommandKind(nc2) };
     if (isHypothetical(t)) return { fire: false, kind: "hypothetical" };
     if (/(整理|仕分け).{0,16}(やめて|止めて|するな|るな)/.test(t)) return { fire: false, kind: "negation" };
     if (isNegatedDirective(t)) return { fire: false, kind: "negation" };
@@ -191,6 +215,7 @@ export function gateTeachItemDest(text) {
     // 「入れて」の後に続くのは丁寧形・終助詞・句点だけを許す (「入れてほしくない」等は命令形でない)
     const rest = t.slice(m[0].length);
     if (!/^(ください|ね|よ)?[。．]?$/.test(rest)) return { fire: false, kind: "none" };
+    const nc3 = classifyNonCommand(t); if (nc3) return { fire: false, kind: nonCommandKind(nc3) };
     if (isHypothetical(t)) return { fire: false, kind: "hypothetical" };
     // teach 固有の否定 (指令語が中止系でないため共有述語だけでは拾えない。倉庫ゲートの固有否定と同型)
     if (/(入れて|入れる).{0,8}(ほしくない|ないで)/.test(t) || /(入れないで|入れなくていい|入れるな)/.test(t)) return { fire: false, kind: "negation" };
