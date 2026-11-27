@@ -392,6 +392,9 @@ function rt(bot) {
   if (r.pendingGearSet === undefined) { // 0-F R-2 (cyc2379): 一式の残り部位を DP cb_pending_gear から復元 (undefined センチネル方式)。mission が無い/復元で破棄された場合は復元せず DP 残骸も掃除する (単独では発火させない)
     try { const gj = dp(bot, "cb_pending_gear", ""); const arr = gj ? JSON.parse(gj) : null; const okArr = Array.isArray(arr) ? arr.filter((x) => typeof x === "string" && x.startsWith("minecraft:")) : []; r.pendingGearSet = (r.mission && okArr.length) ? okArr : null; if (!r.pendingGearSet) dps(bot, "cb_pending_gear", ""); } catch { r.pendingGearSet = null; }
   }
+  if (r.pendingAfterTool === undefined) { // RG U3 (cyc2394): 道具調達の保留注文を DP cb_pending_tool から復元 (undefined センチネル方式)。保存対象は注文オブジェクトのため kind/target/tool の形検証を行い、壊れた保存は保留なし＋DP残骸掃除。mission が無い場合は復元せず単独では発火させない
+    try { const tj = dp(bot, "cb_pending_tool", ""); const mo2 = tj ? JSON.parse(tj) : null; const okMo = !!(mo2 && typeof mo2 === "object" && typeof mo2.kind === "string" && mo2.kind && typeof mo2.target === "string" && mo2.target && typeof mo2.tool === "string" && mo2.tool); r.pendingAfterTool = (r.mission && okMo) ? mo2 : null; if (!r.pendingAfterTool) dps(bot, "cb_pending_tool", ""); } catch { r.pendingAfterTool = null; }
+  }
   if (r.longtask === undefined) { // DP cb_longtask から復元
     try { const lj = dp(bot, "cb_longtask", ""); r.longtask = lj ? JSON.parse(lj) : null; } catch { r.longtask = null; }
   }
@@ -2766,6 +2769,7 @@ function startMission(bot, owner, r, mo, announce = true, opts = {}) {
     if (tr && tr.action === "procure") {
       if (announce && owner) say(owner, bot, `${nameOfItem(tr.itemId)}を持っていないので、先に用意します`, true);
       r.pendingAfterTool = mo;
+      savePendingTool(bot, r); // RG U3 (cyc2394): 設定と同時に DP へ保存する (再読込で本来注文が無言消失しない)
       startMission(bot, owner, r, { kind: "gather", target: tr.itemId, amount: 1, constraints: { hostiles: "avoid", forbiddenTargets: [] }, sideTasks: [], returnTo: "owner", name: null, tool: null, placement: null }, false);
       return null;
     }
@@ -2800,7 +2804,7 @@ function finishMission(bot, owner, r) {
   // 0-C4 R-C4-1 (cyc2375): 先行調達した指定道具が揃ったら、本来の注文を開始する (揃わなければ繋がない)
   try {
     if (r.pendingAfterTool && owner) {
-      const next = r.pendingAfterTool; r.pendingAfterTool = null;
+      const next = r.pendingAfterTool; r.pendingAfterTool = null; savePendingTool(bot, r); // RG U3: 消費したら DP も消す
       const tid = toolItemIdOf(next.tool);
       let haveTool = false;
       try { haveTool = !!tid && ((countInv(bot)[tid] || 0) > 0 || equipCoreOf(bot, r)?.getEquipped("Mainhand")?.typeId === tid); } catch {}
@@ -2891,13 +2895,13 @@ function completeLongTask(bot, owner, r, ok = true, note = "", msg = null) {
   // 0-C4 R-C4-1 (cyc2375): 指定道具の調達が長期タスクで完了した場合、本来の注文へつなぐ
   try {
     if (ok && r.pendingAfterTool && owner) {
-      const next = r.pendingAfterTool; r.pendingAfterTool = null;
+      const next = r.pendingAfterTool; r.pendingAfterTool = null; savePendingTool(bot, r); // RG U3: 消費したら DP も消す
       const tid = toolItemIdOf(next.tool);
       let haveTool = false;
       try { haveTool = !!tid && ((countInv(bot)[tid] || 0) > 0 || equipCoreOf(bot, r)?.getEquipped("Mainhand")?.typeId === tid); } catch {}
       if (haveTool) startMission(bot, owner, r, next);
       else { try { say(owner, bot, `${tid ? nameOfItem(tid) : "指定の道具"}が用意できなかったため、先ほどの指示は始められませんでした`, true); } catch {} } // RG-5 U1 (cyc2392)
-    } else if (r.pendingAfterTool) { const _pt = r.pendingAfterTool; r.pendingAfterTool = null; try { const _tid = toolItemIdOf(_pt.tool); say(owner, bot, `${_tid ? nameOfItem(_tid) : "指定の道具"}が用意できなかったため、先ほどの指示は始められませんでした`, true); } catch {} } // RG-5 U1 (cyc2392): 失敗終了時の無言破棄も明示する
+    } else if (r.pendingAfterTool) { const _pt = r.pendingAfterTool; r.pendingAfterTool = null; savePendingTool(bot, r); try { const _tid = toolItemIdOf(_pt.tool); say(owner, bot, `${_tid ? nameOfItem(_tid) : "指定の道具"}が用意できなかったため、先ほどの指示は始められませんでした`, true); } catch {} } // RG-5 U1 (cyc2392): 失敗終了時の無言破棄も明示する
   } catch {}
   saveLongTask(bot, r);
   dps(bot, "cb_order", "");
@@ -3430,7 +3434,8 @@ function tickLongTask(bot, owner, r, ctx) {
 // 0-C4 RG-1 (cyc2377): 道具調達の保留 (pendingAfterTool) と道具指定の印を畳む共通掃除。
 // clearPendingCondition と対で使う。中止・保留失効で残すと、無関係な次ミッションの完了時に
 // 中止したはずの本来注文が finishMission 経由で復活する (ゾンビ復活) ため、終了経路では必ず消す。
-function clearPendingTool(r) { try { r.pendingAfterTool = null; r.requestedTool = null; r.toolAppliedLegIdx = null; } catch {} }
+function clearPendingTool(bot, r) { try { r.pendingAfterTool = null; r.requestedTool = null; r.toolAppliedLegIdx = null; if (bot) dps(bot, "cb_pending_tool", ""); } catch {} }
+function savePendingTool(bot, r) { try { dps(bot, "cb_pending_tool", r.pendingAfterTool ? JSON.stringify(r.pendingAfterTool) : ""); } catch {} } // RG U3 (cyc2394): 道具調達の保留注文の保存 (R-2 gear テンプレートの横展開、保存対象は注文オブジェクト)
 // 0-F R-2 (cyc2379): 防具一式の残り部位 (pendingGearSet) の保存と掃除。従来はメモリのみ保持で、
 // (1) 再読込で残り部位が無言で消える (2) 中止・保留失効で畳まれず、無関係な次ミッションの完了時に
 // finishMission が拾って未依頼部位を開始しうる、という道具側 RG-1 と同じ非対称が残っていた。
@@ -3439,7 +3444,7 @@ function savePendingGearSet(bot, r) { try { dps(bot, "cb_pending_gear", Array.is
 function clearPendingGearSet(bot, r) { try { r.pendingGearSet = null; if (bot) dps(bot, "cb_pending_gear", ""); } catch {} }
 function cancelMission(bot, owner, r, silent = false) {
   clearPendingCondition(bot, r); // E-02+E-01: 中止は条件保留も畳む (保留だけが残って後で発火するのを防ぐ。DP 側も同時に消す)
-  clearPendingTool(r); // RG-1 (cyc2377): 中止は道具調達の保留も畳む (条件保留と同じ非対称の解消)
+  clearPendingTool(bot, r); // RG-1 (cyc2377): 中止は道具調達の保留も畳む (条件保留と同じ非対称の解消)
   if (r.mission) { r.mission = null; clearPlanRecords(r); persistMission(bot, r, true); dps(bot, "cb_order", ""); }
   r.work = null; r.workHoldLeg = null; r.workChain = null; // cycle0033 F2: cancelled work must not keep occupying tickAutonomy
   r.buildPlan = null;
@@ -4756,13 +4761,13 @@ system.runInterval(() => {
     if (!r.longtask && r.mission && r.mission.status === "suspended" && (r.mission.suspendReason === "cannot_recover" || r.mission.suspendReason === "inv_unreadable")) {
       const sres = tickSuspendedResume(bot, r);
       if (sres === "waiting") consumed = true;
-      else if (sres === "expired") { foldGatherBuildPlan(bot, p, r, "suspend_expired", r.mission); say(p, bot, `体力が回復しなかったため、指示を中断しました`, true); r.mission = null; clearPlanRecords(r); clearPendingTool(r); clearPendingGearSet(bot, r); persistMission(bot, r, true); consumed = true; }
+      else if (sres === "expired") { foldGatherBuildPlan(bot, p, r, "suspend_expired", r.mission); say(p, bot, `体力が回復しなかったため、指示を中断しました`, true); r.mission = null; clearPlanRecords(r); clearPendingTool(bot, r); clearPendingGearSet(bot, r); persistMission(bot, r, true); consumed = true; }
     }
     // cycle0606 PLAIN-SUSPEND-NOEXIT: 単発 suspended 6理由の期限型出口 (別担い手 tickPlainSuspendExpiry、10分で終了掃除)
     if (!consumed && !r.longtask && r.mission && r.mission.status === "suspended") {
       const pres = tickPlainSuspendExpiry(bot, r);
       // waiting は消費しない (保留中も通常行動を妨げない。従来の suspended 単発の振る舞いを維持)
-      if (pres === "expired") { const rsn = r.mission.suspendReason; say(p, bot, `保留が長引いたため、指示を中断しました。${SUSPEND_JP[rsn] || "進めなくなりました"}`, true); noteFail(bot, "mission:plain_suspend_expired", new Error(rsn || "")); r.mission = null; clearPlanRecords(r); clearPendingTool(r); clearPendingGearSet(bot, r); persistMission(bot, r, true); consumed = true; }
+      if (pres === "expired") { const rsn = r.mission.suspendReason; say(p, bot, `保留が長引いたため、指示を中断しました。${SUSPEND_JP[rsn] || "進めなくなりました"}`, true); noteFail(bot, "mission:plain_suspend_expired", new Error(rsn || "")); r.mission = null; clearPlanRecords(r); clearPendingTool(bot, r); clearPendingGearSet(bot, r); persistMission(bot, r, true); consumed = true; }
     }
     // キュー0副次 R1 (cycle1421): 単発ミッションの toolNeed は昇格接続が消費の入口になる (実装は tickLongTask 内の1か所のまま)
     if (!consumed && !r.longtask && r.toolNeed && tickToolPrepPromote(bot, p, r)) consumed = true;
