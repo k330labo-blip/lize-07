@@ -297,7 +297,7 @@ function tickSuspendedResume(bot, r) {
 // 再開はしない (停滞カウンタ掃除なしの再開は即再suspendループになるため、終了のみが出口)。
 function tickPlainSuspendExpiry(bot, r) {
   const m = r && r.mission; if (!m || m.status !== "suspended" || !PLAIN_SUSPEND_REASONS.has(m.suspendReason)) return null;
-  if (m.order && m.order.legsOnly) return null; // legsOnly (建築材料集め) は gather 側の担い手がいるため対象外
+  if (m.order?.legsOnly && (r.longtask || (r.buildPlan && r.buildPlan.stage === "gather"))) return null; // legsOnly は担い手 (長期タスク leg / 建築 gather 相) が実在する間だけ対象外。担い手喪失時は通常の期限出口へ落とす (SUSPEND-LEGSONLY-ORPHAN-01)
   if (!m.suspendWaitSince || !Number.isFinite(m.suspendWaitSince) || m.suspendWaitSince <= 0 || m.suspendWaitSince > Date.now()) { m.suspendWaitSince = Date.now(); persistMission(bot, r, true); }
   if (Date.now() - m.suspendWaitSince > PLAIN_SUSPEND_WAIT_MS) return "expired";
   return "waiting";
