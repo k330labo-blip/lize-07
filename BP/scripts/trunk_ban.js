@@ -71,12 +71,28 @@ export function fallKey(loc, typeId) {
   return `fall:${typeId}@${Math.floor(loc.x)},${Math.floor(loc.z)}`;
 }
 
+// COLUMN-BAN-CELL-01 (cyc2457 A04 確定, cyc2458 A04 核形確定): 縦柱作物では
+// hold の原因が柱全体なのに ban がセル単位で、単一スロット上書きと組み合わさり
+// 到達不能な柱で最寄り2段を45秒周期で往復し出口が無かった。是正: 縦柱作物も
+// 柱単位キーにする。同一 (x,z) が1個体であり、過剰 ban は期限付き (60秒) に留まる。
+const COLUMN_BLOCK_IDS = new Set(["minecraft:sugar_cane","minecraft:bamboo","minecraft:cactus","minecraft:kelp"]);
+
+export function isColumnType(typeId) {
+  return typeof typeId === "string" && COLUMN_BLOCK_IDS.has(typeId);
+}
+
+/** 縦柱作物キー: y を含めない "column:<typeId>@<x>,<z>" */
+export function columnKey(loc, typeId) {
+  if (!loc || !Number.isFinite(loc.x) || !Number.isFinite(loc.z) || !isColumnType(typeId)) return null;
+  return `column:${typeId}@${Math.floor(loc.x)},${Math.floor(loc.z)}`;
+}
+
 /**
  * 見切り ban のキーを作る単一の正。
  * 原木/幹 → 幹キー、それ以外・typeId不明 → セルキー (従来どおり)。
  */
 export function banKeyFor(loc, typeId) {
-  return trunkKey(loc, typeId) ?? fallKey(loc, typeId) ?? cellKey(loc);
+  return trunkKey(loc, typeId) ?? fallKey(loc, typeId) ?? columnKey(loc, typeId) ?? cellKey(loc);
 }
 
 /**
@@ -97,6 +113,10 @@ export function matchesBan(loc, typeId, banKey) {
   }
   if (banKey.startsWith("fall:")) {
     const k = fallKey(loc, typeId);
+    return k !== null && k === banKey;
+  }
+  if (banKey.startsWith("column:")) {
+    const k = columnKey(loc, typeId);
     return k !== null && k === banKey;
   }
   const c = cellKey(loc);
