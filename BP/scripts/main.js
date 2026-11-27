@@ -2167,8 +2167,8 @@ function scanBlocksNear(bot, r, typeIds) {
   const best = {}, bd = {};
   for (const id of typeIds) { best[id] = null; bd[id] = Infinity; }
   const pt = r.percTargets || {};
-  for (const k of ["tree", "ore", "crop"]) if (pt[k] && want.has(pt[k].typeId)) best[pt[k].typeId] = { x: pt[k].x, y: pt[k].y, z: pt[k].z };
-  { const wq = wideQuery(bot, typeIds); if (wq.ok) { for (const id of typeIds) if (wq.best[id] && !cropMatureAt(bot.dimension, wq.best[id], id)) wq.best[id] = null; for (const id of typeIds) r.mScanMap[id] = { at: now, ttl: SCAN_TTL_MS, loc: best[id] || wq.best[id], failedCells: 0, totalCells: 2601 }; try { r.lastBlockScan = { typeId: typeIds[0], failedCells: 0, totalCells: 2601, at: now, wide: true }; } catch {} for (const id of typeIds) if (!best[id]) best[id] = wq.best[id]; return best; } } // v0.4.66: 広域探索
+  for (const k of ["tree", "ore", "crop"]) if (pt[k] && want.has(pt[k].typeId) && !scanBanned(r, pt[k], pt[k].typeId, now)) best[pt[k].typeId] = { x: pt[k].x, y: pt[k].y, z: pt[k].z }; // LOG-SCAN-BAN-SHADOW-01 (cyc2456): 知覚候補も ban を通す
+  { const wq = wideQuery(bot, typeIds, (loc, id) => scanBanned(r, loc, id, now)); if (wq.ok) { for (const id of typeIds) if (wq.best[id] && !cropMatureAt(bot.dimension, wq.best[id], id)) wq.best[id] = null; for (const id of typeIds) r.mScanMap[id] = { at: now, ttl: SCAN_TTL_MS, loc: best[id] || wq.best[id], failedCells: 0, totalCells: 2601 }; try { r.lastBlockScan = { typeId: typeIds[0], failedCells: 0, totalCells: 2601, at: now, wide: true }; } catch {} for (const id of typeIds) if (!best[id]) best[id] = wq.best[id]; return best; } } // v0.4.66: 広域探索
   let failedCells = 0;
   const bx = Math.floor(bot.location.x), by = Math.floor(bot.location.y), bz = Math.floor(bot.location.z);
   for (let dx = -8; dx <= 8; dx++) for (let dy = -4; dy <= 4; dy++) for (let dz = -8; dz <= 8; dz++) {
@@ -2176,6 +2176,7 @@ function scanBlocksNear(bot, r, typeIds) {
     if (!b) { failedCells++; continue; }
     if (!want.has(b.typeId)) continue;
     if (!cropCellMature(b, b.typeId)) continue; // cycle2231: 未成熟作物は候補にしない
+    if (scanBanned(r, b.location, b.typeId, now)) continue; // LOG-SCAN-BAN-SHADOW-01 (cyc2456)
     const dd = dx * dx + dy * dy + dz * dz;
     if (dd < bd[b.typeId]) { bd[b.typeId] = dd; best[b.typeId] = { x: b.location.x, y: b.location.y, z: b.location.z }; }
   }
@@ -2396,7 +2397,7 @@ system.runInterval(() => {
   }
 }, 1);
 // 調査結果から、指定 ID の一番近い位置を探す (ban 中の位置は除く)。現物が変わっていたら記録から消す
-function lookupSurvey(bot, ids, banKey = null) {
+function lookupSurvey(bot, ids, banKey = null, skipFn = null) { // LOG-SCAN-BAN-SHADOW-01 (cyc2456): 任意 skipFn
   if (!surveyAvailable()) return null;
   const dimId = bot.dimension.id, p = bot.location;
   const { rx, rz } = regionOf(p.x, p.z);
@@ -2409,6 +2410,7 @@ function lookupSurvey(bot, ids, banKey = null) {
       if (!want.has(id)) continue;
       for (const loc of sv.hits[id]) {
         if (banKey && matchesBan(loc, id, banKey)) continue; // queue0-A bug2 (cycle1728): trunk-unit ban matching
+        if (skipFn) { try { if (skipFn(loc, id)) continue; } catch {} }
         const dx = loc.x - p.x, dy = loc.y - p.y, dz = loc.z - p.z;
         cands.push({ sv, id, loc, d: dx * dx + dz * dz + dy * dy * 2.25 });
       }
@@ -2611,20 +2613,19 @@ function findMissionTarget(bot, r, scan, step, scanUnknown = false) {
   const tail = String(target || "").split(":").pop();
   if ((step.type === "gather_block" || step.type === "side_collect") && (tail === "log" || tail.endsWith("_log"))) {
     const ids = allowedLogIds(target, LOG_BLOCK_IDS);
-    try { if (Array.isArray(r.treeCands) && r.treeCands.length) { const liveT = []; for (const c of r.treeCands) { let t = null; try { t = bot.dimension.getBlock(c.loc)?.typeId || null; } catch {} if (t && t === c.typeId && ids.includes(t)) liveT.push({ loc: c.loc, typeId: t }); else if (!t) liveT.push(c); } const liveTB = filterBanned(liveT, r.mBanKey, r.mBanUntil, Date.now()); r.treeCands = liveTB.filter((c) => { try { return !!bot.dimension.getBlock(c.loc)?.typeId; } catch { return true; } }); const tp = veinPickNearest(r.treeCands, bot.location); if (tp) return { found: true, kind: "block", loc: tp.loc, typeId: tp.typeId, detail: { state: "present", via: "tree" } }; } } catch {} // 0-D3 R1: 同じ木の継続候補を survey/近傍より優先
+    try { if (Array.isArray(r.treeCands) && r.treeCands.length) { const liveT = []; for (const c of r.treeCands) { let t = null; try { t = bot.dimension.getBlock(c.loc)?.typeId || null; } catch {} if (t && t === c.typeId && ids.includes(t)) liveT.push({ loc: c.loc, typeId: t }); else if (!t) liveT.push(c); } const liveTB = filterBanned(liveT, r.mBanKey, r.mBanUntil, Date.now()); r.treeCands = liveTB.filter((c) => { try { return !!bot.dimension.getBlock(c.loc)?.typeId; } catch { return true; } }); const treeSel = r.workBan ? filterWorkBanned(liveTB, r.workBan, Date.now()) : liveTB; const tp = veinPickNearest(treeSel, bot.location); if (tp) return { found: true, kind: "block", loc: tp.loc, typeId: tp.typeId, detail: { state: "present", via: "tree" } }; } } catch {} // 0-D3 R1 + LOG-SCAN-BAN-SHADOW-01 (cyc2456): 鉱脈型ガードつき workBan で選定
     // v0.4.64: 全樹種を1回の走査で確定させる (scanBlocksNear)。どれか1種でも stale なら一括走査し、
     // 全種の状態が必ず揃うため pending は発生しない。unknown (走査失敗過半) の扱いは従来どおり。
     if (ids.some((id) => scanCachePeek(r, id).state === "stale")) scanBlocksNear(bot, r, ids);
     let best = null, sawUnknown = false;
     for (const id of ids) {
       const peek = scanCachePeek(r, id);
-      if (peek.state === "hit" && peek.loc) { const d = dist(bot.location, peek.loc); if (!best || d < best.d) best = { loc: peek.loc, typeId: id, d }; }
+      if (peek.state === "hit" && peek.loc) { if (!scanBanned(r, peek.loc, id, Date.now())) { const d = dist(bot.location, peek.loc); if (!best || d < best.d) best = { loc: peek.loc, typeId: id, d }; } } // LOG-SCAN-BAN-SHADOW-01 (cyc2456): null化でなく再選出
       else if (peek.state === "unknown") sawUnknown = true;
     }
-    if (best && isBanned(best.loc, best.typeId, r.mBanKey, r.mBanUntil, Date.now())) best = null; // queue0-A bug2 (cycle1728): banned trunk is not re-selected from scan cache
     if (best) return { found: true, kind: "block", loc: best.loc, typeId: best.typeId, detail: { state: "present" } };
     if (sawUnknown) return { found: false, detail: { state: "unknown" } }; // Step 3b: 測れていない間はドロップへ逸れない
-    { const sv = lookupSurvey(bot, ids, Date.now() < (r.mBanUntil || 0) ? r.mBanKey : null); if (sv) return { found: true, kind: "block", loc: sv.loc, typeId: sv.typeId, detail: { state: "present", via: "survey" } }; } // v0.4.66: チャンク調査の結果
+    { const sv = lookupSurvey(bot, ids, Date.now() < (r.mBanUntil || 0) ? r.mBanKey : null, (loc, id) => !!(r.workBan && isWorkBanned(r.workBan, loc, id, Date.now()))); if (sv) return { found: true, kind: "block", loc: sv.loc, typeId: sv.typeId, detail: { state: "present", via: "survey" } }; } // v0.4.66: チャンク調査の結果
     const it = nearestMissionItem(scan?.items, (x) => ids.includes(itemTypeOf(x)), r, bot.location); // 0-D3: ドロップ回収も樹種指定に従う // PICKUP-MISSION-BAN-CELL-01 (cyc2455): 最寄り＋ban除外
     if (it) return { found: true, kind: "item", loc: { ...it.location }, typeId: target, entity: it, detail: { state: "present" } };
     return { found: false, detail: { state: "absent" } }; // ここへ来るのは全樹種 absent 確定時のみ (Step 3b)
