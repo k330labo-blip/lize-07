@@ -3953,7 +3953,7 @@ function tickConditionWindow(bot, owner, r, ctx) {
     }
     else {
       if (r.mission) { r.mission = null; clearPlanRecords(r); persistMission(bot, r, true); }
-      r.ltLegActive = false; r.mineLeg = null; r.spiral = null; r.longtask = null; saveLongTask(bot, r);
+      r.ltLegActive = false; r.mineLeg = null; r.spiral = null; r.longtask = null; clearPendingTool(bot, r); clearPendingGearSet(bot, r); saveLongTask(bot, r); // WINDOW-END-LONGTASK-CHAIN-RESIDUE-01 (cyc2430): cancelMission と同型に後続チェーンも畳む
     }
     try { say(owner, bot, `${raw}は終わりました。指示はここまでにします。集めた分はそのままです`, true); } catch {}
     return true;
