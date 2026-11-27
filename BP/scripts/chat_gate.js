@@ -85,6 +85,13 @@ function isDeferredFactory(t) {
     || /(自動化|ライン).{0,24}(明日から|明日やって|明日以降|後で|あとで|後日)/.test(t);
 }
 
+// cyc2433 (GATE-EXPLAIN-BARE-01): 素の説明要求 (教えて/知りたい/聞きたい/説明して だけの形)。
+// isHowToRequest は「方法+教えて」等の複合形しか拾わず、倉庫ゲートだけが cyc2330 で
+// この補いを持っていた非対称を共有化し、cancel/factory へ横展開する。
+export function isBareExplainRequest(t) {
+  return /(教えて|知りたい|聞きたい|説明して)/.test(t);
+}
+
 // 中止ゲート: {fire, kind} kind: none|cancel|question|hypothetical|negation|partial|conditional
 export function gateCancel(text) {
   try {
@@ -104,6 +111,8 @@ export function gateCancel(text) {
     if (isNegatedDirective(t)) return { fire: false, kind: "negation" };
     // cyc2347 A06 R-E (0-C1): gateCancel にも howto 遮断を入れ3ゲート対称にする
     if (isHowToRequest(t)) return { fire: false, kind: "question" };
+    // cyc2433 (GATE-EXPLAIN-BARE-01): 素の説明要求「中止について教えて」も質問
+    if (isBareExplainRequest(t)) return { fire: false, kind: "question" };
     // cyc2347 A06 R-F3 (0-C1): 「まだ今じゃない」は即時中止ではない
     if (/まだ今じゃない|まだ今ではない/.test(t)) return { fire: false, kind: "conditional" };
     if (isDeliberating(t)) return { fire: false, kind: "question" };
@@ -126,6 +135,8 @@ export function gateFactory(text) {
     if (isNegatedDirective(t)) return { fire: false, kind: "negation" };
     // cycle1722 A13 R1: 「自動化の方法を教えて」は説明要求。工場経路は通常解釈より先に呼ばれるため、ここでも howto を止める
     if (isHowToRequest(t)) return { fire: false, kind: "question" };
+    // cyc2433 (GATE-EXPLAIN-BARE-01): 素の説明要求「鉄の自動化について教えて/説明して」も質問 (建築を開始しない)
+    if (isBareExplainRequest(t)) return { fire: false, kind: "question" };
     if (isDeliberating(t)) return { fire: false, kind: "question" };
     if (isQuestionForm(t)) return { fire: false, kind: "question" };
     if (/(なったら|たら|だら|れば|ときは|時は).{0,20}(自動化|ライン)/.test(t)) return { fire: false, kind: "conditional" };
@@ -156,7 +167,7 @@ export function gateWarehouseSort(text) {
     if (isNegatedDirective(t)) return { fire: false, kind: "negation" };
     // cyc2330 A01 R6-1/R6-2: 旧インライン除外 (教えて) で遮断されていた形の後退是正。
     // isHowToRequest は裸の「教えて」/「仕分け方」を拾わないため倉庫ゲート内で補う
-    if (/(教えて|知りたい|聞きたい|説明して)/.test(t)) return { fire: false, kind: "question" };
+    if (isBareExplainRequest(t)) return { fire: false, kind: "question" }; // cyc2433: 共有述語へ寄せた (判定は不変)
     // cyc2330 A01 R6-4/R6-5: 後置・前置の先送りは即時開始しない
     if (/(整理|仕分け).{0,40}(降ってから|なってから|てからにして|明日|後で|あとで|後日)/.test(t)) return { fire: false, kind: "conditional" };
     if (/(明日|後で|あとで).{0,16}(整理|仕分け)/.test(t)) return { fire: false, kind: "conditional" };
