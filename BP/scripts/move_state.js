@@ -44,13 +44,14 @@ export function moveTrackStep(tr, pos, dtSec, ctx) {
     if (mode !== "fly" && mode !== "teleport" && mode !== "idle" && hDist > 0) {
       const before = phase;
       phase = (phase + hDist / STRIDE_LEN) % 1;
-      // footstep: 位相が 0.5 / 1.0 境界を跨いだ時1回。getSurface はこの時だけ呼ぶ
-      const crossed = Math.floor((before + hDist / STRIDE_LEN) * 2) > Math.floor(before * 2);
-      if (crossed) {
+      // footstep: 位相が 0.5 / 1.0 境界を跨いだ回数ぶん。getSurface は歩あたり1回だけ呼んで共用する
+      // cyc2413 MOVE-FOOTSTEP-MULTICROSS-01 是正: 旧形は真偽値判定で d>1.0 の歩で2跨ぎ時に1件喪失した
+      const crosses = Math.floor((before + hDist / STRIDE_LEN) * 2) - Math.floor(before * 2);
+      if (crosses > 0) {
         let surface = "minecraft:air";
         try { const s = typeof c.getSurface === "function" ? c.getSurface() : null; if (typeof s === "string" && s) surface = s; } catch { surface = "minecraft:air"; }
         tr.state.surface = surface;
-        pushEvent(tr, { kind: "footstep", surface, at: fin(c.nowMs) ?? 0 });
+        for (let i = 0; i < crosses; i++) pushEvent(tr, { kind: "footstep", surface, at: fin(c.nowMs) ?? 0 });
       }
     }
     tr.state = { mode, speed, phase, grounded, surface: tr.state.surface, at: fin(c.nowMs) ?? 0 };
