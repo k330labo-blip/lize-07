@@ -26,8 +26,8 @@ export function moveTrackStep(tr, pos, dtSec, ctx) {
     const wet = c.wet === true;
     // splash: wet の立ち上がり/立ち下がり
     if (wet !== tr.wasWet) { pushEvent(tr, { kind: "splash", enter: wet, at: fin(c.nowMs) ?? 0 }); tr.wasWet = wet; }
-    // land: 非接地中の累積下降 >=2 で接地に戻った時1回
-    if (!grounded && dy < 0) tr.airDrop += -dy;
+    // land: 累積下降 >= LAND_DROP (0.6) で接地に戻った時1回。cyc2412 MOVE-LAND-LASTSTEP-EXCLUDE-01 是正: 接地した歩の下降も数える (旧形は非接地歩のみ蓄積し、最後の1歩の下降が常に対象外で1歩落下が発火しなかった)
+    if (dy < 0) tr.airDrop += -dy;
     if (grounded && tr.prevPos && tr.airDrop >= LAND_DROP) pushEvent(tr, { kind: "land", drop: tr.airDrop, at: fin(c.nowMs) ?? 0 });
     if (grounded) tr.airDrop = 0;
     // mode (先勝ち。climb/drop/bridge/dig は生成しない)
