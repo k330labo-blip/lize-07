@@ -3712,7 +3712,7 @@ function execSideTask(bot, owner, r, ctx, scan) {
     const ev = chaseTick(r.sideChase, { task: t, distNow, candAlive: t.targetId ? candAlive : true, nowMs: Date.now(), range });
     r.sideContinuation = ev.phase === "continue";
     r.lastSideChase = { phase: ev.phase, reason: ev.reason || null, at: Date.now() };
-    if (ev.writeCooldown) { try { noteAttempt(r.sideState, t, Date.now()); } catch {} }
+    if (ev.writeCooldown) { try { noteAttempt(r.sideState, { ...t, key: ev.key }, Date.now()); } catch {} } // cyc2422 SIDE-CHASE-SUPERSEDE-COOLDOWN-MISKEY-01: 終端候補 (ev.key) へ書く
     if (ev.phase === "abandon") { r.sideHeldTask = null; return; }
     if (ev.phase === "complete" && t.type !== "pickup" && t.type !== "hunt") { /* break/harvest は距離完了を使わない */ }
   } catch {}
