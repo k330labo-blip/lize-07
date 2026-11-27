@@ -1275,7 +1275,7 @@ function tickWork(bot, owner, r, ctx) {
   const reqLv = requiredPickLevel(w.typeId);
   if (reqLv > 0 && bestPickLevel(bot) < reqLv) {
     r.lastBreak = { act: "BREAK", ok: false, reason: "TOOL_INSUFFICIENT", item: w.typeId, at: Date.now() }; commitLastAction(r, r.lastBreak);
-    r.toolNeed = { reqLv, item: w.typeId, at: Date.now() }; // cycle0922 (a02): 道具準備 leg への汎用シグナル (消費点は計画層)
+    if (!r.toolNeed || r.toolNeed.reqLv !== reqLv || r.toolNeed.item !== w.typeId) r.toolNeed = { reqLv, item: w.typeId, at: Date.now() }; // TOOLPROMOTE-SIDEGATE-01 (cyc2443): 同一不足では初回のみ打刻し鮮度300秒を機能させる
     if (!r.toolWarnAt || Date.now() - r.toolWarnAt > 60000) { r.toolWarnAt = Date.now(); try { say(owner, bot, `${nameOfItem(w.typeId)}を掘るには、もっと良いツルハシが必要です`, true); } catch {} }
     r.work = null; return false;
   }
@@ -3276,11 +3276,13 @@ function tickToolPrepPromote(bot, owner, r) {
     if ((r.toolNeed.reqLv || 0) < 1) return false;
     const step = m.steps?.[m.currentStep];
     if (!step || step.type !== "gather_block") return false;
-    if ((m.steps || []).some((s) => s.type === "side_collect" && s.status !== "done")) return false;
+    // TOOLPROMOTE-SIDEGATE-01 (cyc2443, B案): 未完了の寄り道は昇格を遮らず、残量だけ resumeLeg へ引き継ぐ (同対象は need へ合算)
+    const sideTasks = []; let sideFold = 0;
+    for (const s of (m.steps || [])) { if (!s || s.type !== "side_collect" || s.status === "done") continue; const sr = (s.need || 0) - (s.have || 0); if (sr <= 0) continue; if (s.target === mo.target) sideFold += sr; else sideTasks.push({ kind: s.kind || "gather", target: s.target, amount: sr }); }
     const remain = (mo.amount || 0) - (step.have || 0);
     if (remain <= 0) return false;
-    const needTotal = countOfGroup(countInv(bot), mo.target) + remain; // leg の need は lt 意味論 (手持ち+不足分、材料不足差し込みの前例)
-    const resumeLeg = { type: "gather", item: mo.target, need: needTotal, via: null, yRange: null, depth: mineDepthFor(mo.target), crafts: 0, needs: null, station: null };
+    const needTotal = countOfGroup(countInv(bot), mo.target) + remain + sideFold; // leg の need は lt 意味論 (手持ち+不足分、材料不足差し込みの前例)
+    const resumeLeg = { type: "gather", item: mo.target, need: needTotal, via: null, yRange: null, depth: mineDepthFor(mo.target), crafts: 0, needs: null, station: null, sideTasks };
     r.longtask = { target: mo.target, name: mo.name || lname(mo.target), amount: mo.amount, legs: [resumeLeg], legIdx: 0, phase: "legs", returnTo: mo.returnTo || "owner", hostiles: mo.constraints?.hostiles || "avoid", forbiddenTargets: mo.constraints?.forbiddenTargets || [], startedAt: m.startedAt || Date.now(), toolRepairs: r.toolPrepTotal || 0, toolPrepFails: r.toolPrepFailTotal || 0 }; // cycle2058: 失敗 streak も昇格を跨いで引き継ぐ
     r.mission = null; r.ltLegActive = false; r.mineLeg = null; r.spiral = null;
     persistMission(bot, r, true); saveLongTask(bot, r);
@@ -3399,7 +3401,7 @@ function tickLongTask(bot, owner, r, ctx) {
       if (remain <= 0) { lt.legIdx++; continue; }
       // 丸石は地表に露出していないことが多いので、少し潜って掘る。鉱石は素材ごとの目標深度へ。
       r.mineLeg = mineLegForLeg(leg, bot); r.mineDir = null; // queue2: 性質判定+次元ガードは mineLegForLeg へ集約 (旧3分岐の group:cobble / cobblestone+via=stone は同関数内で同等に成立)
-      const legStarted = startMission(bot, owner, r, { kind: leg.type === "hunt" ? "hunt" : "gather", target: legMissionTarget(leg), amount: remain, constraints: { hostiles: lt.hostiles, forbiddenTargets: (typeof fbIds !== "undefined" ? fbIds : []) }, sideTasks: [], returnTo: lt.returnTo, legsOnly: true }, false, { noLongTask: true });
+      const legStarted = startMission(bot, owner, r, { kind: leg.type === "hunt" ? "hunt" : "gather", target: legMissionTarget(leg), amount: remain, constraints: { hostiles: lt.hostiles, forbiddenTargets: (typeof fbIds !== "undefined" ? fbIds : []) }, sideTasks: leg.sideTasks || [], returnTo: lt.returnTo, legsOnly: true }, false, { noLongTask: true }); // TOOLPROMOTE-SIDEGATE-01 (cyc2443): 昇格時に引き継いだ寄り道を leg mission へ渡す
       if (!legStarted && !r.mission) { noteFail(bot, "longtask:forbidden_leg", new Error(leg.item)); say(owner, bot, `長期タスクを中断しました。${lname(leg.item)}は、しないと約束している対象です`, true); r.longtask = null; r.mineLeg = null; r.spiral = null; saveLongTask(bot, r); return true; } // cycle0117 G2 出口A: 立たなかった leg を消費しない
       r.ltLegActive = true;
       say(owner, bot, `工程${lt.legIdx + 1}/${lt.legs.length}：${legLabel(leg, lname)}`, true);
