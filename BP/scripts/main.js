@@ -5460,13 +5460,18 @@ function startOrderFromParser(p, bot, r, o) {
       // 0-F2 (cyc2003): 防具一式は4部位すべて作製可能か先に検証し、最初の部位を開始して残りを
       // pendingGearSet へ保持する (finishMission が完了ごとに次部位を開始する)。
       if (Array.isArray(o.gearSet) && o.gearSet.length > 1) {
+        // 0-F R-7b U7-3 (cyc2398): セット数ぶん部位列を展開し、既存 pendingGearSet へ流す
+        // (sets=1 では従来と完全一致)。検証はセット数ぶんの amount で行う。
+        const gearSetsN = Math.max(1, Math.floor(o.amount ?? 1));
+        const gearSeq = [];
+        for (let i = 0; i < gearSetsN; i++) for (const gid of o.gearSet) gearSeq.push(gid);
         let allOk = true;
-        for (const gid of o.gearSet) { let ok = false; try { const pl = planLongTask({ target: "minecraft:" + gid, amount: 1 }, countInv(bot), invDurabilityOf(bot)); ok = !!(pl && pl.feasible); } catch {} if (!ok) { allOk = false; break; } }
+        for (const gid of o.gearSet) { let ok = false; try { const pl = planLongTask({ target: "minecraft:" + gid, amount: gearSetsN }, countInv(bot), invDurabilityOf(bot)); ok = !!(pl && pl.feasible); } catch {} if (!ok) { allOk = false; break; } }
         if (!allOk) { say(p, bot, `${o.gearMaterial || ""}の一式は、今の調達経路では作りきれません。部位ごとに頼んでください`, true); return; }
         if (r.mission && r.mission.status === "active") { say(p, bot, "今の指示の途中です。やめるなら「やめて」と言ってください", true); return; }
-        r.pendingGearSet = o.gearSet.slice(1).map((gid) => "minecraft:" + gid);
+        r.pendingGearSet = gearSeq.slice(1).map((gid) => "minecraft:" + gid);
         savePendingGearSet(bot, r); // 0-F R-2 (cyc2379): 設定と同時に DP へ保存する
-        mo0.amount = 1; mo0.target = "minecraft:" + o.gearSet[0];
+        mo0.amount = 1; mo0.target = "minecraft:" + gearSeq[0];
         startMission(bot, p, r, mo0);
         return;
       }

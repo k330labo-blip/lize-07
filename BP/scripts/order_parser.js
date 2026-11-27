@@ -959,6 +959,20 @@ const GEAR_MATS = [["ダイヤモンド", "diamond", "ダイヤ"], ["ダイヤ",
 const GEAR_PARTS = [["helmet", "ヘルメット"], ["chestplate", "チェストプレート"], ["leggings", "レギンス"], ["boots", "ブーツ"]];
 // 0-F R-7a U7-1: 引用/仮定形 (と言ったら等) では一式作製を発火させない。
 const GEAR_QUOTE_RE = /(と言ったら|と言えば|って言ったら|って言えば)/;
+// 0-F R-7b U7-3 (cyc2398): 一式のセット数を抽出する。一式句 (フル/一式) の末尾から
+// 最初の作製動詞または句読点までの窓の中だけを探し、条件節側や副次句の数量を盗まない。
+// 明示 0 は 0 を返し、呼び出し側が clarify へ倒す (0-C5: 0個は開始しない)。
+function gearSetCountOf(text) {
+  const ai = text.search(/(フル|一式)/);
+  if (ai < 0) return 1;
+  const rest = text.slice(ai + 2);
+  const em = rest.match(/(作って|作る|ください|欲しい|ちょうだい|お願い|、|。)/);
+  const win = em ? rest.slice(0, em.index) : rest;
+  const m = win.match(/(\d+|[一二三四五六七八九十]+)\s*(セット|組|人分)/);
+  if (!m) return 1;
+  const n = parseNumberToken(m[1]);
+  return n == null ? 1 : n;
+}
 
 // ---------------------------------------------------------------- 本体
 /**
@@ -1034,8 +1048,12 @@ export function parseOrder(input) {
         //  parser が条件を付けるだけで保留→再投入で一式が保持される)。
         const gearCond = extractConditionPrefix(text);
         if (gearCond) constraints.condition = gearCond;
+        // 0-F R-7b U7-3: セット数を amount へ保持する (展開は main 消費側の1点のみ)。
+        // 明示 0 セットは開始せず聞き返す (D-7b-1)。
+        const gearSets = gearSetCountOf(text);
+        if (gearSets === 0) return { kind: "clarify", target: null, amount: null, constraints, sideTasks: [], negations: [], unresolved: [{ slot: "amount", reason: "zero_amount" }], caps: [], returnTo: "owner", raw };
         const ids = GEAR_PARTS.map(([pid]) => `${gm.mid}_${pid}`);
-        return { kind: "build", target: { item: ids[0], block: null, entity: null, name: `${gm.disp}の${GEAR_PARTS[0][1]}` }, amount: 1, constraints, sideTasks: [], negations: [], unresolved: [], caps: [], tool: null, placement: null, gearSet: ids, gearMaterial: gm.disp, returnTo: "owner", raw };
+        return { kind: "build", target: { item: ids[0], block: null, entity: null, name: `${gm.disp}の${GEAR_PARTS[0][1]}` }, amount: gearSets, constraints, sideTasks: [], negations: [], unresolved: [], caps: [], tool: null, placement: null, gearSet: ids, gearMaterial: gm.disp, returnTo: "owner", raw };
       }
     }
   } catch { /* 一式として解釈できなければ従来経路へ */ }
