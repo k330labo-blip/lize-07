@@ -271,7 +271,17 @@ function buildIndex(defs, kind) {
   const list = [];
   for (const def of defs) {
     const aliases = kind === "structure" ? def[1] : def[3] ?? def[2];
-    for (const alias of aliases) list.push({ alias, def, kind });
+    const seen = new Set();
+    for (const alias of aliases) {
+      if (!seen.has(alias)) { seen.add(alias); list.push({ alias, def, kind }); }
+      // COMPOUND-NAME-01 (0-N4, cyc2449): 「の」付き別名から接続の「の」(先頭の1つ)を
+      // 除いた結合形も同一 def の別名として自動生成する (例: ダイヤのブーツ→ダイヤブーツ、
+      // 木のおの→木おの)。辞書への手書き追加は再発するため索引側で一般化する。
+      if (kind !== "structure" && alias.includes("の")) {
+        const joined = alias.replace("の", "");
+        if (joined.length >= 2 && !seen.has(joined)) { seen.add(joined); list.push({ alias: joined, def, kind }); }
+      }
+    }
   }
   list.sort((a, b) => b.alias.length - a.alias.length);
   return list;
