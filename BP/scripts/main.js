@@ -3935,7 +3935,9 @@ function tickConditionWindow(bot, owner, r, ctx) {
     const ltWin = !missionWin && r.longtask ? r.longtask.window : null;
     const bpWin = !missionWin && !ltWin && r.buildPlan ? r.buildPlan.window : null;
     const win = missionWin || ltWin || bpWin;
-    if (!win) { r.windowEndStreak = 0; return false; }
+    if (!win) { r.windowEndStreak = 0; r.windowEndKey = null; return false; }
+    const winKey = `${win.raw || ""}\n${win.kind || ""}`; // WINDOW-STREAK-CARRYOVER-01 (cyc2442): streak は window の同一性 (raw+kind) と組で保持し、別 window への差し替えでは持ち越さない (同一 window のチェーン継承は不変)
+    if (r.windowEndKey !== winKey) { r.windowEndKey = winKey; r.windowEndStreak = 0; }
     const now = Date.now();
     if (now - (r.windowCheckAt || 0) < 3000) return false;
     r.windowCheckAt = now;
@@ -3945,7 +3947,7 @@ function tickConditionWindow(bot, owner, r, ctx) {
     r.windowEndStreak = (r.windowEndStreak || 0) + 1;
     if (r.windowEndStreak < 2) return false;
     const raw = win.raw || "その間";
-    r.windowEndStreak = 0; r.windowCheckAt = 0;
+    r.windowEndStreak = 0; r.windowEndKey = null; r.windowCheckAt = 0;
     if (missionWin) cancelMission(bot, owner, r, true);
     else if (bpWin) {
       // WINDOW-END-BUILDPLAN-SCOPE-01 (cyc2429): 建築相の畳み。材料集め相の子 mission も一緒に畳む。
