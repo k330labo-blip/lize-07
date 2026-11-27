@@ -21,27 +21,27 @@ const MATERIAL_DEFS = [
   // 鉱物・金属
   ["diamond", "item", "ダイヤモンド", ["ダイヤモンド", "ダイヤ"]],
   ["diamond_ore", "block", "ダイヤモンド鉱石", ["ダイヤモンド鉱石", "ダイヤ鉱石"]],
-  ["iron_ingot", "item", "鉄インゴット", ["鉄インゴット", "鉄"]],
+  ["iron_ingot", "item", "鉄インゴット", ["鉄インゴット", "鉄", "アイアン", "てつ"]],
   ["iron_ore", "block", "鉄鉱石", ["鉄鉱石"]],
   ["raw_iron", "item", "鉄の原石", ["鉄の原石"]],
-  ["gold_ingot", "item", "金インゴット", ["金インゴット", "金"]],
+  ["gold_ingot", "item", "金インゴット", ["金インゴット", "金", "ゴールド"]],
   ["gold_ore", "block", "金鉱石", ["金鉱石"]],
   ["raw_gold", "item", "金の原石", ["金の原石"]],
   ["copper_ingot", "item", "銅インゴット", ["銅インゴット", "銅"]],
   ["copper_ore", "block", "銅鉱石", ["銅鉱石"]],
   ["raw_copper", "item", "銅の原石", ["銅の原石"]],
-  ["coal", "item", "石炭", ["石炭"]],
+  ["coal", "item", "石炭", ["石炭", "セキタン", "せきたん"]],
   ["coal_ore", "block", "石炭鉱石", ["石炭鉱石"]],
   ["redstone", "item", "レッドストーン", ["レッドストーン"]],
   ["lapis_lazuli", "item", "ラピスラズリ", ["ラピスラズリ", "ラピス"]],
-  ["emerald", "item", "エメラルド", ["エメラルド"]],
+  ["emerald", "item", "エメラルド", ["エメラルド", "エメ"]],
   ["emerald_ore", "block", "エメラルド鉱石", ["エメラルド鉱石"]],
   ["netherite_ingot", "item", "ネザライトインゴット", ["ネザライトインゴット", "ネザライト"]],
   ["netherite_scrap", "item", "ネザライトの欠片", ["ネザライトの欠片"]],
   ["ancient_debris", "block", "古代の残骸", ["古代の残骸", "残骸"]],
   ["quartz", "item", "ネザークォーツ", ["ネザークォーツ", "クォーツ", "石英"]],
   ["amethyst_shard", "item", "アメジストの欠片", ["アメジストの欠片", "アメジスト"]],
-  ["obsidian", "block", "黒曜石", ["黒曜石"]],
+  ["obsidian", "block", "黒曜石", ["黒曜石", "こくようせき"]],
   ["glowstone", "block", "グロウストーン", ["グロウストーン"]],
   ["glowstone_dust", "item", "グロウストーンダスト", ["グロウストーンダスト"]],
   // 木材
@@ -215,11 +215,11 @@ const MATERIAL_DEFS = [
 // [id, 表示名, 別名[]] 。'hostile' は「敵/モンスター」等の総称（制約 or 一括討伐の対象）。
 const ENTITY_DEFS = [
   ["hostile", "敵", ["敵", "モンスター", "モブ"]],
-  ["zombie", "ゾンビ", ["ゾンビ"]],
-  ["skeleton", "スケルトン", ["スケルトン"]],
+  ["zombie", "ゾンビ", ["ゾンビ", "ぞんび"]],
+  ["skeleton", "スケルトン", ["スケルトン", "すけるとん", "がいこつ"]],
   ["spider", "クモ", ["クモ", "蜘蛛"]],
   ["cave_spider", "洞窟グモ", ["洞窟グモ", "洞窟蜘蛛"]],
-  ["creeper", "クリーパー", ["クリーパー"]],
+  ["creeper", "クリーパー", ["クリーパー", "くりーぱー"]],
   ["enderman", "エンダーマン", ["エンダーマン"]],
   ["slime", "スライム", ["スライム"]],
   ["witch", "ウィッチ", ["ウィッチ", "魔女"]],
@@ -308,6 +308,17 @@ function scanMentions(text, indexes) {
         if (!text.startsWith(a, i)) continue;
         // 「砂」が「砂漠」の頭を食う誤検出だけ個別に防ぐ
         if (a === "砂" && text[i + a.length] === "漠") continue;
+        // FORBID-TARGET-ALIAS-01 (cyc2439): 同位置で他索引のより長い別名が一致する場合は
+        // 短い方を譲る (例: 素材「アイアン」が実体「アイアンゴーレム」の頭を食わない)
+        let longer = false;
+        for (const idx2 of indexes) for (const c2 of idx2) {
+          if (c2.alias.length <= a.length || i + c2.alias.length > text.length) continue;
+          if (!text.startsWith(c2.alias, i)) continue;
+          let free = true;
+          for (let j = i; j < i + c2.alias.length; j++) if (taken[j]) { free = false; break; }
+          if (free) { longer = true; break; }
+        }
+        if (longer) continue;
         let ok = true;
         for (let j = i; j < i + a.length; j++) if (taken[j]) { ok = false; break; }
         if (!ok) continue;
