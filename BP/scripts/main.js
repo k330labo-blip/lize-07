@@ -3345,7 +3345,7 @@ function tickLongTask(bot, owner, r, ctx) {
     if (!toolCapReached) { try { const sub = planLongTask({ target: pickId, amount: 1, constraints: { forbiddenTargets: (typeof fbIds !== "undefined" ? fbIds : []) } }, countInv(bot), invDurabilityOf(bot)); if (sub && sub.feasible && sub.legs && sub.legs.length) ins = sub.legs; } catch {} }
     r.toolNeed = null; // 成否どちらでも消費する (同じ不足で毎tick差し込み続けない)
     if (!ins && toolCapReached) {
-      say(owner, bot, `長期タスクを中断しました。ツルハシを用意できませんでした`, true); if (r.mission) { r.mission = null; clearPlanRecords(r); persistMission(bot, r, true); } r.ltLegActive = false; r.mineLeg = null; r.spiral = null; r.longtask = null; saveLongTask(bot, r); return true; // TOOLPREP-CAP-ORPHAN-01 (cyc2431): 上限終端も計画失敗終端と同形に leg mission と付随状態を全て畳む (従来は longtask のみ消し legsOnly leg が孤児化し出口ゼロだった)
+      say(owner, bot, `長期タスクを中断しました。ツルハシを用意できませんでした`, true); return abortLongTask(bot, owner, r); // TOOLPREP-CAP-ORPHAN-01 (cyc2431) は TOOLCHAIN-LT-RESIDUE-01 (cyc2444) の共通畳みへ集約
     }
     if (ins) {
       lt.toolPrepFails = 0; r.toolPrepFailTotal = 0; // 成功で streak を解消する
@@ -3364,8 +3364,7 @@ function tickLongTask(bot, owner, r, ctx) {
     if (lt.toolPrepFails >= 3) {
       noteFail(bot, "longtask:tool_prep_exhausted", new Error(pickId));
       say(owner, bot, `長期タスクを中断しました。${nameOfItem(pickId)}を用意する手順が、3回続けて組み立てられませんでした`, true);
-      if (r.mission) { r.mission = null; clearPlanRecords(r); persistMission(bot, r, true); }
-      r.ltLegActive = false; r.mineLeg = null; r.spiral = null; r.longtask = null; saveLongTask(bot, r); return true;
+      return abortLongTask(bot, owner, r);
     }
     saveLongTask(bot, r);
   }
@@ -3388,7 +3387,7 @@ function tickLongTask(bot, owner, r, ctx) {
         if (f1ResumeDecision(bot, r) === "terminate") { noteFail(bot, "longtask:suspend_no_progress_exhausted", new Error(`${r.mission.suspendReason || ""}:${r.mission.suspendCount || 0}`)); }
         else { r.mission.status = "active"; r.mission.suspendReason = null; persistMission(bot, r, true); return false; }
       }
-      { say(owner, bot, `長期タスクを中断しました。${SUSPEND_JP[r.mission.suspendReason] || "進めなくなりました"}`, true); r.mission = null; clearPlanRecords(r); persistMission(bot, r, true); r.longtask = null; r.mineLeg = null; r.spiral = null; saveLongTask(bot, r); return true; }
+      { say(owner, bot, `長期タスクを中断しました。${SUSPEND_JP[r.mission.suspendReason] || "進めなくなりました"}`, true); return abortLongTask(bot, owner, r); }
     }
     else return false; // 実行中は tickMission に任せる
   }
@@ -3402,7 +3401,7 @@ function tickLongTask(bot, owner, r, ctx) {
       // 丸石は地表に露出していないことが多いので、少し潜って掘る。鉱石は素材ごとの目標深度へ。
       r.mineLeg = mineLegForLeg(leg, bot); r.mineDir = null; // queue2: 性質判定+次元ガードは mineLegForLeg へ集約 (旧3分岐の group:cobble / cobblestone+via=stone は同関数内で同等に成立)
       const legStarted = startMission(bot, owner, r, { kind: leg.type === "hunt" ? "hunt" : "gather", target: legMissionTarget(leg), amount: remain, constraints: { hostiles: lt.hostiles, forbiddenTargets: (typeof fbIds !== "undefined" ? fbIds : []) }, sideTasks: leg.sideTasks || [], returnTo: lt.returnTo, legsOnly: true }, false, { noLongTask: true }); // TOOLPROMOTE-SIDEGATE-01 (cyc2443): 昇格時に引き継いだ寄り道を leg mission へ渡す
-      if (!legStarted && !r.mission) { noteFail(bot, "longtask:forbidden_leg", new Error(leg.item)); say(owner, bot, `長期タスクを中断しました。${lname(leg.item)}は、しないと約束している対象です`, true); r.longtask = null; r.mineLeg = null; r.spiral = null; saveLongTask(bot, r); return true; } // cycle0117 G2 出口A: 立たなかった leg を消費しない
+      if (!legStarted && !r.mission) { noteFail(bot, "longtask:forbidden_leg", new Error(leg.item)); say(owner, bot, `長期タスクを中断しました。${lname(leg.item)}は、しないと約束している対象です`, true); return abortLongTask(bot, owner, r); } // cycle0117 G2 出口A: 立たなかった leg を消費しない
       r.ltLegActive = true;
       say(owner, bot, `工程${lt.legIdx + 1}/${lt.legs.length}：${legLabel(leg, lname)}`, true);
       saveLongTask(bot, r);
@@ -3417,7 +3416,7 @@ function tickLongTask(bot, owner, r, ctx) {
         let ins = null;
         if (!hasItem(bot, stationId) && leg.stationRepairs <= 3 && lt.legs.length <= 60) { try { const sub = planLongTask({ target: stationId, amount: 1, constraints: { forbiddenTargets: (typeof fbIds !== "undefined" ? fbIds : []) } }, countInv(bot), invDurabilityOf(bot)); if (sub && sub.feasible && sub.legs && sub.legs.length) ins = sub.legs; } catch {} }
         if (ins) { lt.legs.splice(lt.legIdx, 0, ...ins); saveLongTask(bot, r); continue; }
-        say(owner, bot, `長期タスクを中断しました。${leg.type === "smelt" ? "かまど" : "作業台"}を用意できませんでした`, true); r.longtask = null; saveLongTask(bot, r); return true;
+        say(owner, bot, `長期タスクを中断しました。${leg.type === "smelt" ? "かまど" : "作業台"}を用意できませんでした`, true); return abortLongTask(bot, owner, r);
       }
       const res = leg.type === "craft" ? executeCraftLeg(invOf(bot), leg) : executeSmeltLeg(invOf(bot), leg);
       // 6-ML ML-H01/H02 (cycle1322, a02): CRAFT/SMELT の実行結果を result 軸へ記録する (記録のみ・分岐不変)。
@@ -3438,23 +3437,36 @@ function tickLongTask(bot, owner, r, ctx) {
         if (leg.repairs > 3 || lt.legs.length > 60) {
           noteFail(bot, "longtask:repair_exhausted", new Error(`${leg.item} missing ${res.missing}`));
           say(owner, bot, `長期タスクを中断しました。${lname(res.missing)}の見積もりが合わず、材料を揃えきれませんでした`, true);
-          r.longtask = null; saveLongTask(bot, r); return true;
+          return abortLongTask(bot, owner, r);
         }
         const inv = countInv(bot);
         const needTotal = countOfGroup(inv, res.missing) + (res.missingCount || 1); // 必要数は「手持ち + 不足分」の合計
         let ins = null;
         try { const sub = planLongTask({ target: concreteItemOf(res.missing, inv), amount: needTotal, constraints: { forbiddenTargets: (typeof fbIds !== "undefined" ? fbIds : []) } }, inv, invDurabilityOf(bot)); if (sub && sub.feasible && sub.legs && sub.legs.length) ins = sub.legs; } catch {}
-        if (!ins && (typeof fbIds !== "undefined" ? fbIds : []).length && ((typeof fbIds !== "undefined" ? fbIds : []).includes(res.missing) || (typeof fbIds !== "undefined" ? fbIds : []).includes(concreteItemOf(res.missing, inv)) || (typeof fbIds !== "undefined" ? fbIds : []).includes("minecraft:" + res.missing))) { noteFail(bot, "longtask:repair_exhausted", new Error(`${leg.item} missing forbidden ${res.missing}`)); say(owner, bot, `長期タスクを中断しました。${lname(res.missing)}は、しないと約束している対象です`, true); r.longtask = null; saveLongTask(bot, r); return true; } // cycle0117 G6-b: 生legフォールバックの禁止照合 (decomposer を通らない唯一の経路)
+        if (!ins && (typeof fbIds !== "undefined" ? fbIds : []).length && ((typeof fbIds !== "undefined" ? fbIds : []).includes(res.missing) || (typeof fbIds !== "undefined" ? fbIds : []).includes(concreteItemOf(res.missing, inv)) || (typeof fbIds !== "undefined" ? fbIds : []).includes("minecraft:" + res.missing))) { noteFail(bot, "longtask:repair_exhausted", new Error(`${leg.item} missing forbidden ${res.missing}`)); say(owner, bot, `長期タスクを中断しました。${lname(res.missing)}は、しないと約束している対象です`, true); return abortLongTask(bot, owner, r); } // cycle0117 G6-b: 生legフォールバックの禁止照合 (decomposer を通らない唯一の経路)
         if (!ins) ins = [{ type: "gather", item: res.missing, need: needTotal, via: null, yRange: null, depth: mineDepthFor(res.missing), crafts: 0, needs: null, station: null }];
         lt.legs.splice(lt.legIdx, 0, ...ins);
         saveLongTask(bot, r); continue;
       }
-      say(owner, bot, `長期タスクを中断しました。${res.reason || "工程に失敗しました"}`, true); r.longtask = null; saveLongTask(bot, r); return true;
+      say(owner, bot, `長期タスクを中断しました。${res.reason || "工程に失敗しました"}`, true); return abortLongTask(bot, owner, r);
     }
     lt.legIdx++;
   }
   if (lt.legIdx >= lt.legs.length) { lt.phase = "deliver"; lt.deliverSince = Date.now(); lt.deliverFails = 0; saveLongTask(bot, r); say(owner, bot, `${lt.name}が揃いました。お届けします`, true); return true; }
   return false;
+}
+// TOOLCHAIN-LT-RESIDUE-01 (cyc2444): tickLongTask の直接中断8経路と allowOnly の同型中断1件の共通畳み。
+// 従来は経路ごとに掃除が手書きされ、保留 (pendingAfterTool/pendingGearSet) の clear が全経路で漏れて
+// 無関係な次 mission の完了時に中断したはずの注文が復活していた。掃除範囲は8経路の和集合で
+// completeLongTask の正規形へ整列する。pendingAfterTool があった場合のみ、:2916 と同一文で破棄を明示する (RG-5 U1 先例)。
+function abortLongTask(bot, owner, r) {
+  const _pt = r.pendingAfterTool || null;
+  if (r.mission) { r.mission = null; clearPlanRecords(r); persistMission(bot, r, true); }
+  r.ltLegActive = false; r.mineLeg = null; r.spiral = null; r.longtask = null;
+  clearPendingTool(bot, r); clearPendingGearSet(bot, r);
+  saveLongTask(bot, r);
+  if (_pt && owner) { try { const _tid = toolItemIdOf(_pt.tool); say(owner, bot, `${_tid ? nameOfItem(_tid) : "指定の道具"}が用意できなかったため、先ほどの指示は始められませんでした`, true); } catch {} }
+  return true;
 }
 // 0-C4 RG-1 (cyc2377): 道具調達の保留 (pendingAfterTool) と道具指定の印を畳む共通掃除。
 // clearPendingCondition と対で使う。中止・保留失効で残すと、無関係な次ミッションの完了時に
@@ -5444,9 +5456,8 @@ function startOrderFromParser(p, bot, r, o) {
       try {
         const lt = r.longtask;
         if (lt?.target && !isAllowedByAllowOnly(r.allowOnly, lt.target, null)) {
-          if (r.mission) { r.mission = null; clearPlanRecords(r); persistMission(bot, r, true); }
-          r.ltLegActive = false; r.mineLeg = null; r.spiral = null; r.longtask = null; saveLongTask(bot, r);
           say(p, bot, "長期タスクも止めました。許可された対象ではありませんでした", true);
+          abortLongTask(bot, p, r); // TOOLCHAIN-LT-RESIDUE-01 (cyc2444): 母数外の同型中断も共通畳みへ (非 return 形)
         }
         const m = r.mission;
         if (m && m.status === "active" && !r.ltLegActive && m.order?.target && !isAllowedByAllowOnly(r.allowOnly, m.order.target, m.order?.kind)) { cancelMission(bot, p, r, true); say(p, bot, "今の指示も止めました。許可された対象ではありませんでした", true); }
