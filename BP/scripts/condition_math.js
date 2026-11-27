@@ -71,6 +71,29 @@ export function evalWindowEnd(condition, env) {
   } catch { return "unknown"; }
 }
 
+// PENDING-FIRE-BUSY-NOLATCH-01 (cyc2410): 繁忙中に条件が成立した事実のラッチ。
+// 繁忙中は開始しないが、成立を metAt として1回だけ記録する (first-wins: 最初の成立時刻を保持し、
+// 繁忙が解けるたびに上書きして猶予が伸び続けることを防ぐ)。戻り値は新しい metAt (不正な now は既存値を保持)。
+export function latchMetAt(existingMetAt, nowMs) {
+  try {
+    if (typeof existingMetAt === "number" && Number.isFinite(existingMetAt) && existingMetAt > 0) return Math.floor(existingMetAt);
+    if (typeof nowMs !== "number" || !Number.isFinite(nowMs) || nowMs <= 0) return null;
+    return Math.floor(nowMs);
+  } catch { return null; }
+}
+
+// PENDING-FIRE-BUSY-NOLATCH-01 (cyc2410): 非繁忙時に保留を開始してよいか。
+// 現在 fire なら従来どおり開始する。現在 fire でなくても、繁忙中に成立がラッチされていれば
+// start 役割の注文は開始する (朝窓が過ぎた直後に仕事が終わっても次の朝まで待たせない)。
+// window 役割は「その間だけ」が本質なので、現在も成立中のときだけ開始する (ラッチでは開始しない)。
+export function pendingFireShouldStart(verdict, metAt, role) {
+  try {
+    if (verdict === "fire") return true;
+    if (role === "window") return false;
+    return typeof metAt === "number" && Number.isFinite(metAt) && metAt > 0;
+  } catch { return false; }
+}
+
 export function conditionExpired(at, nowMs, ttlMs = CONDITION_TTL_MS) {
   try {
     if (typeof at !== "number" || !Number.isFinite(at)) return true; // 時刻が無い保留は期限切れとして扱う (出口を保証する)

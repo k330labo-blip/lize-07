@@ -148,7 +148,7 @@ import { itemSnapshotOf, boxSnapshotOf, buildSortInput, summarizeSort } from "./
 import { createStairLookState, noteStairLook, stairLookPitch } from "./stairlook_math.js"; // POLISH-ANIM-STAIRSLOOK-01 (cycle1455): 表示層のみ・実機確認待ち
 import { createOrderLookState, noteOrderAccepted, sampleOrderLook } from "./orderlook_math.js"; // POLISH-ANIM-ORDERLOOK-01: 指示受理直後の「受けました」の頷き (表示層のみ・実機確認待ち)
 import { createHomebowState, noteHomeArrival, sampleHomebow } from "./homebow_math.js"; // POLISH-ANIM-HOMEBOW-01 (cyc1908): 拠点入庫完了直後の小さな一礼 (表示層のみ・実機確認待ち)
-import { evalCondition, conditionExpired, isEvaluableCondition, conditionRole, evalWindowEnd } from "./condition_math.js"; // 0-C2 読み手 (cycle1337): 条件付き注文の発火判定。R-C2-4 (cyc2380): window 終了判定
+import { evalCondition, conditionExpired, isEvaluableCondition, conditionRole, evalWindowEnd, latchMetAt, pendingFireShouldStart } from "./condition_math.js"; // 0-C2 読み手 (cycle1337): 条件付き注文の発火判定。R-C2-4 (cyc2380): window 終了判定
 import { serializePendingCondition, deserializePendingCondition, normalizePendingCondition } from "./pending_condition_math.js"; // E-01 (cycle1722): 条件保留を DP cb_pending_condition へ永続化し、再起動・回収・死亡での無言消失を防ぐ
 import { detectUnsupportedIntent } from "./unsupported_intent.js"; // 0-C7 (cycle1337): 未対応依頼への明示返答ゲート
 import { BLUEPRINTS, buildOrderOf, materialsSummaryOf, resolveMaterialItem } from "./blueprints.js";
@@ -3880,13 +3880,22 @@ function tickPendingCondition(bot, owner, r, ctx) {
     const pend = r.pendingConditionOrder; if (!pend) return false;
     const now = Date.now();
     if (conditionExpired(pend.at, now)) { clearPendingCondition(bot, r); try { say(owner, bot, "条件の指示は、時間が経ったので取り下げました", true); } catch {} return false; }
-    if ((r.mission && r.mission.status === "active") || r.longtask || r.buildPlan) return false;
+    // PENDING-FIRE-BUSY-NOLATCH-01 (cyc2410): 繁忙ガードで評価ごと捨てず、繁忙中も3秒スロットル配下で評価だけは行う。
+    // 成立したら metAt をラッチして永続化し (first-wins・通知はラッチ時に1回だけ)、開始は繁忙が解けてから行う。
     if (now - (r.pendingConditionCheckAt || 0) < 3000) return false;
     r.pendingConditionCheckAt = now;
     const o = pend.order; const cond = o?.constraints?.condition;
     if (!cond) { clearPendingCondition(bot, r); return false; }
     const verdict = evalCondition(cond, { isRaining: ctx?.env?.isRaining === true, isNight: ctx?.env?.isNight === true, isDawn: ctx?.env?.isDawn === true, ownerHunger: typeof ctx?.owner?.hunger === "number" ? ctx.owner.hunger : undefined });
-    if (verdict !== "fire") return false;
+    const busy = !!((r.mission && r.mission.status === "active") || r.longtask || r.buildPlan);
+    if (busy) {
+      if (verdict === "fire") {
+        const latched = latchMetAt(pend.metAt, now);
+        if (latched && latched !== pend.metAt) { pend.metAt = latched; setPendingCondition(bot, r, pend); try { say(owner, bot, "条件は来ましたが、仕事中でした。終わり次第始めます", true); } catch {} }
+      }
+      return false;
+    }
+    if (!pendingFireShouldStart(verdict, pend.metAt, conditionRole(cond))) return false;
     clearPendingCondition(bot, r);
     // R-C2-4 (cyc2380): window (継続条件) の注文は、開始時に条件の写しを constraints.window へ移す。
     // condition は従来どおり null に潰し再保留ループを防ぐ。start 形では window を付けない。

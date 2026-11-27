@@ -14,7 +14,9 @@ export function normalizePendingCondition(pend) {
     // JSON 往復で複製し、保存できない値 (関数・循環) を含む注文は落とす
     const orderCopy = JSON.parse(JSON.stringify(o));
     if (!orderCopy || typeof orderCopy !== "object") return null;
-    return { order: orderCopy, at: Math.floor(at), ownerId: typeof pend.ownerId === "string" ? pend.ownerId : null };
+    // PENDING-FIRE-BUSY-NOLATCH-01 (cyc2410): 繁忙中の成立ラッチ metAt も往復で保持する (正の有限数だけ。不正値は落とす)
+    const metAt = (typeof pend.metAt === "number" && Number.isFinite(pend.metAt) && pend.metAt > 0) ? Math.floor(pend.metAt) : null;
+    return { order: orderCopy, at: Math.floor(at), ownerId: typeof pend.ownerId === "string" ? pend.ownerId : null, ...(metAt ? { metAt } : {}) };
   } catch { return null; }
 }
 export function serializePendingCondition(pend) {
