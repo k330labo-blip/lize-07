@@ -2800,6 +2800,7 @@ function startMission(bot, owner, r, mo, announce = true, opts = {}) {
 function clearPlanRecords(r) { try { r.planRunner?.cancelCurrent("superseded"); } catch {} try { r.toolNeed = null; r.lastPlan = null; r.lastPlanGate = null; r.lastPlanGateP3 = null; r.lastPlanRevalP4 = null; r.lastPlanGateUnified = null; r.lastPlanRevalFull = null; r.lastPlanRevalAdopt = null; r.lastPlanRevalFullAdopt = null; r.lastPlanGateUnifiedAdopt = null; r.lastGoal = null; r.lastPlanInspect = null; r.lastPlanAt = 0; r.planAdoptSeen = null; r.planAdoptShieldUsedFor = null; r.lastPlanAdoptEffect = null; r.tracePlanSeen = null; r.traceActSeen = null; } catch {} }
 function finishMission(bot, owner, r) {
   r.mission = null; clearPlanRecords(r);
+  r.tunnel = null; r.d2Anchor = null; // TUNNELEXIT-STALE-TUNNEL-01 (cyc2402): 終了経路で掘進状態を畳む (tunnelPath は帰還のため残す。残留すると exitTunnelIfNeeded の !r.tunnel が恒久的に偽になり帰還も clearPathAhead の救済も閉じる)
   try { r.requestedTool = null; r.toolAppliedLegIdx = null; } catch {} // R-C4-1: 道具指定は mission 単位。残留を仕様にしない / RG-6 (cyc2377): leg 適用印も同様
   // 0-C4 R-C4-1 (cyc2375): 先行調達した指定道具が揃ったら、本来の注文を開始する (揃わなければ繋がない)
   try {
@@ -2890,7 +2891,7 @@ function completeLongTask(bot, owner, r, ok = true, note = "", msg = null) {
   if (msg) say(owner, bot, msg, true);
   else if (ok) say(owner, bot, `長期タスク、完了しました。${lt.name}を${lt.amount}個、${lt.returnTo === "home" ? "拠点へ入庫しました" : "お渡ししました"}${note}`, true);
   else say(owner, bot, `長期タスクは揃えたのですが、納品できませんでした。${note}`, true);
-  r.longtask = null; r.mineLeg = null; r.spiral = null; r.ltLegActive = false;
+  r.longtask = null; r.mineLeg = null; r.spiral = null; r.ltLegActive = false; r.tunnel = null; r.d2Anchor = null; // TUNNELEXIT-STALE-TUNNEL-01 (cyc2402)
   try { r.requestedTool = null; r.toolAppliedLegIdx = null; } catch {} // R-C4-1: 掃除 / RG-6 (cyc2377)
   // 0-C4 R-C4-1 (cyc2375): 指定道具の調達が長期タスクで完了した場合、本来の注文へつなぐ
   try {
@@ -3457,6 +3458,7 @@ function cancelMission(bot, owner, r, silent = false) {
   clearPendingTool(bot, r); // RG-1 (cyc2377): 中止は道具調達の保留も畳む (条件保留と同じ非対称の解消)
   if (r.mission) { r.mission = null; clearPlanRecords(r); persistMission(bot, r, true); dps(bot, "cb_order", ""); }
   r.work = null; r.workHoldLeg = null; r.workChain = null; // cycle0033 F2: cancelled work must not keep occupying tickAutonomy
+  r.tunnel = null; r.d2Anchor = null; // TUNNELEXIT-STALE-TUNNEL-01 (cyc2402): 中止も終了経路として掘進状態を畳む (tunnelPath は残す)
   r.buildPlan = null;
   r.buildStallKey = null; r.buildStallSince = 0; r.buildStallBest = null; r.buildDangerSince = null; r.buildDangerNoted = false; r.buildProgressAt = null; r.buildProgressIdx = null; r.buildProgressPlaced = null; // 基礎 R-3 (v0.4.81, cycle0417-a04): 中止した建築の stall/危険時計を残さない + BUILD-HOLD-NOEXIT (cycle1343)
   clearPendingGearSet(bot, r); // 0-F R-2 (cyc2379): 中止は一式の残り部位も畳む (残すと次ミッション完了時に未依頼部位が開始する)
