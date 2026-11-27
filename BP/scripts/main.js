@@ -512,7 +512,7 @@ function buildContext(bot, owner) {
     self: { hpPct: bHp.max ? bHp.cur / bHp.max : 1, distOwner: owner ? dist(bot.location, owner.location) : 999, distHome: homeDist, stuck: r.stuckSec >= 3, stuckSec: r.stuckSec },
     owner: { present: !!owner, hpPct: owner ? (oHp.max ? oHp.cur / oHp.max : 1) : 0, hunger: 20, sneaking: false, sprinting: false, inWater: false, onFire: false, idleSec: 0, underground: false, dimensionSame: !!owner && owner.dimension.id === dim.id, dead: !owner },
     inv: { used: 0, size: 27, full: false, nearFull: false, hasFood: false, foodCount: 0, hasValuable: false, valuableCount: 0, hasTorch: false, hasWeapon: false },
-    env: { isNight: false, isDawn: false, isDusk: false, isRaining: false, isThundering: false },
+    env: { isNight: false, isDawn: false, isDusk: false, isRaining: undefined, isThundering: undefined }, // PENDING-ENV-UNKNOWN-RAINEND-01 (cyc2459): 天気2項目は未観測を undefined とし、取得成功時だけ代入する (測れた晴れ=false と区別する)
     danger: { nearestDist: 999, count: 0, creeperDist: 999, rangedDist: 999, lavaNear: false, ownerLavaNear: false, lavaBelow: false, lavaBelowDist: 999, ownerTargeted: false },
     drops: { count: 0, nearestDist: -1, valuableDist: -1, foodDist: -1, ownerDroppedDist: -1 },
     home: { registered: !!home, chestFull: false, chestMissing: false, dist: homeDist, dimensionSame: homeSameDim, depositBlocked }, // cycle0740 deposit P2
@@ -574,7 +574,7 @@ function buildContext(bot, owner) {
   c.owner.idleSec = ort.lastMoveAt ? (Date.now() - ort.lastMoveAt) / 1000 : 0;
   const tod = world.getTimeOfDay();
   c.env.isNight = tod >= 13000 && tod <= 23000; c.env.isDawn = tod >= 23000 || tod < 1000; c.env.isDusk = tod >= 11000 && tod < 13000;
-  try { const w = dim.getWeather?.(); c.env.isRaining = w === "Rain" || w === "Thunder"; c.env.isThundering = w === "Thunder"; } catch {}
+  try { const w = dim.getWeather?.(); if (typeof w === "string") { c.env.isRaining = w === "Rain" || w === "Thunder"; c.env.isThundering = w === "Thunder"; } } catch {} // PENDING-ENV-UNKNOWN-RAINEND-01: 取得失敗・未対応では触らず undefined (未観測) のままにする
   // 走査: 敵・ドロップ・他プレイヤー
   const radius = mode === "work" ? 20 : mode === "stay" ? 10 : 14;
   // v0.4.66: 見える範囲を拡大。指示・長期タスク中はドロップ品も遠くまで拾いに行く。
@@ -3657,8 +3657,9 @@ function noteRainshelter(bot, dim, r, c) {
   try {
     if (!r.rainshelterState) r.rainshelterState = createRainShelterState();
     const now = Date.now();
-    const raining = c?.env?.isRaining === true;
-    if (raining) { if (!r.rainSinceMs) r.rainSinceMs = now; } else { r.rainSinceMs = null; r.rainshelterExposed = null; r.rainshelterCoverYaw = null; }
+    const rainingRaw = c?.env?.isRaining;
+    const raining = rainingRaw === true;
+    if (raining) { if (!r.rainSinceMs) r.rainSinceMs = now; } else if (rainingRaw === false) { r.rainSinceMs = null; r.rainshelterExposed = null; r.rainshelterCoverYaw = null; } // PENDING-ENV-UNKNOWN-RAINEND-01: 未観測 tick では消去分岐へ入らずタイマーを保持する
     if (raining && r.rainSinceMs && now - r.rainSinceMs >= 20000 && now - (r.rainshelterScanAt || 0) >= 1000) {
       r.rainshelterScanAt = now;
       try {
@@ -3684,7 +3685,7 @@ function noteDryoff(r, c) {
     if (!r || !c) return;
     if (!r.dryoffState) r.dryoffState = { prevRaining: undefined, startedAtMs: null, lastFiredAtMs: null };
     let inWater = false; try { inWater = !!c.x?.inWater; } catch {}
-    const fired = noteDryoffState(r.dryoffState, { isRaining: c.env?.isRaining === true, nowMs: Date.now(), danger: !!(c.danger && c.danger.count > 0), hasWorkTarget: !!r.work, falling: r.selfFalling === true, inWater, flinchActive: isFlinchActive(r.flinchAnimAt, Date.now()), inspectActive: isInspectActive(r.inspectAnimAt, Date.now()), nodActive: isNodActive(r.nodAnimAt, Date.now()), skyglanceActive: isSkyglanceActive(r.skyglanceAt, Date.now()), lookbackActive: isLookbackActive(r.lookbackAnimAt, Date.now()), summonScanActive: isSummonScanActive(r.summonScanAt, Date.now()) });
+    const fired = noteDryoffState(r.dryoffState, { isRaining: c.env?.isRaining, nowMs: Date.now(), danger: !!(c.danger && c.danger.count > 0), hasWorkTarget: !!r.work, falling: r.selfFalling === true, inWater, flinchActive: isFlinchActive(r.flinchAnimAt, Date.now()), inspectActive: isInspectActive(r.inspectAnimAt, Date.now()), nodActive: isNodActive(r.nodAnimAt, Date.now()), skyglanceActive: isSkyglanceActive(r.skyglanceAt, Date.now()), lookbackActive: isLookbackActive(r.lookbackAnimAt, Date.now()), summonScanActive: isSummonScanActive(r.summonScanAt, Date.now()) });
     if (fired) r.dryoffAt = r.dryoffState.startedAtMs;
   } catch {}
 }
@@ -3692,7 +3693,7 @@ function noteSkyglance(r, raining, danger) {
   try {
     if (!r) return;
     const was = r.prevRaining;
-    r.prevRaining = raining === true;
+    if (typeof raining === "boolean") r.prevRaining = raining; // PENDING-ENV-UNKNOWN-RAINEND-01: 未観測 tick では状態を前進させない (雨→未観測→雨で降り始めの辺を偽造しない)
     if (shouldSkyglance({ wasRaining: was, isRaining: raining === true, danger: danger === true, hasWorkTarget: !!r.work, flinchActive: isFlinchActive(r.flinchAnimAt, Date.now()), inspectActive: isInspectActive(r.inspectAnimAt, Date.now()), nodActive: isNodActive(r.nodAnimAt, Date.now()), lastFiredAtMs: r.skyglanceLastAt ?? null, nowMs: Date.now() })) { r.skyglanceAt = Date.now(); r.skyglanceLastAt = r.skyglanceAt; }
   } catch {}
 }
@@ -3714,7 +3715,7 @@ function noteFullMoonGaze(bot, r, c) {
     if (!r.fullmoonState) r.fullmoonState = createFullMoonState();
     let phaseIdx; try { const mp = typeof world.getMoonPhase === "function" ? world.getMoonPhase() : undefined; phaseIdx = typeof mp === "number" ? mp : undefined; } catch { phaseIdx = undefined; }
     let nightKey; try { nightKey = world.getDay(); } catch { nightKey = undefined; }
-    const ev = noteFullMoon(r.fullmoonState, { moonPhaseIndex: phaseIdx, nightKey, isNight: c?.env?.isNight === true, nowMs: Date.now(), danger: !!((c?.danger?.count ?? 0) > 0), combat: !!((c?.danger?.count ?? 0) > 0), falling: r.selfFalling === true, inWater: !!bot.isInWater, isRaining: c?.env?.isRaining === true, hasWorkTarget: !!r.work });
+    const ev = noteFullMoon(r.fullmoonState, { moonPhaseIndex: phaseIdx, nightKey, isNight: c?.env?.isNight, nowMs: Date.now(), danger: !!((c?.danger?.count ?? 0) > 0), combat: !!((c?.danger?.count ?? 0) > 0), falling: r.selfFalling === true, inWater: !!bot.isInWater, isRaining: c?.env?.isRaining === true, hasWorkTarget: !!r.work });
     if (ev?.fired) r.lastFullMoonGaze = { at: Date.now(), nightKey };
   } catch {}
 }
@@ -3934,7 +3935,7 @@ function tickPendingCondition(bot, owner, r, ctx) {
     r.pendingConditionCheckAt = now;
     const o = pend.order; const cond = o?.constraints?.condition;
     if (!cond) { clearPendingCondition(bot, r); return false; }
-    const verdict = evalCondition(cond, { isRaining: ctx?.env?.isRaining === true, isNight: ctx?.env?.isNight === true, isDawn: ctx?.env?.isDawn === true, ownerHunger: typeof ctx?.owner?.hunger === "number" ? ctx.owner.hunger : undefined });
+    const verdict = evalCondition(cond, { isRaining: typeof ctx?.env?.isRaining === "boolean" ? ctx.env.isRaining : undefined, isNight: typeof ctx?.env?.isNight === "boolean" ? ctx.env.isNight : undefined, isDawn: typeof ctx?.env?.isDawn === "boolean" ? ctx.env.isDawn : undefined, ownerHunger: typeof ctx?.owner?.hunger === "number" ? ctx.owner.hunger : undefined }); // PENDING-ENV-UNKNOWN-RAINEND-01: window 側 (:3981) と同型に三状態を保持し、未観測を false へ潰さない
     const busy = !!((r.mission && (r.mission.status === "active" || r.mission.status === "suspended")) || r.longtask || r.buildPlan); // PENDING-FIRE-SUSPENDED-CLOBBER-01
     if (busy) {
       if (verdict === "fire") {

@@ -46,6 +46,7 @@ function realSpan(ticks) {
 }
 function phaseFromEnv(env) {
   if (!env) return null;
+  if (typeof env.isDawn !== "boolean" && typeof env.isDusk !== "boolean" && typeof env.isNight !== "boolean") return null; // PENDING-ENV-UNKNOWN-RAINEND-01: 時刻が全て未観測なら「昼」と断定しない
   if (env.isDawn) return "明け方";
   if (env.isDusk) return "夕方";
   if (env.isNight) return "夜";
@@ -180,6 +181,7 @@ def("weather",
     if (!c.env) return unknown(t);
     if (c.env.isThundering) return "雷雨です。雷が落ちます。高い場所は避けてください";
     if (c.env.isRaining) return c.x?.biome === "snow" ? "雪が降っています" : "雨が降っています";
+    if (typeof c.env.isRaining !== "boolean" || typeof c.env.isThundering !== "boolean") return unknown(t); // PENDING-ENV-UNKNOWN-RAINEND-01: 天気が測れていない時に晴れと断定しない
     return "晴れています";
   });
 
