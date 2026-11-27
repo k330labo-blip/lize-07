@@ -389,8 +389,8 @@ function rt(bot) {
   if (r.pendingConditionOrder === undefined) { // E-01 (cycle1722): 条件保留を DP cb_pending_condition から復元 (undefined センチネル方式、mission と同形。壊れた保存は保留なし)
     try { r.pendingConditionOrder = deserializePendingCondition(dp(bot, "cb_pending_condition", "")); } catch { r.pendingConditionOrder = null; }
   }
-  if (r.pendingGearSet === undefined) { // 0-F R-2 (cyc2379): 一式の残り部位を DP cb_pending_gear から復元 (undefined センチネル方式)。mission が無い/復元で破棄された場合は復元せず DP 残骸も掃除する (単独では発火させない)
-    try { const gj = dp(bot, "cb_pending_gear", ""); const arr = gj ? JSON.parse(gj) : null; const okArr = Array.isArray(arr) ? arr.filter((x) => typeof x === "string" && x.startsWith("minecraft:")) : []; r.pendingGearSet = (r.mission && okArr.length) ? okArr : null; if (!r.pendingGearSet) dps(bot, "cb_pending_gear", ""); } catch { r.pendingGearSet = null; }
+  if (r.pendingGearSet === undefined) { // 0-F R-2 (cyc2379): 一式の残り部位を DP cb_pending_gear から復元 (undefined センチネル方式)。mission が無い/復元で破棄された場合は復元せず DP 残骸も掃除する (単独では発火させない)。GEARSET-CHAIN-LTDEAD-01 (cyc2400): 部位の実行形は長期タスクが通常経路のため、存続条件に DP cb_longtask の存在も加える (復元順が longtask 復元より前段にあるため DP を直接見る)
+    try { const gj = dp(bot, "cb_pending_gear", ""); const arr = gj ? JSON.parse(gj) : null; const okArr = Array.isArray(arr) ? arr.filter((x) => typeof x === "string" && x.startsWith("minecraft:")) : []; let hasLt = false; try { const lj2 = dp(bot, "cb_longtask", ""); const lo2 = lj2 ? JSON.parse(lj2) : null; hasLt = !!(lo2 && typeof lo2 === "object"); } catch {} r.pendingGearSet = ((r.mission || hasLt) && okArr.length) ? okArr : null; if (!r.pendingGearSet) dps(bot, "cb_pending_gear", ""); } catch { r.pendingGearSet = null; }
   }
   if (r.pendingAfterTool === undefined) { // RG U3 (cyc2394): 道具調達の保留注文を DP cb_pending_tool から復元 (undefined センチネル方式)。保存対象は注文オブジェクトのため kind/target/tool の形検証を行い、壊れた保存は保留なし＋DP残骸掃除。mission が無い場合は復元せず単独では発火させない
     try { const tj = dp(bot, "cb_pending_tool", ""); const mo2 = tj ? JSON.parse(tj) : null; const okMo = !!(mo2 && typeof mo2 === "object" && typeof mo2.kind === "string" && mo2.kind && typeof mo2.target === "string" && mo2.target && typeof mo2.tool === "string" && mo2.tool); r.pendingAfterTool = (r.mission && okMo) ? mo2 : null; if (!r.pendingAfterTool) dps(bot, "cb_pending_tool", ""); } catch { r.pendingAfterTool = null; }
@@ -2902,6 +2902,16 @@ function completeLongTask(bot, owner, r, ok = true, note = "", msg = null) {
       if (haveTool) startMission(bot, owner, r, next);
       else { try { say(owner, bot, `${tid ? nameOfItem(tid) : "指定の道具"}が用意できなかったため、先ほどの指示は始められませんでした`, true); } catch {} } // RG-5 U1 (cyc2392)
     } else if (r.pendingAfterTool) { const _pt = r.pendingAfterTool; r.pendingAfterTool = null; savePendingTool(bot, r); try { const _tid = toolItemIdOf(_pt.tool); say(owner, bot, `${_tid ? nameOfItem(_tid) : "指定の道具"}が用意できなかったため、先ほどの指示は始められませんでした`, true); } catch {} } // RG-5 U1 (cyc2392): 失敗終了時の無言破棄も明示する
+  } catch {}
+  // GEARSET-CHAIN-LTDEAD-01 (cyc2400): 一式の部位は startMission の長期タスク分岐へ吸われるのが通常経路で、その完了は finishMission でなくここを通る。成功時に限り、道具チェーンが次の作業を開始していない場合のみ残り部位を1つ消費して開始する (finishMission 側の消費と shift 時点確定の作法を揃え、二重前進しない)
+  try {
+    if (ok && owner && !r.mission && !r.longtask && Array.isArray(r.pendingGearSet) && r.pendingGearSet.length) {
+      const next = r.pendingGearSet.shift();
+      if (!r.pendingGearSet.length) r.pendingGearSet = null;
+      savePendingGearSet(bot, r);
+      startMission(bot, owner, r, { kind: "gather", target: next, amount: 1, constraints: { hostiles: "avoid", forbiddenTargets: [] }, sideTasks: [], returnTo: "owner", name: null, tool: null, placement: null });
+      persistMission(bot, r, true);
+    }
   } catch {}
   saveLongTask(bot, r);
   dps(bot, "cb_order", "");
