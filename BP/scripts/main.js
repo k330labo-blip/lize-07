@@ -3898,7 +3898,7 @@ function tickPendingCondition(bot, owner, r, ctx) {
     const o = pend.order; const cond = o?.constraints?.condition;
     if (!cond) { clearPendingCondition(bot, r); return false; }
     const verdict = evalCondition(cond, { isRaining: ctx?.env?.isRaining === true, isNight: ctx?.env?.isNight === true, isDawn: ctx?.env?.isDawn === true, ownerHunger: typeof ctx?.owner?.hunger === "number" ? ctx.owner.hunger : undefined });
-    const busy = !!((r.mission && r.mission.status === "active") || r.longtask || r.buildPlan);
+    const busy = !!((r.mission && (r.mission.status === "active" || r.mission.status === "suspended")) || r.longtask || r.buildPlan); // PENDING-FIRE-SUSPENDED-CLOBBER-01
     if (busy) {
       if (verdict === "fire") {
         const latched = latchMetAt(pend.metAt, now);
