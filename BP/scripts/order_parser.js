@@ -1107,9 +1107,16 @@ export function parseOrder(input) {
           matOf.push(curMat);
         }
         const first = mentions[0], last = mentions[mentions.length - 1];
-        // 純列挙性: メンション間は接続詞・素材接頭辞・「を」だけ。列挙範囲内に個数句があれば譲る
+        // 純列挙性: メンション間は接続詞・素材接頭辞・「を」だけ。個数句があれば譲る
+        // U-F-TAILQTY-01 (cyc2403): 検査窓は末尾個数 (最後の部位の直後〜作製動詞) まで広げる。
+        // 末尾窓の終端は gearEnumCountOf と同一 (最初の作製動詞/句読点)。単位は 個|つ。
         let pure = matOk;
-        if (pure && /(\d+|[一二三四五六七八九十]+)\s*個/.test(text.slice(first.start, last.end))) pure = false;
+        if (pure) {
+          const tailRest = text.slice(last.end);
+          const tailM = tailRest.match(/(作って|作る|ください|欲しい|ちょうだい|お願い|、|。)/);
+          const winEnd = tailM ? last.end + tailM.index : text.length;
+          if (/(\d+|[一二三四五六七八九十]+)\s*(個|つ)/.test(text.slice(first.start, winEnd))) pure = false;
+        }
         if (pure) {
           for (let k = 1; k < mentions.length; k++) {
             let between = text.slice(mentions[k - 1].end, mentions[k].start);
