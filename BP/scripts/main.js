@@ -2806,6 +2806,7 @@ function finishMission(bot, owner, r) {
       try { haveTool = !!tid && ((countInv(bot)[tid] || 0) > 0 || equipCoreOf(bot, r)?.getEquipped("Mainhand")?.typeId === tid); } catch {}
       if (haveTool) { startMission(bot, owner, r, next); return; }
       r.lastToolRequest = { itemId: tid, action: "procure", ok: false, at: Date.now() };
+      try { say(owner, bot, `${tid ? nameOfItem(tid) : "指定の道具"}が用意できなかったため、先ほどの指示は始められませんでした`, true); } catch {} // RG-5 U1 (cyc2392): 無言消失の是正。破棄の事実を明示する
     }
   } catch {}
   // 0-F2 (cyc2003): 防具一式の残り部位があれば次を開始する (完了した部位は再開しない)
@@ -2895,7 +2896,8 @@ function completeLongTask(bot, owner, r, ok = true, note = "", msg = null) {
       let haveTool = false;
       try { haveTool = !!tid && ((countInv(bot)[tid] || 0) > 0 || equipCoreOf(bot, r)?.getEquipped("Mainhand")?.typeId === tid); } catch {}
       if (haveTool) startMission(bot, owner, r, next);
-    } else if (r.pendingAfterTool) { r.pendingAfterTool = null; }
+      else { try { say(owner, bot, `${tid ? nameOfItem(tid) : "指定の道具"}が用意できなかったため、先ほどの指示は始められませんでした`, true); } catch {} } // RG-5 U1 (cyc2392)
+    } else if (r.pendingAfterTool) { const _pt = r.pendingAfterTool; r.pendingAfterTool = null; try { const _tid = toolItemIdOf(_pt.tool); say(owner, bot, `${_tid ? nameOfItem(_tid) : "指定の道具"}が用意できなかったため、先ほどの指示は始められませんでした`, true); } catch {} } // RG-5 U1 (cyc2392): 失敗終了時の無言破棄も明示する
   } catch {}
   saveLongTask(bot, r);
   dps(bot, "cb_order", "");
@@ -5393,6 +5395,9 @@ function startOrderFromParser(p, bot, r, o) {
     if (reason === "excluded_only") { try { recordSessionForbids(bot, r, { negations: o.unresolved?.[0]?.negations?.length ? o.unresolved[0].negations : (o.negations || []) }); } catch {} say(p, bot, `分かりました。${nm ? forbidTargetName(nm) + "は対象にしません" : "その対象は外します"}。では、何を対象にしましょうか`, true); } // forbids G5-a (cycle0423): 発話で約束した除外をセッション禁止にも記録する (correction_without_base では記録しない)
     else if (reason === "gather_target_is_entity") say(p, bot, `${o.target?.name || "その生き物"}そのものは集められません。欲しい品物の名前で教えてください`, true); // 0-C4 R-C4-3 (cyc2373)
     else if (reason === "correction_without_base") say(p, bot, `${nm ? forbidTargetName(nm) + "ではない、ですね" : "訂正ですね"}。${o.retainedCandidates?.[0]?.name ? `${o.retainedCandidates[0].name}でよろしいですか` : "正しい対象を教えてください"}`, true);
+    else if (reason === "chainmail_not_craftable") say(p, bot, "鎖の防具は作れません。作業台にレシピがありません。別の素材で、部位と一緒に言ってください", true); // 0-F R-5 (cyc2392)
+    else if (reason === "netherite_upgrade_only") say(p, bot, "ネザライト防具は、直接は作れません。ダイヤ防具を鍛冶で強化する形です。ダイヤの部位で言ってください", true); // 0-F R-5 (cyc2392)
+    else if (reason === "armor_part_without_material") say(p, bot, "どの素材か分かりません。ダイヤや鉄など、素材と部位を一緒に言ってください", true); // 0-F R-5 (cyc2392)
     else say(p, bot, "何を指しているか分かりませんでした。名前で教えてください", true);
     return;
   }
