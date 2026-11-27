@@ -27,6 +27,7 @@ import createWorldMemory from "./world_memory.js";
 import { genSpeech } from "./gen_speech.js";
 import { parseOrder, resumeClarifyOrder, classifyClarifyUnmatched } from "./order_parser.js";
 import { orderAmountOrDefault } from "./qty_default_math.js"; // 0-N1 QTY-DEFAULT-01 (cyc2447): 数量省略時の対象別デフォルト (純粋核)
+import { shearDisclosureFor, SHEAR_DISCLOSURE_NOTE } from "./shear_honest_math.js"; // 0-N5 SHEAR-HONEST-01 (cyc2452): 羊毛刈りの方式明示 (純粋核)
 import { resolveItem } from "./decomposer.js"; // 倉庫 W3-TEACH (cyc2355): 素材名→typeId の単一の正 (注文経路と共用)
 import { resolveRequestedTool, toolItemIdOf } from "./tool_request_math.js"; // 0-C4 R-C4-1 (cyc2375): 道具指定の実行側 reader 純粋核
 import { resolvePlacement, linkedPlacementCells, placementItemIdOf } from "./placement_resolve.js"; // 0-C4 R-C4-2 (cyc2376): 設置位置の実行側 reader 純粋核
@@ -2800,6 +2801,7 @@ function startMission(bot, owner, r, mo, announce = true, opts = {}) {
     const sides = (mo.sideTasks || []).map((s) => nameOfItem(s.target)).join("、");
     let line = `承知しました。${nameOfItem(mo.target)}を${mo.amount}個、集めます。${ht}${sides ? `途中で${sides}も集めながら行きます。` : ""}${mo.returnTo === "home" ? "集めたら拠点へ入庫します。" : ""}`;
     if (r.toolUseNote) { line += r.toolUseNote; r.toolUseNote = null; } // R-C4-1: 指定道具を装備できた場合のみ受理発話へ足す
+    if (mo.shearHonest) line += SHEAR_DISCLOSURE_NOTE; // SHEAR-HONEST-01 (0-N5, cyc2452): 毛刈りでなく討伐方式であることを受理時に明示する
     if (plan?.support === "gather_only") line += "精錬の工程は未対応です。原料の回収まで行います。";
     if (plan?.support === "unsupported") line += "……その素材は、私では採取できません。別の方法を考えてください。";
     say(owner, bot, line, true);
@@ -2895,7 +2897,7 @@ function startLongTask(bot, owner, r, mo, plan, announce = true) {
   try { if (mo.tool) { applyRequestedTool(bot, owner, r, mo.tool); r.toolAppliedLegIdx = 0; } } catch {} // R-C4-1: 長期タスクでも指定道具を装備へ接続する (調達は plan の工程に任せ、ここでは装備のみ) / RG-6 (cyc2377): 開始時適用済みの印を立て、初回 tick での二重適用を防ぐ
   persistMission(bot, r, true); saveLongTask(bot, r);
   dps(bot, "cb_order", JSON.stringify({ ...mo, longtask: true, startedAt: Date.now() }));
-  if (announce) { const tn = r.toolUseNote || ""; r.toolUseNote = null; say(owner, bot, `承知しました。${ltName}を${plan.target.count}個ですね。手段は私が組み立てます。全${plan.legs.length}工程、まず「${legLabel(plan.legs[0], lname)}」から始めます。遠くへ行くかもしれませんが、呼び戻せば戻ります${tn ? `。${tn}` : ""}`, true); }
+  if (announce) { const tn = r.toolUseNote || ""; r.toolUseNote = null; say(owner, bot, `承知しました。${ltName}を${plan.target.count}個ですね。手段は私が組み立てます。全${plan.legs.length}工程、まず「${legLabel(plan.legs[0], lname)}」から始めます。遠くへ行くかもしれませんが、呼び戻せば戻ります${tn ? `。${tn}` : ""}${mo.shearHonest ? `。${SHEAR_DISCLOSURE_NOTE}` : ""}`, true); } // SHEAR-HONEST-01 (0-N5, cyc2452): 長期タスク経路でも方式を明示する
 }
 function completeLongTask(bot, owner, r, ok = true, note = "", msg = null) {
   const lt = r.longtask;
@@ -5358,7 +5360,10 @@ function parserOrderToMission(o) {
   const sideTasks = (o.sideTasks || []).map((s) => { const st = s.target || {}; const id = typeof st === "string" ? st : (st.item || st.block || st.entity); return id ? { kind: s.kind === "hunt" ? "hunt" : "gather", target: id, amount: s.amount ?? 8 } : null; }).filter(Boolean);
   const forbiddenTargets = [...new Set((o.negations || []).map((n) => n?.target?.item || n?.target?.block || n?.target?.entity).filter(Boolean))].filter((id) => id !== (t.item || t.block || t.entity));
   const aoId = o.allowOnly?.target ? (typeof o.allowOnly.target === "string" ? o.allowOnly.target : (o.allowOnly.target.item || o.allowOnly.target.block || o.allowOnly.target.entity || null)) : null;
-  return { kind: o.kind === "hunt" ? "hunt" : "gather", target: t.item || t.block || t.entity || null, amount: orderAmountOrDefault(o), constraints: { hostiles, forbiddenTargets, caps: Array.isArray(o.caps) ? o.caps : [], window: o.constraints?.window ? { raw: o.constraints.window.raw || "", kind: o.constraints.window.kind || "" } : null, allowOnly: aoId ? { target: aoId, verb: o.allowOnly.verb ?? null } : null }, sideTasks, returnTo: o.returnTo === "home" ? "home" : "owner", name: t.name || null, tool: o.tool ?? null, placement: o.placement ?? null, gearSet: Array.isArray(o.gearSet) ? o.gearSet : null }; // 0-C2 (cycle1215): caps を mission 制約へ同梱 (保持のみ)。0-C4 (cycle1321): 道具と設置位置も保持する。R-C2-4 (cyc2380): window 写しも保持する。R-C2-6 U6-2 (cyc2384): 注文自身の allowOnly も写す (永続化はしない)
+  // SHEAR-HONEST-01 (0-N5, cyc2452): 毛刈り意図の羊毛注文は、使わないハサミ指定を消費し
+  // (調達・装備・「ハサミでやります」を出さない)、方式明示の印だけを mission へ保持する。
+  const shearDisc = shearDisclosureFor({ tool: o.tool, target: t.item || t.block || null, raw: o.raw, kind: o.kind });
+  return { kind: o.kind === "hunt" ? "hunt" : "gather", target: t.item || t.block || t.entity || null, amount: orderAmountOrDefault(o), constraints: { hostiles, forbiddenTargets, caps: Array.isArray(o.caps) ? o.caps : [], window: o.constraints?.window ? { raw: o.constraints.window.raw || "", kind: o.constraints.window.kind || "" } : null, allowOnly: aoId ? { target: aoId, verb: o.allowOnly.verb ?? null } : null }, sideTasks, returnTo: o.returnTo === "home" ? "home" : "owner", name: t.name || null, tool: shearDisc ? null : (o.tool ?? null), shearHonest: !!shearDisc, placement: o.placement ?? null, gearSet: Array.isArray(o.gearSet) ? o.gearSet : null }; // 0-C2 (cycle1215): caps を mission 制約へ同梱 (保持のみ)。0-C4 (cycle1321): 道具と設置位置も保持する。R-C2-4 (cyc2380): window 写しも保持する。R-C2-6 U6-2 (cyc2384): 注文自身の allowOnly も写す (永続化はしない)
 }
 
 // Phase5 否定配線 (NEGW): 禁止・聞き返しは mission を作らない。記録と復唱/聞き返しのみ。
