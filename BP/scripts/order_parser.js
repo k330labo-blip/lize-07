@@ -953,6 +953,13 @@ function placementOf(clause, anchorInfo) {
   } catch { return null; }
 }
 
+// 0-F R-7a (cyc2397): 防具素材/部位表はモジュールスコープへ昇格し、後続の部位列挙
+// プリパス (R-4a) と共有する (重複定義によるドリフト防止)。
+const GEAR_MATS = [["ダイヤモンド", "diamond", "ダイヤ"], ["ダイヤ", "diamond", "ダイヤ"], ["鉄", "iron", "鉄"], ["アイアン", "iron", "鉄"], ["金", "golden", "金"], ["ゴールド", "golden", "金"], ["革", "leather", "革"], ["レザー", "leather", "革"]];
+const GEAR_PARTS = [["helmet", "ヘルメット"], ["chestplate", "チェストプレート"], ["leggings", "レギンス"], ["boots", "ブーツ"]];
+// 0-F R-7a U7-1: 引用/仮定形 (と言ったら等) では一式作製を発火させない。
+const GEAR_QUOTE_RE = /(と言ったら|と言えば|って言ったら|って言えば)/;
+
 // ---------------------------------------------------------------- 本体
 /**
  * parseOrder(text) -> 注文オブジェクト | null
@@ -1017,13 +1024,16 @@ export function parseOrder(input) {
   // 質問形 (コスト質問の一式応答は chat_tools 側の正常例) では発火しない。ネザライトは
   // 鍛冶強化で直接クラフトできないため対象外 (一式のコスト応答が既存の正)。
   try {
-    if (!/[？?]/.test(text) && !/(何個|いくつ|要る|必要|コスト)/.test(text)) {
-      const GEAR_MATS = [["ダイヤモンド", "diamond", "ダイヤ"], ["ダイヤ", "diamond", "ダイヤ"], ["鉄", "iron", "鉄"], ["アイアン", "iron", "鉄"], ["金", "golden", "金"], ["ゴールド", "golden", "金"], ["革", "leather", "革"], ["レザー", "leather", "革"]];
-      const GEAR_PARTS = [["helmet", "ヘルメット"], ["chestplate", "チェストプレート"], ["leggings", "レギンス"], ["boots", "ブーツ"]];
+    if (!/[？?]/.test(text) && !/(何個|いくつ|要る|必要|コスト)/.test(text) && !GEAR_QUOTE_RE.test(text)) {
       let gm = null;
       for (const [word, mid, disp] of GEAR_MATS) { if (text.includes(word + "フル") || text.includes(word + "のフル") || text.includes(word + "一式") || text.includes(word + "の一式")) { gm = { mid, disp }; break; } }
       if (!gm && /(防具|装備)一式/.test(text)) { for (const [word, mid, disp] of GEAR_MATS) { if (text.includes(word)) { gm = { mid, disp }; break; } } }
       if (gm && /(作って|作る|ください|欲しい|ちょうだい|お願い)/.test(text)) {
+        // 0-F R-7a U7-2: 文頭の条件節は constraints.condition として保持する
+        // (消費側 startOrderFromParser は gearSet 判定より前段で条件保留へ回すため、
+        //  parser が条件を付けるだけで保留→再投入で一式が保持される)。
+        const gearCond = extractConditionPrefix(text);
+        if (gearCond) constraints.condition = gearCond;
         const ids = GEAR_PARTS.map(([pid]) => `${gm.mid}_${pid}`);
         return { kind: "build", target: { item: ids[0], block: null, entity: null, name: `${gm.disp}の${GEAR_PARTS[0][1]}` }, amount: 1, constraints, sideTasks: [], negations: [], unresolved: [], caps: [], tool: null, placement: null, gearSet: ids, gearMaterial: gm.disp, returnTo: "owner", raw };
       }
