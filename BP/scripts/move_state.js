@@ -8,7 +8,7 @@ const LAND_DROP = 0.6, EVENT_CAP = 32; // cycle1940: 到達可能性監査 (a05)
 function fin(v) { return typeof v === "number" && Number.isFinite(v) ? v : null; }
 export function createMoveTracker() {
   return { state: { mode: "idle", speed: 0, phase: 0, grounded: true, surface: "minecraft:air", at: 0 },
-    prevPos: null, airDrop: 0, wasWet: false, events: [] };
+    prevPos: null, airDrop: 0, wasWet: null, events: [] };
 }
 function pushEvent(tr, ev) { tr.events.push(ev); while (tr.events.length > EVENT_CAP) tr.events.shift(); }
 export function moveTrackStep(tr, pos, dtSec, ctx) {
@@ -24,8 +24,9 @@ export function moveTrackStep(tr, pos, dtSec, ctx) {
     const speed = dt && dt > 0 ? hDist / dt : 0;
     const grounded = c.grounded !== undefined ? c.grounded === true : true;
     const wet = c.wet === true;
-    // splash: wet の立ち上がり/立ち下がり
-    if (wet !== tr.wasWet) { pushEvent(tr, { kind: "splash", enter: wet, at: fin(c.nowMs) ?? 0 }); tr.wasWet = wet; }
+    // splash: wet の立ち上がり/立ち下がり。cyc2414 MOVE-SPLASH-INIT-01 是正: 初回サンプルと teleport 到着は遷移でなく基準の取り直し (発火せず wasWet だけ合わせる)
+    if (tr.wasWet === null || c.engine === "teleport") tr.wasWet = wet;
+    else if (wet !== tr.wasWet) { pushEvent(tr, { kind: "splash", enter: wet, at: fin(c.nowMs) ?? 0 }); tr.wasWet = wet; }
     // land: 累積下降 >= LAND_DROP (0.6) で接地に戻った時1回。cyc2412 MOVE-LAND-LASTSTEP-EXCLUDE-01 是正: 接地した歩の下降も数える (旧形は非接地歩のみ蓄積し、最後の1歩の下降が常に対象外で1歩落下が発火しなかった)
     if (dy < 0) tr.airDrop += -dy;
     if (grounded && tr.prevPos && tr.airDrop >= LAND_DROP) pushEvent(tr, { kind: "land", drop: tr.airDrop, at: fin(c.nowMs) ?? 0 });
