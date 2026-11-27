@@ -1144,7 +1144,9 @@ export function parseOrder(input) {
             if (enumSets === 0) return { kind: "clarify", target: null, amount: null, constraints, sideTasks: [], negations: [], unresolved: [{ slot: "amount", reason: "zero_amount" }], caps: [], returnTo: "owner", raw };
             const ids = distinct.map((pid) => `${gm.mid}_${pid}`);
             const firstName = GEAR_PARTS.find(([pid]) => pid === distinct[0])?.[1] ?? distinct[0];
-            return { kind: "build", target: { item: ids[0], block: null, entity: null, name: `${gm.disp}の${firstName}` }, amount: enumSets, constraints, sideTasks: [], negations: [], unresolved: [], caps: [], tool: null, placement: null, gearSet: ids, gearMaterial: gm.disp, returnTo: "owner", raw };
+            // U-F-SPEECH-01 (cyc2407): 列挙由来の印として規範名の部位名列を返す (F2/単品には付けない)
+            const gearPartNames = distinct.map((pid) => GEAR_PARTS.find(([p]) => p === pid)?.[1] ?? pid);
+            return { kind: "build", target: { item: ids[0], block: null, entity: null, name: `${gm.disp}の${firstName}` }, amount: enumSets, constraints, sideTasks: [], negations: [], unresolved: [], caps: [], tool: null, placement: null, gearSet: ids, gearMaterial: gm.disp, gearPartNames, returnTo: "owner", raw };
           }
         }
       }

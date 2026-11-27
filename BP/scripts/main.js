@@ -5481,7 +5481,7 @@ function startOrderFromParser(p, bot, r, o) {
         for (let i = 0; i < gearSetsN; i++) for (const gid of o.gearSet) gearSeq.push(gid);
         let allOk = true;
         for (const gid of o.gearSet) { let ok = false; try { const pl = planLongTask({ target: "minecraft:" + gid, amount: gearSetsN }, countInv(bot), invDurabilityOf(bot)); ok = !!(pl && pl.feasible); } catch {} if (!ok) { allOk = false; break; } }
-        if (!allOk) { say(p, bot, `${o.gearMaterial || ""}の一式は、今の調達経路では作りきれません。部位ごとに頼んでください`, true); return; }
+        if (!allOk) { if (Array.isArray(o.gearPartNames) && o.gearPartNames.length) say(p, bot, `${o.gearMaterial || ""}の${o.gearPartNames.join("と")}は、今の調達経路では作りきれません`, true); else say(p, bot, `${o.gearMaterial || ""}の一式は、今の調達経路では作りきれません。部位ごとに頼んでください`, true); return; }
         if (r.mission && r.mission.status === "active") { say(p, bot, "今の指示の途中です。やめるなら「やめて」と言ってください", true); return; }
         r.pendingGearSet = gearSeq.slice(1).map((gid) => "minecraft:" + gid);
         savePendingGearSet(bot, r); // 0-F R-2 (cyc2379): 設定と同時に DP へ保存する
