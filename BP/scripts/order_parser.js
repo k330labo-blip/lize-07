@@ -765,6 +765,36 @@ for (const ch of carriedHits[ci]) { if (done.has(ch)) continue; if (isGenericHos
 }
 }
 
+// C4-TOOLMEANS-NEGTOOL-01 (cyc2440): 道具 hit の直後に使う系の否定接続
+// (使わないで/使わずに/使うな/使っちゃだめ/なしで 等) が続く節では、その hit を
+// 候補・手段のどちらにも入れず forbid (verb:"use") として negations へ送る。
+// 「使う」は手段動詞で作業動詞の否定スコープに結び付かず、従来は禁止した道具が
+// amount=null の主目標へ逆転していた (hunt 形では kind まで gather 化)。
+// 肯定の「〜を使って/で」は否定接続に一致しないため影響しない。
+{
+const TOOL_NEG_RE = /^(?:は|を)?(使わないでください|使わないで|使わずに|使わず|使わない|使うな|使っちゃだめ|使っちゃ駄目|なしで|無しで)/;
+for (const h of hits.filter((x) => !done.has(x))) {
+  if (h.kind !== "material") continue;
+  const tid = Array.isArray(h.def) ? h.def[0] : h.def?.id;
+  if (!TOOL_IDS.has(tid)) continue;
+  const m = text.slice(h.end).match(TOOL_NEG_RE);
+  if (!m) continue;
+  pushNeg("forbid", h, "use", m[1]);
+}
+// 種名のみの道具語 (素材なしで hit が無い形) は主目標を誤らないが禁止が脱落していた。
+// hit の範囲と重ならない位置の道具語+否定接続だけを、対象なしでなく名前つきで記録する。
+const GENERIC_TOOL_WORDS = ["ツルハシ", "つるはし", "ピッケル", "シャベル", "スコップ", "ハサミ", "斧", "剣", "弓"];
+for (const w of GENERIC_TOOL_WORDS) {
+  let gi = text.indexOf(w);
+  while (gi >= 0) {
+    const covered = hits.some((h) => gi >= h.start && gi < h.end);
+    const m2 = covered ? null : text.slice(gi + w.length).match(TOOL_NEG_RE);
+    if (m2) negations.push({ kind: "forbid", target: { item: null, block: null, entity: null, name: w }, verb: "use", marker: m2[1], clause: ci });
+    gi = text.indexOf(w, gi + w.length);
+  }
+}
+}
+
 // 0-C2 上限 (cycle1215): 「<対象>を N<単位>以上は <動詞>ないで」は一律禁止ではなく上限として保持する。
 // 対象 hit は隔離するが forbid 否定は作らない (禁止として記録されると意味が反転・拡大するため)。
 let capHandled = false;
