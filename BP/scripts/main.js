@@ -2924,10 +2924,11 @@ function pickUpPlacedStation(bot, r) {
     if (bot.dimension.id !== ps.dim) { r.placedStation = null; return; }
     // 要望バッチA GAP-3 (cycle0821): 到達の原則 — 設置物中心まで 8 を超えたら遠隔回収せず、記録を保持して近づいたときに回収する
     if (dist(bot.location, { x: ps.x + 0.5, y: ps.y + 0.5, z: ps.z + 0.5 }) > 8) return;
-    r.placedStation = null;
+    // STATION-PICKUP-ORPHAN-01 (cyc2404): 記録の消去は「ID不一致で対象が消えた時」と「実際に回収する時」だけ。中身ありで置いたままにする場合は記録を保持し、空になった後に回収できるようにする（従来は無条件に先に消していたため、中身の残った自置きかまどが孤児化していた）
     const b = bot.dimension.getBlock({ x: ps.x, y: ps.y, z: ps.z });
-    if (!b || b.typeId !== ps.id) return;
-    if (ps.id === "minecraft:furnace") { const c = b.getComponent("minecraft:inventory")?.container; if (c) for (let i = 0; i < c.size; i++) if (c.getItem(i)) return; } // 中身が残っているかまどは置いたままにする
+    if (!b || b.typeId !== ps.id) { r.placedStation = null; return; }
+    if (ps.id === "minecraft:furnace") { const c = b.getComponent("minecraft:inventory")?.container; if (c) for (let i = 0; i < c.size; i++) if (c.getItem(i)) return; } // 中身が残っているかまどは置いたままにする（記録も保持）
+    r.placedStation = null;
     b.setType("minecraft:air");
     const bc = invOf(bot); let rest = 1; if (bc) rest = addTo(bc, ps.id, 1);
     if (rest > 0) bot.dimension.spawnItem(new ItemStack(ps.id, rest), bot.location);
