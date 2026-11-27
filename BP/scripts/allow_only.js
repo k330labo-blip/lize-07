@@ -35,6 +35,29 @@ export function isAllowedByAllowOnly(allowOnly, targetId, verb = null) {
     return t === a.target;
   } catch { return true; }
 }
+// ALLOWONLY-MIDMISSION-SCOPE-01 (cyc2425): prune side_collect steps that a
+// mid-mission allowOnly disallows. Pruned steps are marked "done" so every
+// reader that skips done steps (sideDirective etc.) stops selecting them, and
+// order.sideTasks is filtered too so a rebuild/restore cannot resurrect them.
+// Allowed side steps and done steps are untouched. Returns the pruned count.
+export function pruneDisallowedSideSteps(mission, allowOnly) {
+  try {
+    if (!mission || !Array.isArray(mission.steps)) return 0;
+    let pruned = 0;
+    for (const s of mission.steps) {
+      if (!s || s.type !== "side_collect" || s.status === "done") continue;
+      if (!s.target) continue;
+      if (!isAllowedByAllowOnly(allowOnly, s.target, s.kind || "gather")) { s.status = "done"; pruned++; }
+    }
+    if (Array.isArray(mission.order?.sideTasks)) {
+      mission.order.sideTasks = mission.order.sideTasks.filter((st) => {
+        const sid = typeof st?.target === "string" ? st.target : (st?.target?.item || st?.target?.block || st?.target?.entity || null);
+        return !sid || isAllowedByAllowOnly(allowOnly, sid, st?.kind || "gather");
+      });
+    }
+    return pruned;
+  } catch { return 0; }
+}
 export function allowOnlyBlocks(allowOnly, targetId, verb = null) {
   try { return !isAllowedByAllowOnly(allowOnly, targetId, verb); } catch { return false; }
 }

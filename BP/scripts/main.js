@@ -137,7 +137,7 @@ import { fillDefOf, selectFillMedium, checkFillPreconditions, verifyFillPost, fi
 import { classifyDescent as d2Classify, ensureSpiralAnchor as d2EnsureAnchor, spiralStepAt as d2StepAt, spiralStepIndexAt as d2StepIndexAt, resolveSpiralDesync as d2Desync } from "./d2_spiral_math.js"; // 0-D2 (cycle1434): 発見後も螺旋降下 / G2 (cyc2363): 起点は ensure で固定し対象キーで作り直さない
 import { allowedLogIds, countLogsForTarget } from "./tree_species_math.js";
 import { createWideScanFails, partitionWideIds, noteWideSuccess, noteWideIdFailure, noteWideGlobalFailure, wideIdBlocked } from "./wide_scan_fails.js"; // 0-D4 Bprime (cycle1455): wide scan failures isolated per typeId
-import { isAllowedByAllowOnly, isBuildAllowedByAllowOnly, serializeAllowOnly, restoreAllowOnly, clearAllowOnly } from "./allow_only.js"; // 0-C2 reader (cycle1455): allowOnly enforcement // 0-D3: 樹種指定時は対象選択・進捗をその樹種だけに限定する
+import { isAllowedByAllowOnly, isBuildAllowedByAllowOnly, serializeAllowOnly, restoreAllowOnly, clearAllowOnly, pruneDisallowedSideSteps } from "./allow_only.js"; // 0-C2 reader (cycle1455): allowOnly enforcement // 0-D3: 樹種指定時は対象選択・進捗をその樹種だけに限定する
 import { shouldReplayGaze, GAZE_REPLAY_INTERVAL_TICKS } from "./gaze_cadence_math.js"; // 0-E1 GAZE-CADENCE-01: 視線レイヤーを本体ループから分離する
 import { mergeCaps, capForTarget, serializeCaps, restoreCaps } from "./cap_guard_math.js"; // 0-C2 読み手 (cycle1337): セッション上限を mission へ届ける // cyc2020: caps の DP 永続化 (cb_caps)
 import { createWarehouseRegistry, serializeWarehouseRegistry, deserializeWarehouseRegistry, addCandidates, warehouseKeyOf, registerBox, removeCandidate, teachItemDest, markNeedsRecheck, confirmBox, canonicalKeyOf } from "./warehouse_registry.js"; // cyc2367 WH-RECHECK-01 // 倉庫 W1: 台帳の DP 永続化 (cb_warehouse)
@@ -5404,9 +5404,19 @@ function startOrderFromParser(p, bot, r, o) {
       setAllowOnly(bot, r, { target: o.allowOnly.target?.item || o.allowOnly.target?.block || o.allowOnly.target?.entity || null, verb: o.allowOnly.verb ?? null, at: Date.now() });
       say(p, bot, `分かりました。${forbidTargetName({ target: o.allowOnly.target })}以外は対象にしません`, true);
       // 0-C2 (cycle1604, A02-P3): 設定時点で実行中の mission が許可外なら、forbid 分岐と同形に止める
+      // ALLOWONLY-MIDMISSION-SCOPE-01 (cyc2425): 反映範囲を主目標の単独 mission から広げる。
+      // (b) 長期タスクは最終目標を leg 免除と切り分けて検査する (leg 自体=手段は止めない)。
+      // (a) 主目標が許可内なら、許可外の寄り道 (side_collect) ステップを剪定する。
       try {
+        const lt = r.longtask;
+        if (lt?.target && !isAllowedByAllowOnly(r.allowOnly, lt.target, null)) {
+          if (r.mission) { r.mission = null; clearPlanRecords(r); persistMission(bot, r, true); }
+          r.ltLegActive = false; r.mineLeg = null; r.spiral = null; r.longtask = null; saveLongTask(bot, r);
+          say(p, bot, "長期タスクも止めました。許可された対象ではありませんでした", true);
+        }
         const m = r.mission;
         if (m && m.status === "active" && !r.ltLegActive && m.order?.target && !isAllowedByAllowOnly(r.allowOnly, m.order.target, m.order?.kind)) { cancelMission(bot, p, r, true); say(p, bot, "今の指示も止めました。許可された対象ではありませんでした", true); }
+        else if (m && m.status === "active") { const pruned = pruneDisallowedSideSteps(m, r.allowOnly); if (pruned > 0) persistMission(bot, r, true); }
       } catch {}
       return;
     }
