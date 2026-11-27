@@ -1001,6 +1001,18 @@ export function parseOrder(input) {
     }
   } catch { /* 部位の聞き返しとして解釈できなければ従来経路へ */ }
 
+  // 0-F R-1 (cyc2395): フル/一式形でも単品ガードと同型の素材検査を行う。鎖・ネザライト・
+  // 素材なしの一式は、素材アイテムへの誤目標開始や無言落ちをせず clarify へ倒す
+  // (理由別発話は R-5 で main.js 側に接続済み)。作製可能素材の一式は後段の F2 へ通す。
+  try {
+    if (!/[？?]/.test(text) && !/(何個|いくつ|要る|必要|コスト)/.test(text) && /(作って|作る|ください|欲しい|ちょうだい|お願い)/.test(text) && /(フル|一式)/.test(text)) {
+      if (/鎖|チェーン/.test(text)) return { kind: "clarify", target: null, amount: null, constraints, sideTasks: [], negations: [], unresolved: [{ slot: "material", reason: "chainmail_not_craftable" }], caps: [], returnTo: "owner", raw };
+      if (/ネザライト/.test(text)) return { kind: "clarify", target: null, amount: null, constraints, sideTasks: [], negations: [], unresolved: [{ slot: "material", reason: "netherite_upgrade_only" }], caps: [], returnTo: "owner", raw };
+      const craftableMatSet = /(ダイヤモンド|ダイヤ|鉄|アイアン|金|ゴールド|革|レザー)/.test(text);
+      if (!craftableMatSet) return { kind: "clarify", target: null, amount: null, constraints, sideTasks: [], negations: [], unresolved: [{ slot: "material", reason: "armor_part_without_material" }], caps: [], returnTo: "owner", raw };
+    }
+  } catch { /* 一式の聞き返しとして解釈できなければ従来経路へ */ }
+
   // 0-F2 (cyc2003): 「<素材>フル」「防具一式作って」を防具4部位の作製指示として受ける。
   // 質問形 (コスト質問の一式応答は chat_tools 側の正常例) では発火しない。ネザライトは
   // 鍛冶強化で直接クラフトできないため対象外 (一式のコスト応答が既存の正)。
@@ -1009,7 +1021,7 @@ export function parseOrder(input) {
       const GEAR_MATS = [["ダイヤモンド", "diamond", "ダイヤ"], ["ダイヤ", "diamond", "ダイヤ"], ["鉄", "iron", "鉄"], ["アイアン", "iron", "鉄"], ["金", "golden", "金"], ["ゴールド", "golden", "金"], ["革", "leather", "革"], ["レザー", "leather", "革"]];
       const GEAR_PARTS = [["helmet", "ヘルメット"], ["chestplate", "チェストプレート"], ["leggings", "レギンス"], ["boots", "ブーツ"]];
       let gm = null;
-      for (const [word, mid, disp] of GEAR_MATS) { if (text.includes(word + "フル") || text.includes(word + "のフル")) { gm = { mid, disp }; break; } }
+      for (const [word, mid, disp] of GEAR_MATS) { if (text.includes(word + "フル") || text.includes(word + "のフル") || text.includes(word + "一式") || text.includes(word + "の一式")) { gm = { mid, disp }; break; } }
       if (!gm && /(防具|装備)一式/.test(text)) { for (const [word, mid, disp] of GEAR_MATS) { if (text.includes(word)) { gm = { mid, disp }; break; } } }
       if (gm && /(作って|作る|ください|欲しい|ちょうだい|お願い)/.test(text)) {
         const ids = GEAR_PARTS.map(([pid]) => `${gm.mid}_${pid}`);
