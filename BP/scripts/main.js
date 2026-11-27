@@ -3341,7 +3341,7 @@ function tickLongTask(bot, owner, r, ctx) {
     if (!toolCapReached) { try { const sub = planLongTask({ target: pickId, amount: 1, constraints: { forbiddenTargets: (typeof fbIds !== "undefined" ? fbIds : []) } }, countInv(bot), invDurabilityOf(bot)); if (sub && sub.feasible && sub.legs && sub.legs.length) ins = sub.legs; } catch {} }
     r.toolNeed = null; // 成否どちらでも消費する (同じ不足で毎tick差し込み続けない)
     if (!ins && toolCapReached) {
-      say(owner, bot, `長期タスクを中断しました。ツルハシを用意できませんでした`, true); r.longtask = null; saveLongTask(bot, r); return true;
+      say(owner, bot, `長期タスクを中断しました。ツルハシを用意できませんでした`, true); if (r.mission) { r.mission = null; clearPlanRecords(r); persistMission(bot, r, true); } r.ltLegActive = false; r.mineLeg = null; r.spiral = null; r.longtask = null; saveLongTask(bot, r); return true; // TOOLPREP-CAP-ORPHAN-01 (cyc2431): 上限終端も計画失敗終端と同形に leg mission と付随状態を全て畳む (従来は longtask のみ消し legsOnly leg が孤児化し出口ゼロだった)
     }
     if (ins) {
       lt.toolPrepFails = 0; r.toolPrepFailTotal = 0; // 成功で streak を解消する
