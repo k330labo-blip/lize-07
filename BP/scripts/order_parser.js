@@ -504,6 +504,8 @@ deliverNegationRe: /持って(?:こないで|くるな|来ないで)/,
 dispensationRe: /なくて(?:も)?(?:いい|よい)(?:です)?/g,
 // 0-N3 KURENAI-REQ-01: 丁寧な依頼形「〜て(きて)くれない／もらえない／いただけない」は受益表現であり禁止ではない。一般規則として節末形だけを対象にする。
 politeRequestRe: /(?:て|で)(?:きて|来て)?(?:くれ|もらえ|いただけ|頂け)ない(?:かな|か|ですか|です|よね)?$/,
+// cyc2454 (NONCMD残存拡張 ABIL 是正A): 可能形+「かな」は能力質問の熟慮形であり禁止ではない。禁止の「な」は辞書形へ直接付くため、可能形 (一段化した語尾+る/られる/できる) の直後の「かな」に限って末尾「な」を否定形態素から外す。意志形+かなは対象外 (別件)。
+abilityKanaRe: /(?:[えけせてねへめれべげぜで]る|られる|できる)かな[？?]?$/,
 referenceWords: ["それ", "これ", "あれ"],
 });
 
@@ -561,8 +563,11 @@ const deliverHit = clause.match(NEGATION_PATTERNS.deliverNegationRe);
 if (deliverHit) return { verb: "deliver", index: deliverHit.index};
 const politeHit = clause.match(NEGATION_PATTERNS.politeRequestRe);
 const politeRange = politeHit ? [politeHit.index, politeHit.index + politeHit[0].length] : null;
+const abilityHit = clause.match(NEGATION_PATTERNS.abilityKanaRe);
+const abilityRange = abilityHit ? [abilityHit.index, abilityHit.index + abilityHit[0].length] : null;
 for (const pos of negationMorphemePositions(clause)) {
 if (politeRange && pos.index >= politeRange[0] && pos.index < politeRange[1]) continue;
+if (abilityRange && pos.index >= abilityRange[0] && pos.index < abilityRange[1]) continue;
 let best = null;
 for (const [cls, stems] of VERB_STEMS) {
 for (const stem of stems) {

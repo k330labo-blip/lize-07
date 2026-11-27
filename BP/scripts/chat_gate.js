@@ -89,16 +89,37 @@ function isDeferredFactory(t) {
 // 引用・伝聞／完了報告／翻訳等のメタ依頼は、文の形 (動詞の活用と文末形) で一般に判定し、
 // 例文・対象名は直書きしない。通常パーサー経路と側経路ゲートの両方がこの述語を使う。
 // 戻り値: "past_report"|"ability_question"|"quote_hearsay"|"completion_report"|"meta_request"|null
+const NONCMD_LANG = "(英語|日本語|中国語|韓国語|フランス語|ドイツ語|スペイン語|イタリア語|ポルトガル語|ロシア語)";
+const NONCMD_POTENTIAL = "(?:[えけせてねへめれべげぜで]る|られる|できる)";
 export function classifyNonCommand(text) {
   try {
     const t = s(text).trim();
     if (!t) return null;
-    if (isHypothetical(t) || /(って言ってた|と言ってた|って言ってました|と言ってました|って聞いた|と言われた|という話)/.test(t)) return "quote_hearsay";
+    // cyc2454 (NONCMD残存拡張 Q1): 引用助詞+受身の言及動詞 (言われ/頼まれ) は活用・尾・括弧に依らず伝聞
+    if (isHypothetical(t) || /(って言ってた|と言ってた|って言ってました|と言ってました|って聞いた|と言われた|という話)/.test(t) || /(と|って)(言われ|頼まれ)/.test(t)) return "quote_hearsay";
+    // cyc2454 (Q2): 文末伝聞「って」単独は、希望の引用か第三者主語の手がかりがある場合のみ伝聞とする
+    if (/(てって|ほしいって)(よ|ね|さ)?[。．]?$/.test(t) && (/ほしい/.test(t) || /^[^、。]{1,12}が/.test(t))) return "quote_hearsay";
+    if (/(んだって|だって)(よ|ね)?[。．]?$/.test(t)) return "quote_hearsay";
     if (/を(英訳|翻訳)(して|しなさい|してください|してくれ)?/.test(t) || /(英訳|翻訳)(して|してください)[。．]?$/.test(t)) return "meta_request";
+    // cyc2454 (M1): 引用文+言語名スロット+文末の言語操作述語 (言語名の名詞修飾だけの形は対象外)
+    if (new RegExp(`(を|って)${NONCMD_LANG}で(言って|何て言う|何と言う)`).test(t) || new RegExp(`(を|って)${NONCMD_LANG}に(直して|訳して|して|変換して)`).test(t)) return "meta_request";
+    if (/(を|って)何て言う(の)?[？?。．]?$/.test(t)) return "meta_request";
+    // cyc2454 (M2): 引用文+テキスト操作述語の閉集合 (素の「直して」「まとめて」は逐次命令と区別できないため含めない)
+    if (/(を|って)(要約|書き直|言い換え|まとめ直|短くまとめ)(て|して|してください|してくれ|しなさい)?[。．]?$/.test(t)) return "meta_request";
+    // cyc2454 (M3): 引用文+意味・説明の対象指定がある形だけをメタとする (素の説明要求の素通し接続はしない)
+    if (/(の意味を|ってどういう意味|の意味は何|を説明して)/.test(t) && /(教えて|聞きたい|知りたい|ください|何|意味|説明)/.test(t)) return "meta_request";
     if (/(せますか|できますか|れますか|ますか)[？?。．]?$/.test(t)) return "ability_question";
+    // cyc2454 (ABIL 是正B): 可能形の口語疑問尾 (〜せる/れる+か・かな・？) も能力質問。尾が無い可能形単独は断定であり得るため対象外
+    if (new RegExp(`${NONCMD_POTENTIAL}(?:かな|か)[。．]?$`).test(t) || new RegExp(`${NONCMD_POTENTIAL}[？?][。．]?$`).test(t)) return "ability_question";
     if (/(もう|すでに|既に).{0,24}(した|済んだ|終わった|片付けた)(よ|ね|です|ます)?[。．]?$/.test(t)) return "completion_report";
-    if (/(整理|仕分け|片付け)(した|済ませた)(よ|ね|です)?[。．]?$/.test(t)) return "completion_report";
-    if (/(てきた|てきました|ってきた|ってきました)[。．]?$/.test(t)) return "past_report";
+    // cyc2454 (COMP): 従属節の後続は報告・安心述語のときだけ完了報告 (作業指令が続く文は遮断しない)
+    if (/(もう|すでに|既に).{0,24}(した|済んだ|終わった|片付けた)(ので|から)(大丈夫|安心|問題ない)/.test(t)) return "completion_report";
+    // cyc2454 (COMP): 文末完了形の活用集合 (丁寧過去・複合完了・可能形過去・状態名詞「済み」は述語位置のみ)
+    if (/(整理|仕分け|片付け)(した|しました|し終わった|し終えた|済ませた|できた|できました|完了した|しておいた|しておきました)(よ|ね|です|ます)?[。．]?$/.test(t)) return "completion_report";
+    if (/(整理|仕分け|片付け)(済み|済)(です|ます|だ)?[。．]?$/.test(t)) return "completion_report";
+    if (/(整理|仕分け|片付け)(は|が|も)(終わった|終わりました|済んだ|済みました|済みです)[。．]?$/.test(t)) return "completion_report";
+    // cyc2454 (PAST v3): 過去形の核は文末アンカーを維持し、尾は終助詞・言いさし接続・ので/から+報告/提示述語のみ許可する
+    if (/(てきた|てきました|ってきた|ってきました|てきちゃった|ってきちゃった|てきちゃいました|ておいた|ておきました|っておいた|っておきました|ておいちゃった|ちゃった|てしまった|てしまいました)(?:(?:よ|ね|よね|わ|ぞ|さ|んだ|んです|のです|んだけど|けど|けれど|が|から|ので)[。．]?|(?:ので|から)(?:報告します|報告する|報告|見て|見てね|見てください|確認して|確認してください)[。．]?|[。．])?$/.test(t)) return "past_report";
     return null;
   } catch { return null; }
 }
