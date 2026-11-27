@@ -2881,7 +2881,7 @@ function refreshWarehouseCandidates(bot, r) {
 }
 function startLongTask(bot, owner, r, mo, plan, announce = true) {
   const ltName = (plan.target.name && !String(plan.target.name).includes(":")) ? plan.target.name : (mo.name || lname(plan.target.item)); // v0.4.67(外部): ID のまま表示しない
-  r.longtask = { target: plan.target.item, name: ltName, amount: plan.target.count, legs: plan.legs, legIdx: 0, phase: "legs", returnTo: mo.returnTo || "owner", hostiles: mo.constraints?.hostiles || "avoid", forbiddenTargets: mo.constraints?.forbiddenTargets || [], startedAt: Date.now(), baseForbiddenTargets: Array.isArray(mo.baseForbiddenTargets) ? mo.baseForbiddenTargets : null, tool: mo.tool ?? null, placement: mo.placement ?? null }; // 0-C4 (cyc2020): 長期タスクでも道具指定・設置位置を保持する (従来は脱落していた)
+  r.longtask = { target: plan.target.item, name: ltName, amount: plan.target.count, legs: plan.legs, legIdx: 0, phase: "legs", returnTo: mo.returnTo || "owner", hostiles: mo.constraints?.hostiles || "avoid", forbiddenTargets: mo.constraints?.forbiddenTargets || [], startedAt: Date.now(), baseForbiddenTargets: Array.isArray(mo.baseForbiddenTargets) ? mo.baseForbiddenTargets : null, tool: mo.tool ?? null, placement: mo.placement ?? null, window: mo.constraints?.window ? { raw: mo.constraints.window.raw || "", kind: mo.constraints.window.kind || "" } : null }; // 0-C4 (cyc2020): 長期タスクでも道具指定・設置位置を保持する (従来は脱落していた) / WINDOW-END-LONGTASK-SCOPE-01 (cyc2426): window 写しも保持する (saveLongTask の JSON 永続化に同梱され DP 往復でも落ちない)
   r.mission = null; clearPlanRecords(r); r.ltLegActive = false; r.mineLeg = null; r.spiral = null;
   try { if (mo.tool) { applyRequestedTool(bot, owner, r, mo.tool); r.toolAppliedLegIdx = 0; } } catch {} // R-C4-1: 長期タスクでも指定道具を装備へ接続する (調達は plan の工程に任せ、ここでは装備のみ) / RG-6 (cyc2377): 開始時適用済みの印を立て、初回 tick での二重適用を防ぐ
   persistMission(bot, r, true); saveLongTask(bot, r);
@@ -3909,13 +3909,17 @@ function tickPendingCondition(bot, owner, r, ctx) {
   } catch { return false; }
 }
 // R-C2-4 (cyc2380): window (継続条件) の終了監視。tickPendingCondition の冒頭ガード (mission 稼働中は
-// return) の内側には置かず、tick ループから独立に呼ばれる。対象は mission.order.constraints.window のみ。
+// return) の内側には置かず、tick ループから独立に呼ばれる。対象は mission.order.constraints.window。
 // 終了判定は evalWindowEnd (純粋核) へ委譲し、"ended" の連続2回観測で初めて止める (境界のちらつき対策)。
 // unknown は streak を増やしも戻しもしない。停止は cancelMission (silent) を再利用し、条件終了の専用文を1回言う。
-// 適用範囲は mission 実行中のみ (longtask/buildPlan 化した window 注文の終了監視は未対応・残件)。
+// WINDOW-END-LONGTASK-SCOPE-01 (cyc2426): 対象を長期タスク相へ拡張する。mission の window が無ければ
+// r.longtask.window を読み、ended 連続2回で既存の長期タスク中断形 (子 mission を畳み r.longtask を null +
+// saveLongTask) へつなぐ。専用文はどちらの相でも1回だけ。buildPlan 相は未実測のため対象外のまま。
 function tickConditionWindow(bot, owner, r, ctx) {
   try {
-    const win = r.mission?.status === "active" ? r.mission?.order?.constraints?.window : null;
+    // WINDOW-END-LONGTASK-SCOPE-01 (cyc2426)
+    const missionWin = r.mission?.status === "active" ? r.mission?.order?.constraints?.window : null;
+    const win = missionWin || (r.longtask ? r.longtask.window : null);
     if (!win) { r.windowEndStreak = 0; return false; }
     const now = Date.now();
     if (now - (r.windowCheckAt || 0) < 3000) return false;
@@ -3927,7 +3931,11 @@ function tickConditionWindow(bot, owner, r, ctx) {
     if (r.windowEndStreak < 2) return false;
     const raw = win.raw || "その間";
     r.windowEndStreak = 0; r.windowCheckAt = 0;
-    cancelMission(bot, owner, r, true);
+    if (missionWin) cancelMission(bot, owner, r, true);
+    else {
+      if (r.mission) { r.mission = null; clearPlanRecords(r); persistMission(bot, r, true); }
+      r.ltLegActive = false; r.mineLeg = null; r.spiral = null; r.longtask = null; saveLongTask(bot, r);
+    }
     try { say(owner, bot, `${raw}は終わりました。指示はここまでにします。集めた分はそのままです`, true); } catch {}
     return true;
   } catch { return false; }
