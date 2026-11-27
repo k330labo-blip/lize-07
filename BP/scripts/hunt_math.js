@@ -26,6 +26,39 @@ export function huntKillCounts(stepTarget, deadTypeId, deadHostile) {
  * HUNT-NEAREST-01 (cyc2384 A14 副次): 種別指定の選択が走査順 .find で最寄りでなかった是正。
  * entities: [{typeId, location}], selfPos: {x,y,z}。無ければ null。
  */
+// HUNT-CREDIT-01 (0-N7, cyc2453): 討伐帰属。段1 damageSource の Bot 一致、段2 被弾台帳 (TTL 30秒・上限32件)。
+export const HUNT_LEDGER_TTL_MS = 30000;
+export const HUNT_LEDGER_MAX = 32;
+export function huntCredit(input) {
+  try {
+    const i = input || {};
+    if (!huntKillCounts(i.stepTarget, i.deadTypeId, i.deadHostile)) return { credit: false, via: null };
+    if (i.attackerId && i.botId && i.attackerId === i.botId) return { credit: true, via: "damageSource" };
+    const now = typeof i.now === "number" ? i.now : Date.now();
+    if (typeof i.ledgerAt === "number" && now - i.ledgerAt >= 0 && now - i.ledgerAt <= HUNT_LEDGER_TTL_MS) return { credit: true, via: "ledger" };
+    return { credit: false, via: null };
+  } catch { return { credit: false, via: null }; }
+}
+export function noteHuntHit(ledger, entityId, now) {
+  try {
+    if (!(ledger instanceof Map) || !entityId) return ledger;
+    const t = typeof now === "number" ? now : Date.now();
+    for (const [k, v] of ledger) if (typeof v !== "number" || t - v > HUNT_LEDGER_TTL_MS) ledger.delete(k);
+    ledger.delete(entityId); ledger.set(entityId, t); // 再打撃で挿入順も最新化する (上限切りで最新の関与が落ちないように)
+    while (ledger.size > HUNT_LEDGER_MAX) { const oldest = ledger.keys().next().value; if (oldest === undefined) break; ledger.delete(oldest); }
+    return ledger;
+  } catch { return ledger; }
+}
+export function huntLedgerHitAt(ledger, entityId, now) {
+  try {
+    if (!(ledger instanceof Map) || !entityId) return null;
+    const t = typeof now === "number" ? now : Date.now();
+    const at = ledger.get(entityId);
+    if (typeof at !== "number") return null;
+    if (t - at > HUNT_LEDGER_TTL_MS || t - at < 0) { if (t - at > HUNT_LEDGER_TTL_MS) ledger.delete(entityId); return null; }
+    return at;
+  } catch { return null; }
+}
 export function nearestEntityOfType(entities, typeId, selfPos) {
   try {
     if (!Array.isArray(entities) || !typeId || !selfPos) return null;

@@ -128,7 +128,7 @@ import { pickaxeItemForLevel } from "./bootstrap.js"; // cycle0942: toolNeed 消
 import { createResidueState, residueTick, emitResidueParticle } from "./env_residue.js"; // POLISH-FX-ENVRESIDUE-01 (cycle0942): 環境残留表現の状態機械 (パーティクルID未照合の間は記録のみ)
 import { createSfxState, sfxDigHit, sfxDigBreak, sfxStep, sfxPlace, sfxPickup, sfxSplash, sfxEat, sfxAttack, sfxLand, sfxHurt } from "./sfx.js"; // POLISH-SND-LAND-01/HURT-01 (cycle0942): 着地音・被弾音も配線 // POLISH-SND-SWIM-01 (cycle0731): 入水/出水音も配線 // POLISH-SND-PICKUP-01 (cycle0710): 回収音も配線 // 要望バッチF (v0.4.88): 素材別サウンド
 import { findSources, planFor, entitySourceIds } from "./sourcing.js";
-import { huntKillCounts, nearestEntityOfType } from "./hunt_math.js"; // HUNT-ANIMAL-PROGRESS-01 / HUNT-NEAREST-01 (cyc2385): 討伐計上の門と最寄り選択の純粋核
+import { huntKillCounts, nearestEntityOfType, huntCredit, noteHuntHit, huntLedgerHitAt } from "./hunt_math.js"; // HUNT-ANIMAL-PROGRESS-01 / HUNT-NEAREST-01 (cyc2385) / HUNT-CREDIT-01 (cyc2453): 帰属の純粋核
 import { createMission, advance, missionSummary, withdrawKeyOf, STEP_TYPES } from "./mission.js";
 import { selectWithdrawCandidate, candKeyForFirstStep } from "./withdraw_candidate.js"; // Phase3 candKey B1 (v0.4.26): 候補選定・射影の純粋関数
 import { scanOpportunities, noteAttempt, pruneCooldowns } from "./side_tasks.js";
@@ -2680,7 +2680,7 @@ function zapEntity(bot, r, e) {
   if (core) {
     let snap = null; try { snap = core.snapshot(); } catch {}
     if (snap && snap.hasGun && d <= snap.gunRange && d >= 2) {
-      try { const sr = core.shootAt({ distance: d, applyDamage: (amt) => e.applyDamage(amt, { cause: "projectile", damagingEntity: bot }) }); r.lastAttack = { ok: !!sr?.ok, reason: sr?.reason || null, at: Date.now() }; try { const norm = fromEquipmentResult(sr, "shootAt"); commitLastAction(r, { act: "ATTACK", ok: !!norm?.ok, reason: norm?.ok ? null : (norm?.reason || null), item: null, at: Date.now() }); } catch {} if (sr?.ok) { try { sfxAttack(bot.dimension, bot.location); } catch {} } } catch {} // Phase2: ATTACK結果の回収（記録のみ）/ 6-ML ATTACK commit (cyc1939): 銃の小文字 reason は契約語彙へ正規化してから記録する (記録のみ・分岐不変) / POLISH-SND-ATTACK-01 (cycle0841): 射撃成功時のみ攻撃音 (表示層のみ・実機確認待ち)
+      try { const sr = core.shootAt({ distance: d, applyDamage: (amt) => e.applyDamage(amt, { cause: "projectile", damagingEntity: bot }) }); r.lastAttack = { ok: !!sr?.ok, reason: sr?.reason || null, at: Date.now() }; try { const norm = fromEquipmentResult(sr, "shootAt"); commitLastAction(r, { act: "ATTACK", ok: !!norm?.ok, reason: norm?.ok ? null : (norm?.reason || null), item: null, at: Date.now() }); } catch {} if (sr?.ok) { try { if (!(r.huntHits instanceof Map)) r.huntHits = new Map(); noteHuntHit(r.huntHits, e.id, Date.now()); } catch {} try { sfxAttack(bot.dimension, bot.location); } catch {} } } catch {} // Phase2: ATTACK結果の回収（記録のみ）/ 6-ML ATTACK commit (cyc1939): 銃の小文字 reason は契約語彙へ正規化してから記録する (記録のみ・分岐不変) / POLISH-SND-ATTACK-01 (cycle0841): 射撃成功時のみ攻撃音 (表示層のみ・実機確認待ち) / HUNT-CREDIT-01 (cyc2453): 射撃成功を被弾台帳へ記録
       return;
     }
   }
@@ -2688,6 +2688,7 @@ function zapEntity(bot, r, e) {
   r.zapAt = Date.now();
   const dmg = core ? core.weaponDamage().damage : 2; // 装備中核の武器ダメージ表（素手2。フォールバックも表と一致させる v0.4.88）
   let meleeOk = true; try { e.applyDamage(dmg, { cause: "entityAttack", damagingEntity: bot }); } catch { meleeOk = false; }
+  if (meleeOk) { try { if (!(r.huntHits instanceof Map)) r.huntHits = new Map(); noteHuntHit(r.huntHits, e.id, Date.now()); } catch {} } // HUNT-CREDIT-01 (cyc2453): 近接成功を被弾台帳へ記録 (API populated 非依存の書き手)
   try { commitLastAction(r, { act: "ATTACK", ok: meleeOk, reason: meleeOk ? null : "DAMAGE_REJECTED", item: null, at: Date.now() }); } catch {} // 6-ML ATTACK commit (cyc1939): 近接も result 軸へ記録する (記録のみ・分岐不変。applyDamage の例外は失敗として分離し、item は null 固定)
   try { sfxAttack(bot.dimension, bot.location); } catch {} // POLISH-SND-ATTACK-01 (cycle0841): 近接攻撃音 (表示層のみ・実機確認待ち)
 }
@@ -2788,7 +2789,7 @@ function startMission(bot, owner, r, mo, announce = true, opts = {}) {
   const m = createMission(mo, null);
   try { m.baseForbiddenTargets = baseFb579.map((x) => normForbiddenId(x)).filter((x) => typeof x === "string" && x); } catch {} // v0.5.79: base を mission 本体へ保持 (persistMission の JSON に同梱される)
   try { r.requestedTool = mo.tool ?? null; } catch {} // 0-C4 (cyc2020): 道具指定を実行側の参照点として保持する (mission.order.tool と二重に残し、装備選択の読み手が参照できるようにする)
-  r.mission = m; r.missionKills = 0; r.suspendNotified = false; r.mFound = false; r.sideTask = null; r.veinCands = []; r.treeCands = []; // 0-D1: 鉱脈候補は mission 単位 (前 mission の残りを持ち越さない) / 0-D3 R1: 木候補も同様
+  r.mission = m; r.missionKills = 0; try { if (r.huntHits instanceof Map) r.huntHits.clear(); else r.huntHits = new Map(); } catch {} r.suspendNotified = false; r.mFound = false; r.sideTask = null; r.veinCands = []; r.treeCands = []; // 0-D1: 鉱脈候補は mission 単位 (前 mission の残りを持ち越さない) / 0-D3 R1: 木候補も同様
   // POLISH-ANIM-ORDERLOOK-01 feeder: 指示受理の辺で一度だけ発火を記録する (表示層のみ・実機確認待ち)
   try { if (announce && owner) { if (!r.orderlookState) r.orderlookState = createOrderLookState(); const oo = noteOrderAccepted(r.orderlookState, { nowMs: Date.now(), dist: dist(bot.location, owner.location), suppressed: false, danger: false, falling: r.selfFalling === true }); r.orderlookState = oo.state; if (oo.fired) r.lastOrderLook = { at: Date.now() }; } } catch {}
   r.withdrawBlocked = new Set(); r.withdrawCooldownUntil = 0; r.withdrawTargetKey = null; // Phase2 WITHDRAW Step B: 試行済み情報は mission 単位で初期化
@@ -4943,6 +4944,9 @@ world.afterEvents.entityHurt.subscribe((ev) => {
       }
     }
     else if (e.typeId === "minecraft:player") { const b = findBotEntity(e.id); if (b) { const wm = wmemOf(b); if (wm) wm.recordDanger(e.location, e.dimension.id, "owner_hurt", 1); try { const br = rt(b); if (!br.partnercheckState) br.partnercheckState = createPartnerCheckState(); const bp = b.location, gr = gazeRotation(bp, { x: e.location.x, y: e.location.y + 1.4, z: e.location.z }); const cur = (() => { try { return b.getRotation(); } catch { return { x: 0, y: 0 }; } })(); let relYaw = gr.y - (cur?.y || 0); relYaw = ((relYaw + 540) % 360) - 180; const d3 = Math.hypot(e.location.x - bp.x, e.location.y - bp.y, e.location.z - bp.z); notePartnerCheck(br.partnercheckState, { ownerHurtEdge: true, isOwner: true, dist: d3, targetYawDeg: relYaw, targetPitchDeg: gr.x - (cur?.x || 0), working: !!br.work, falling: br.selfFalling === true, inWater: !!b.isInWater, ownerInFront: Math.abs(relYaw) < 12 && Math.abs(gr.x - (cur?.x || 0)) < 12 }, Date.now()); br.lastPartnerCheck = br.partnercheckState.lastRecord; } catch {} } }
+    else { // HUNT-CREDIT-01 (cyc2453): 被害者が Mob 等で加害者が Bot なら被弾台帳へ記録 (段2 の書き手A)
+      try { const srcId = ev.damageSource?.damagingEntity?.id ?? null; if (srcId && bots.has(srcId)) { const rr = bots.get(srcId); if (!(rr.huntHits instanceof Map)) rr.huntHits = new Map(); noteHuntHit(rr.huntHits, e.id, Date.now()); } } catch {}
+    }
   } catch {}
 });
 
@@ -5307,14 +5311,21 @@ function openMissionStatus(p, bot) {
 world.afterEvents.entityDie.subscribe((ev) => {
   const dead = ev.deadEntity;
   if (dead.typeId === "minecraft:player") wdps(`cb_death:${dead.id}`, JSON.stringify({ dim: dead.dimension.id, x: dead.location.x, y: dead.location.y, z: dead.location.z, t: Date.now() }));
-  // ミッション討伐数の近似カウント: 敵対モブが死に、Bot が近傍（7以内）にいればその Bot の討伐として数える
+  // HUNT-CREDIT-01 (0-N7, cyc2453): 討伐帰属。近傍近似を廃し、段1 damageSource の Bot 一致→段2 被弾台帳 (最終関与) で最大1体だけに計上する。damageSource が正式版で unpopulated でも段2 (zapEntity/entityHurt の書き手) で機能する。実機での populated 確認は未実施 (確認待ち)。
   if (dead.typeId !== "minecraft:player" && dead.typeId !== BOT_ID) {
     let hostile = GVC_HOSTILE_SET.has(dead.typeId);
     if (!hostile) { try { hostile = !!dead.getComponent("minecraft:type_family")?.hasTypeFamily("monster"); } catch {} }
-    // HUNT-ANIMAL-PROGRESS-01 (cyc2385・BLOCKER是正): 計上の門は敵対性でなく現行 hunt ステップの対象指定 (huntKillCounts が単一の正)。
-    // 種別指定の動物 (牛等) は敵対でなくても数え、汎用指定 "hostile" では従来どおり敵対だけを数える。
-    for (const [bid, rr] of bots) { let b = null; try { b = world.getEntity(bid); } catch {} if (b && b.dimension.id === dead.dimension.id && dist(b.location, dead.location) < 7) { // HUNT-SUBST-01 (cyc2364): 現行 hunt ステップの対象種別 (または汎用指定) に一致する死亡だけを数える。加害者の厳密な帰属は正式版APIで担保しにくいため最低ラインは種別一致とする
-      try { const mm = rr.mission; const st = mm && mm.status === "active" ? (mm.steps || [])[mm.currentStep || 0] : null; if (st && st.type === "hunt_entity" && huntKillCounts(st.target, dead.typeId, hostile)) rr.missionKills = (rr.missionKills || 0) + 1; } catch {} } }
+    let atkId = null; try { atkId = ev.damageSource?.damagingEntity?.id ?? null; } catch {}
+    const nowD = Date.now(); let winner = null, winnerVia = null, winnerAt = -1;
+    for (const [bid, rr] of bots) {
+      try { const mm = rr.mission; const st = mm && mm.status === "active" ? (mm.steps || [])[mm.currentStep || 0] : null; if (!st || st.type !== "hunt_entity") continue; if (!huntKillCounts(st.target, dead.typeId, hostile)) continue; // HUNT-ANIMAL-PROGRESS-01 (cyc2385): 種別門は huntKillCounts が単一の正
+        const ledgerAt = huntLedgerHitAt(rr.huntHits, dead.id, nowD);
+        const cr = huntCredit({ stepTarget: st.target, deadTypeId: dead.typeId, deadHostile: hostile, attackerId: atkId, botId: bid, ledgerAt, now: nowD });
+        if (!cr.credit) continue;
+        if (cr.via === "damageSource") { winner = rr; winnerVia = cr.via; break; }
+        if ((ledgerAt ?? -1) > winnerAt) { winner = rr; winnerVia = cr.via; winnerAt = ledgerAt ?? -1; }
+      } catch {} }
+    if (winner) { try { winner.missionKills = (winner.missionKills || 0) + 1; } catch {} }
   }
   if (dead.typeId === BOT_ID) {
     const oid = dp(dead, "cb_owner", "");
