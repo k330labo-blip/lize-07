@@ -27,7 +27,7 @@ import createWorldMemory from "./world_memory.js";
 import { genSpeech } from "./gen_speech.js";
 import { parseOrder, resumeClarifyOrder, classifyClarifyUnmatched } from "./order_parser.js";
 import { orderAmountOrDefault } from "./qty_default_math.js"; // 0-N1 QTY-DEFAULT-01 (cyc2447): 数量省略時の対象別デフォルト (純粋核)
-import { shearDisclosureFor, SHEAR_DISCLOSURE_NOTE } from "./shear_honest_math.js"; // 0-N5 SHEAR-HONEST-01 (cyc2452): 羊毛刈りの方式明示 (純粋核)
+import { shearDisclosureFor, shearForbidBlockFor, SHEAR_DISCLOSURE_NOTE, SHEAR_FORBID_BLOCK_NOTE } from "./shear_honest_math.js"; // 0-N5 SHEAR-HONEST-01 (cyc2452): 羊毛刈りの方式明示 (純粋核)。否定併記形の開始抑止 (cyc2458)
 import { resolveItem } from "./decomposer.js"; // 倉庫 W3-TEACH (cyc2355): 素材名→typeId の単一の正 (注文経路と共用)
 import { resolveRequestedTool, toolItemIdOf } from "./tool_request_math.js"; // 0-C4 R-C4-1 (cyc2375): 道具指定の実行側 reader 純粋核
 import { resolvePlacement, linkedPlacementCells, placementItemIdOf } from "./placement_resolve.js"; // 0-C4 R-C4-2 (cyc2376): 設置位置の実行側 reader 純粋核
@@ -5537,6 +5537,14 @@ function startOrderFromParser(p, bot, r, o) {
     return;
   }
 
+  // SHEAR 否定併記形 (0-N5 残存, cyc2457 A03 裁定 (b), cyc2458): 羊の討伐が禁止された羊毛集めは、
+  // 禁止に反する討伐方式で受理せず、手段が無いことを明示して開始しない (0-C7)。
+  // 禁止自体は通常の混在注文と同形にセッション禁止へ記録する (開始直前の G5-b 記録と同基準)。
+  if (shearForbidBlockFor({ target: o.target?.item || o.target?.block || null, kind: o.kind, negations: o.negations })) {
+    if ((o.negations || []).length) { try { recordSessionForbids(bot, r, { negations: (o.negations || []).filter((n) => { const nid = n?.target?.item || n?.target?.block || n?.target?.entity; return nid && nid !== (o.target?.item || o.target?.block || o.target?.entity); }) }); } catch {} }
+    say(p, bot, SHEAR_FORBID_BLOCK_NOTE, true);
+    return;
+  }
   if (o.kind === "free") { dps(bot, "cb_mode", "free"); say(p, bot, "おまかせ、了解です。状況は私が見ます", true); return; }
   if (o.kind === "escort") { dps(bot, "cb_mode", "follow"); say(p, bot, "分かりました。そばを離れません", true); return; }
   if (o.kind === "watch") { applyChatAct(p, bot, r, "stay_anchor"); say(p, bot, "分かりました。ここで見張ります。敵が近づけば対応します", true); return; }

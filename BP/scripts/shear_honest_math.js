@@ -45,3 +45,29 @@ export function shearDisclosureFor(input) {
     return { method: "kill_instead_of_shear", suppressTool: true, note: SHEAR_DISCLOSURE_NOTE };
   } catch { return null; }
 }
+
+// SHEAR 否定併記形 (0-N5 残存, cyc2457 A03 裁定 (b), cyc2458 統合):
+// 「羊を殺さずに羊毛を集めて」では、羊毛の直接の入手元である羊の討伐が禁止されている。
+// 毛刈りは実装できず (上記)、糸からの合成への読み替えは計画層・実行層に受け皿が無い
+// (別件「禁止ソースの読み替え」)。禁止に反する討伐方式で受理するのは 0-C7 違反のため、
+// 明示して開始しない。判定は毛刈り意図 (ハサミ/刈) とは別軸: gather の羊毛注文で、
+// negations に羊 (entity sheep) の hunt 禁止 (verb 無指定も含む) があれば発火する。
+export const SHEAR_FORBID_BLOCK_NOTE = "羊を倒さずに羊毛を取る手段が、私にはありません。毛刈りはできず、糸からの合成も今は選べません。この指示は受けていません。";
+
+// 入力: { target, kind, negations } — negations は parseOrder の形
+// ({ target: { item, block, entity }, verb } の配列) をそのまま受ける。
+export function shearForbidBlockFor(input) {
+  try {
+    const kind = input?.kind ?? "gather";
+    if (kind !== "gather") return null;
+    if (!isWoolTargetId(input?.target)) return null;
+    const negs = Array.isArray(input?.negations) ? input.negations : [];
+    const hit = negs.some((n) => {
+      const ent = n?.target?.entity ?? null;
+      if (!ent || bareId(String(ent)) !== "sheep") return false;
+      return n?.verb == null || n.verb === "hunt";
+    });
+    if (!hit) return null;
+    return { method: "blocked_by_forbid", note: SHEAR_FORBID_BLOCK_NOTE };
+  } catch { return null; }
+}
