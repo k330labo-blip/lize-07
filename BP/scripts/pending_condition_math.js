@@ -20,11 +20,13 @@ export function normalizePendingCondition(pend) {
   } catch { return null; }
 }
 export function serializePendingCondition(pend) {
-  try { const n = normalizePendingCondition(pend); return n ? JSON.stringify(n) : ""; } catch { return ""; }
+  try { const n = normalizePendingCondition(pend); return n ? JSON.stringify({ ...n, v: 1 }) : ""; } catch { return ""; } // PERSIST 2b: serialize 層で v 付与
 }
 export function deserializePendingCondition(json) {
   try {
     if (!json || typeof json !== "string") return null;
-    return normalizePendingCondition(JSON.parse(json)); // 破損・形違い・条件なし => null (保留なしとして開始)
+    const parsed = JSON.parse(json);
+    if (parsed && typeof parsed === "object" && "v" in parsed) { if (typeof parsed.v !== "number" || !Number.isFinite(parsed.v) || parsed.v > 1) return null; const { v: _v, ...rest } = parsed; return normalizePendingCondition(rest); }
+    return normalizePendingCondition(parsed); // 破損・形違い・条件なし => null (保留なしとして開始)
   } catch { return null; }
 }

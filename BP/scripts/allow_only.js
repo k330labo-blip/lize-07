@@ -81,12 +81,14 @@ export function isBuildAllowedByAllowOnly(allowOnly, targetId) {
 // Serialize via normalizeAllowOnly as the single source of truth; verb:null is
 // preserved verbatim (null means "all verbs" on the reader side).
 export function serializeAllowOnly(a) {
-  try { const n = normalizeAllowOnly(a); return n ? JSON.stringify(n) : ""; } catch { return ""; }
+  try { const n = normalizeAllowOnly(a); return n ? JSON.stringify({ ...n, v: 1 }) : ""; } catch { return ""; } // PERSIST 2b: serialize 層で v 付与 (メモリ形不変)
 }
 export function restoreAllowOnly(json) {
   try {
     if (!json || typeof json !== "string") return null;
-    return normalizeAllowOnly(JSON.parse(json)); // broken/shape-mismatched => null (no restriction)
+    const parsed = JSON.parse(json);
+    if (parsed && typeof parsed === "object" && "v" in parsed) { if (typeof parsed.v !== "number" || !Number.isFinite(parsed.v) || parsed.v > 1) return null; const { v: _v, ...rest } = parsed; return normalizeAllowOnly(rest); }
+    return normalizeAllowOnly(parsed); // broken/shape-mismatched => null (no restriction)
   } catch { return null; }
 }
 // Release: no targetId => clear all. With a target, clear only on a normalized

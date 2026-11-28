@@ -368,7 +368,13 @@ function rt(bot) {
   if (!r.failAgg) { try { r.failAgg = createFailAgg(); const rep = restoreFailAggShardsWithReport((k) => dp(bot, k, "")); if (rep && rep.status === "ok") r.failAgg = rep.agg; try { const m = JSON.parse(dp(bot, "cb_failagg", "") || "null"); if (m && Number.isInteger(m.gen)) r.failAggGen = m.gen; } catch {} r.failAggSnap = failAggSnapshot(r); } catch { if (!r.failAgg) r.failAgg = null; } } // Phase4 failAgg: S3b 永続化 (cb_failagg キー分割)。clearPlanRecords へ登録しない
   if (!r.expStore) { try { const rep = restoreExpStore((k) => dp(bot, k, "")); r.expStore = rep.store; try { const m = JSON.parse(dp(bot, "cb_exp", "") || "null"); if (m && Number.isInteger(m.gen)) r.expGen = m.gen; } catch {} r.expSnap = expSnapshot(r); } catch { if (!r.expStore) r.expStore = null; } } // 6-ML (cycle0710): 経験ストア復元。失敗時は null で本体に影響させない
   if (r.mission === undefined) { // DP cb_mission から復元（再召喚・再起動をまたぐ）
-    try { const mj = dp(bot, "cb_mission", ""); r.mission = mj ? JSON.parse(mj) : null; } catch { r.mission = null; }
+    try { const mj = dp(bot, "cb_mission", ""); const mp = mj ? JSON.parse(mj) : null;
+      if (mp && typeof mp === "object" && !Array.isArray(mp)) { const acc = acceptPersistObject(mp); // PERSIST 2b (cyc2498)
+        if (acc.status === "future" || acc.status === "invalid") { r.mission = null; r.missionFutureVersion = true; }
+        else if (mp.steps !== undefined && !Array.isArray(mp.steps)) r.mission = null;
+        else { const { v: _v, ...rest } = mp; r.mission = rest; } // 復元で v を剥がす (メモリ形へ混入させない)
+      } else r.mission = (mp === null ? null : null);
+    } catch { r.mission = null; }
     // cycle1923 (a08 案B): STEP_TYPES 外のステップを含む mission は fail-closed で破棄する (版跨ぎの旧保存が無出口 mission を抱え続けないため)
     try { if (r.mission && Array.isArray(r.mission.steps) && r.mission.steps.some((st) => !STEP_TYPES.includes(st?.type))) r.mission = null; } catch {}
     r.missionSig = missionSig(r.mission); // 復元しただけの状態では DP へ書き戻さない
@@ -396,13 +402,23 @@ function rt(bot) {
     try { r.pendingConditionOrder = deserializePendingCondition(dp(bot, "cb_pending_condition", "")); } catch { r.pendingConditionOrder = null; }
   }
   if (r.pendingGearSet === undefined) { // 0-F R-2 (cyc2379): 一式の残り部位を DP cb_pending_gear から復元 (undefined センチネル方式)。mission が無い/復元で破棄された場合は復元せず DP 残骸も掃除する (単独では発火させない)。GEARSET-CHAIN-LTDEAD-01 (cyc2400): 部位の実行形は長期タスクが通常経路のため、存続条件に DP cb_longtask の存在も加える (復元順が longtask 復元より前段にあるため DP を直接見る)
-    try { const gj = dp(bot, "cb_pending_gear", ""); const arr = gj ? JSON.parse(gj) : null; const okArr = Array.isArray(arr) ? arr.filter((x) => typeof x === "string" && x.startsWith("minecraft:")) : []; let hasLt = false; try { const lj2 = dp(bot, "cb_longtask", ""); const lo2 = lj2 ? JSON.parse(lj2) : null; hasLt = !!(lo2 && typeof lo2 === "object"); } catch {} r.pendingGearSet = ((r.mission || hasLt) && okArr.length) ? okArr : null; if (!r.pendingGearSet) dps(bot, "cb_pending_gear", ""); } catch { r.pendingGearSet = null; }
+    try { const gj = dp(bot, "cb_pending_gear", ""); const arr = gj ? JSON.parse(gj) : null; let rawItems = null; // PERSIST 2b: 旧形=配列 / 新形=エンベロープ {v,items}
+      if (Array.isArray(arr)) rawItems = arr; else if (arr && typeof arr === "object" && acceptPersistObject(arr).status !== "future" && acceptPersistObject(arr).status !== "invalid") rawItems = arr.items;
+      const okArr = Array.isArray(rawItems) ? rawItems.filter((x) => typeof x === "string" && x.startsWith("minecraft:")) : []; let hasLt = false; try { const lj2 = dp(bot, "cb_longtask", ""); const lo2 = lj2 ? JSON.parse(lj2) : null; hasLt = !!(lo2 && typeof lo2 === "object" && !Array.isArray(lo2) && acceptPersistObject(lo2).status !== "future" && acceptPersistObject(lo2).status !== "invalid"); } catch {} r.pendingGearSet = ((r.mission || hasLt) && okArr.length) ? okArr : null; if (!r.pendingGearSet) dps(bot, "cb_pending_gear", ""); } catch { r.pendingGearSet = null; }
   }
   if (r.pendingAfterTool === undefined) { // RG U3 (cyc2394): 道具調達の保留注文を DP cb_pending_tool から復元 (undefined センチネル方式)。保存対象は注文オブジェクトのため kind/target/tool の形検証を行い、壊れた保存は保留なし＋DP残骸掃除。mission も長期タスクも無い場合は復元せず単独では発火させない。TOOLCHAIN-RESTORE-LTGATE-01 (cyc2405): 調達の実行形は長期タスクが通常経路のため、存続条件に DP cb_longtask の存在も加える (gear 側 GEARSET-CHAIN-LTDEAD-01 と同形。復元順が longtask 復元より前段にあるため DP を直接見る)
-    try { const tj = dp(bot, "cb_pending_tool", ""); const mo2 = tj ? JSON.parse(tj) : null; const okMo = !!(mo2 && typeof mo2 === "object" && typeof mo2.kind === "string" && mo2.kind && typeof mo2.target === "string" && mo2.target && typeof mo2.tool === "string" && mo2.tool); let hasLt = false; try { const lj3 = dp(bot, "cb_longtask", ""); const lo3 = lj3 ? JSON.parse(lj3) : null; hasLt = !!(lo3 && typeof lo3 === "object"); } catch {} r.pendingAfterTool = ((r.mission || hasLt) && okMo) ? mo2 : null; if (!r.pendingAfterTool) dps(bot, "cb_pending_tool", ""); } catch { r.pendingAfterTool = null; }
+    try { const tj = dp(bot, "cb_pending_tool", ""); const moRaw = tj ? JSON.parse(tj) : null; let mo2 = null; // PERSIST 2b: 未来版は復元せず、復元時は v を剥がす
+      if (moRaw && typeof moRaw === "object" && !Array.isArray(moRaw) && acceptPersistObject(moRaw).status !== "future" && acceptPersistObject(moRaw).status !== "invalid") { const { v: _v, ...rest } = moRaw; mo2 = rest; }
+      const okMo = !!(mo2 && typeof mo2.kind === "string" && mo2.kind && typeof mo2.target === "string" && mo2.target && typeof mo2.tool === "string" && mo2.tool); let hasLt = false; try { const lj3 = dp(bot, "cb_longtask", ""); const lo3 = lj3 ? JSON.parse(lj3) : null; hasLt = !!(lo3 && typeof lo3 === "object" && !Array.isArray(lo3) && acceptPersistObject(lo3).status !== "future" && acceptPersistObject(lo3).status !== "invalid"); } catch {} r.pendingAfterTool = ((r.mission || hasLt) && okMo) ? mo2 : null; if (!r.pendingAfterTool) dps(bot, "cb_pending_tool", ""); } catch { r.pendingAfterTool = null; }
   }
   if (r.longtask === undefined) { // DP cb_longtask から復元
-    try { const lj = dp(bot, "cb_longtask", ""); r.longtask = lj ? JSON.parse(lj) : null; } catch { r.longtask = null; }
+    try { const lj = dp(bot, "cb_longtask", ""); const lp = lj ? JSON.parse(lj) : null; // PERSIST 2b: 帯域内 v 判定＋最小形検証＋未来版 quarantine
+      if (lp && typeof lp === "object" && !Array.isArray(lp)) { const acc = acceptPersistObject(lp);
+        if (acc.status === "future" || acc.status === "invalid") { r.longtask = null; r.longtaskFutureVersion = true; }
+        else if (!Array.isArray(lp.legs) || (lp.legIdx !== undefined && !Number.isFinite(lp.legIdx))) r.longtask = null;
+        else { const { v: _v, ...rest } = lp; r.longtask = rest; }
+      } else r.longtask = null;
+    } catch { r.longtask = null; }
   }
   return r;
 }
@@ -1980,10 +1996,11 @@ function missionSig(m) { // Phase 0 負荷対策: 復元に必要な構造だけ
   return `${m.status}|${m.currentStep}|${m.suspendReason || ""}|${m.suspendCount || 0}|${m.suspendWaitSince || 0}|${m.detour ? m.detour.phase + ":" + m.detour.resumeStep : ""}|${steps}|q:${qb(m.recoverObs, 60)}:${qb(m.invUnreadObs, 60)}:${m.blocked ? 1 : 0}:${qSteps}:${qDetour}`; // cycle1807: suspendWaitSince を sig へ含める (cannot_recover の180秒上限が復元をまたいで到達可能になる)
 }
 function persistMission(bot, r, force = false) {
+  if (r.missionFutureVersion) { if (!r.mission) return; r.missionFutureVersion = false; } // PERSIST 2b quarantine: 未来版は上書きしない。解除は新規 mission が立った時のみ
   const sig = missionSig(r.mission);
   if (!force && sig === r.missionSig) return; // 復元に効く変化なし → DP書きを省略
   r.missionSig = sig;
-  dps(bot, "cb_mission", r.mission ? JSON.stringify(r.mission) : "");
+  dps(bot, "cb_mission", r.mission ? JSON.stringify(stampPersistVersion(r.mission)) : ""); // PERSIST 2b: stamp はコピー側のみ (メモリへ v を混ぜない)
 }
 // ENDGOAL W-A (cyc2363): shadow 状態の永続化 (persistMission と同形の sig dirty 方式)。
 // 開始済み状態を pre_start として保存しない (st.phase が pre_start の未開始は保存対象外)。
@@ -2926,7 +2943,7 @@ function foldGatherBuildPlan(bot, owner, r, reason, dyingMission) {
 
 // ---------- v0.4.0: 長期自律タスク ----------
 function lname(item) { return item === "group:logs" ? "原木" : item === "group:planks" ? "板材" : item === "group:cobble" ? "丸石" : nameOfItem(item); }
-function saveLongTask(bot, r) { dps(bot, "cb_longtask", r.longtask ? JSON.stringify(r.longtask) : ""); }
+function saveLongTask(bot, r) { if (r.longtaskFutureVersion) { if (!r.longtask) return; r.longtaskFutureVersion = false; } dps(bot, "cb_longtask", r.longtask ? JSON.stringify(stampPersistVersion(r.longtask)) : ""); } // PERSIST 2b: quarantine＋v:1 stamp
 // 倉庫 W1: 台帳の保存はこの1点だけを通す (登録・除外・行き先の変更は台帳を差し替えた後に呼ぶ)
 function saveWarehouse(bot, r) { try { if (r.warehouse) dps(bot, "cb_warehouse", serializeWarehouseRegistry(r.warehouse)); } catch {} }
 // 倉庫 W1 候補スキャン供給 (cycle1514): 新規の世界走査はせず、world_memory が既に知っている
@@ -3587,12 +3604,12 @@ function abortLongTask(bot, owner, r) {
 // clearPendingCondition と対で使う。中止・保留失効で残すと、無関係な次ミッションの完了時に
 // 中止したはずの本来注文が finishMission 経由で復活する (ゾンビ復活) ため、終了経路では必ず消す。
 function clearPendingTool(bot, r) { try { r.pendingAfterTool = null; r.requestedTool = null; r.toolAppliedLegIdx = null; if (bot) dps(bot, "cb_pending_tool", ""); } catch {} }
-function savePendingTool(bot, r) { try { dps(bot, "cb_pending_tool", r.pendingAfterTool ? JSON.stringify(r.pendingAfterTool) : ""); } catch {} } // RG U3 (cyc2394): 道具調達の保留注文の保存 (R-2 gear テンプレートの横展開、保存対象は注文オブジェクト)
+function savePendingTool(bot, r) { try { dps(bot, "cb_pending_tool", r.pendingAfterTool ? JSON.stringify(stampPersistVersion(r.pendingAfterTool)) : ""); } catch {} } // PERSIST 2b: v:1 stamp (コピーのみ) // RG U3 (cyc2394): 道具調達の保留注文の保存 (R-2 gear テンプレートの横展開、保存対象は注文オブジェクト)
 // 0-F R-2 (cyc2379): 防具一式の残り部位 (pendingGearSet) の保存と掃除。従来はメモリのみ保持で、
 // (1) 再読込で残り部位が無言で消える (2) 中止・保留失効で畳まれず、無関係な次ミッションの完了時に
 // finishMission が拾って未依頼部位を開始しうる、という道具側 RG-1 と同じ非対称が残っていた。
 // 保存は DP cb_pending_gear (条件保留 cb_pending_condition と同作法)、掃除は終了経路から必ず通す。
-function savePendingGearSet(bot, r) { try { dps(bot, "cb_pending_gear", Array.isArray(r.pendingGearSet) && r.pendingGearSet.length ? JSON.stringify(r.pendingGearSet) : ""); } catch {} }
+function savePendingGearSet(bot, r) { try { dps(bot, "cb_pending_gear", Array.isArray(r.pendingGearSet) && r.pendingGearSet.length ? JSON.stringify({ v: 1, items: r.pendingGearSet }) : ""); } catch {} } // PERSIST 2b: エンベロープ化
 function clearPendingGearSet(bot, r) { try { r.pendingGearSet = null; if (bot) dps(bot, "cb_pending_gear", ""); } catch {} }
 function cancelMission(bot, owner, r, silent = false) {
   clearPendingCondition(bot, r); // E-02+E-01: 中止は条件保留も畳む (保留だけが残って後で発火するのを防ぐ。DP 側も同時に消す)

@@ -24,11 +24,18 @@ export function sanitizeForbids(list) {
 // DP の JSON 文字列から復元する。壊れたデータは空配列へ倒す (fail-closed で捏造しない)。
 export function restoreForbids(json) {
   if (!json || typeof json !== "string") return [];
-  try { return sanitizeForbids(JSON.parse(json)); } catch { return []; }
+  try { const parsed = JSON.parse(json);
+    if (Array.isArray(parsed)) return sanitizeForbids(parsed); // PERSIST 2b: 旧形 (配列) 受理
+    if (parsed && typeof parsed === "object") { // PERSIST 2b: エンベロープ {v, items}
+      if (typeof parsed.v !== "number" || !Number.isFinite(parsed.v) || parsed.v > 1) return []; // 未来版/不正な v は空へ
+      return sanitizeForbids(parsed.items);
+    }
+    return [];
+  } catch { return []; }
 }
 
 export function serializeForbids(list) {
-  return JSON.stringify(sanitizeForbids(list));
+  return JSON.stringify({ v: 1, items: sanitizeForbids(list) }); // PERSIST 2b (cyc2498): エンベロープ化
 }
 
 // Phase5 読み手 R1 (cycle2006): セッション禁止を注文へマージする純粋核。
