@@ -296,18 +296,21 @@ export function planBootstrap(input) {
     let want = 1;
     const ownedExact = inv[tn.item] || 0;
     const owned = countToolAtLeastFromCounts(inv, tn.kind, tn.tier); // queue0-B (cycle1728): tier-or-higher counts as owned
-    const frac = ownedExact > 0 && invDur[tn.item] !== undefined ? invDur[tn.item] : null; // queue0-B: frac belongs to the exact item only
+    // TOOLTIER-DURABILITY-BLIND-01 (cyc2461): 耐久は「実際に使う最良の所持道具」基準。等級ぴったり限定だと上位道具の残耐久が計画へ届かない
+    const bestTier = owned > 0 ? bestToolTierFromCounts(inv, tn.kind, tn.tier) : null;
+    const bestItem = bestTier ? (TIERS.includes(bestTier) ? toolItemId(bestTier, tn.kind) : `minecraft:${bestTier}_${tn.kind}`) : null; // golden/netherite は TIER_ITEM_PREFIX 外のため直接組む
+    const frac = bestItem && invDur[bestItem] !== undefined ? invDur[bestItem] : null;
     // 主ツールは目標個数ぶんの消費を見積もる（1ブロック≒耐久1消費。道中の掘削は含まない）
     if (tn.kind === mainKind && typeof goal.amount === "number" && goal.amount > 0) {
-      const dur = (owned > ownedExact ? (TIER_DURABILITY[bestToolTierFromCounts(inv, tn.kind, tn.tier)] ?? EXTRA_TOOL_DURABILITY[bestToolTierFromCounts(inv, tn.kind, tn.tier)]) : TIER_DURABILITY[tn.tier]) || TIER_DURABILITY[tn.tier]; // queue0-B: durability of the best owned higher tool
+      const dur = (owned > ownedExact ? (TIER_DURABILITY[bestTier] ?? EXTRA_TOOL_DURABILITY[bestTier]) : TIER_DURABILITY[tn.tier]) || TIER_DURABILITY[tn.tier]; // queue0-B: durability of the best owned higher tool
       const availUses = owned > 0 ? (frac !== null ? frac : 1) * dur + Math.max(0, owned - 1) * dur : 0;
       const need = Math.ceil(Math.max(0, goal.amount - availUses) / dur);
       want = Math.max(1, owned + need);
       if (goal.amount > dur * 0.8) notes.push(`目標${goal.amount}個は${TIER_LABEL[tn.tier]}の${TOOL_KINDS[tn.kind].label}の耐久(${dur})に近い/超えるため、予備を含めて${want}本体制で計画した。道中の掘削ぶんは含まない見積もり`);
     }
     // 耐久ポリシー: 傷んだ個体があり予備が無ければ +1 本
-    if (ownedExact > 0) { // queue0-B: health policy stays on the exact item
-      const h = evaluateToolHealth({ item: tn.item, kind: tn.kind, tier: tn.tier, durabilityFrac: frac, spareCount: Math.max(0, ownedExact - 1), canCraftNow: false });
+    if (owned > 0 && bestItem) { // TOOLTIER-DURABILITY-BLIND-01: health も最良所持道具基準（予備数も等級以上の総数基準）
+      const h = evaluateToolHealth({ item: bestItem, kind: tn.kind, tier: bestTier, durabilityFrac: frac, spareCount: Math.max(0, owned - 1), canCraftNow: false });
       if ((h.action === "craft_spare" || h.action === "warn") && want <= owned) want = owned + 1;
       health.push(h);
     }
