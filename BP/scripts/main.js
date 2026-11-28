@@ -36,7 +36,7 @@ import { isCropMature, CROP_MATURITY_MAX, isCropBlock, cropBreakGate } from "./c
 import { resolveWorkAccess, ACCESS } from "./work_access.js"; // 基礎 遮蔽除去 (v0.4.76): 作業アクセス解決の純粋核
 import { evaluateDig } from "./dig_gate.js"; // 要望バッチA (v0.4.88): 掘削の統一ゲート
 import { evaluatePlace, placeHoldRecord } from "./place_gate.js"; // PLACE-GATE段2 (cycle0522): 設置側ゲート (build配線のみ、station/torchは段3)
-import { canObserve } from "./observability.js"; // 0-P (cyc2483 S0/S1): 観測可能性ゲート (純粋核)。生走査を意味情報へ出す入口をここへ一本化する (X-ray防止)
+import { canObserve, gateScanResults } from "./observability.js"; // 0-P (cyc2483 S0/S1): 観測可能性ゲート (純粋核)。生走査を意味情報へ出す入口をここへ一本化する (X-ray防止)
 import { gazeRotation } from "./gaze_math.js"; // POLISH-ANIM-LOOK-01 (cycle0821): 視線ピッチ連動の純粋計算
 import { applyInspectPitch, isInspectActive, shouldInspect } from "./inspect_math.js"; // POLISH-ANIM-INSPECT-01 (cycle1003): 依頼品入手時の検分 (表示層のみ)
 import { applyNodPitch, isNodActive, shouldNod } from "./nod_math.js";
@@ -2078,6 +2078,11 @@ function splitVolume(a, b) {
 const warnedOnce = new Set();
 function warnOnce(key, msg) { if (warnedOnce.has(key)) return; warnedOnce.add(key); console.warn(msg); }
 const wideScanState = createWideScanFails(5); // 0-D4 Bprime: failures isolated per typeId; only infra failures are global
+// 0-P S2 (cyc2484): wide/scan gate helpers. Raw candidates only pass here.
+const SCAN_OBS_MAX_DIST = 64;
+function scanObsProvider(bot){ const dim=bot?.dimension; return (x,y,z)=>{ try{ const b=dim?.getBlock({x,y,z}); return b?(b.typeId??null):null; }catch{ return null; } }; }
+function scanObsEye(bot){ const l=bot?.location; return l?{x:l.x,y:l.y+1.6,z:l.z}:null; }
+function gateFirstObserved(bot, raw){ try{ const eye=scanObsEye(bot); if(!eye||!Array.isArray(raw)) return null; const passed=gateScanResults(scanObsProvider(bot), eye, raw.slice(0,32), {maxDist:SCAN_OBS_MAX_DIST, method:"seen", at:Date.now()}); return passed.length?passed[0].cell:null; }catch{ return null; } }
 function wideQuery(bot, typeIds, skipFn = null) { // cyc2367 HARVEST-OCCLUDED-YOUNG-01: 任意 skip（既定 null で従来不変）
   // 戻り値: { ok, best: { typeId: {x,y,z}|null } }。ok=false は「測れなかった」(呼び出し側が従来走査へ)
   const best = {}; for (const id of typeIds) best[id] = null;
@@ -2089,7 +2094,7 @@ function wideQuery(bot, typeIds, skipFn = null) { // cyc2367 HARVEST-OCCLUDED-YO
   let minY = -64, maxY = 319; try { minY = dim.heightRange.min; maxY = dim.heightRange.max - 1; } catch {}
   const bx = Math.floor(bot.location.x), by = Math.floor(bot.location.y), bz = Math.floor(bot.location.z);
   const want = new Set(typeIdsQ);
-  const bd = {};
+  const bd = {}; const cands={}; for(const id of typeIds) cands[id]=[];
   // 1 つの範囲・ID 群を問い合わせ、見つかった位置で best を更新する。例外はそのまま投げる
   const queryRing = (ring, ids) => {
     const y0 = Math.max(minY, by - ring.v), y1 = Math.min(maxY, by + ring.v);
@@ -2105,7 +2110,7 @@ function wideQuery(bot, typeIds, skipFn = null) { // cyc2367 HARVEST-OCCLUDED-YO
       if (skipFn) { let sk = false; try { sk = !!skipFn(loc, id); } catch {} if (sk) continue; } // cyc2367: ban 中セルは次点へ譲る
       const dx = loc.x - bx, dy = loc.y - by, dz = loc.z - bz;
       const dd = dx * dx + dz * dz + dy * dy * 2.25; // 上下は 1.5 倍遠いとみなす (掘り進む手間)
-      if (bd[id] === undefined || dd < bd[id]) { bd[id] = dd; best[id] = { x: loc.x, y: loc.y, z: loc.z }; any = true; }
+      cands[id].push({x:loc.x,y:loc.y,z:loc.z,_dd:dd}); if (bd[id] === undefined || dd < bd[id]) { bd[id] = dd; best[id] = { x: loc.x, y: loc.y, z: loc.z }; any = true; }
     }
     if (n > SCAN_ITER_CAP) break;
     }
@@ -2123,7 +2128,7 @@ function wideQuery(bot, typeIds, skipFn = null) { // cyc2367 HARVEST-OCCLUDED-YO
     }
     if (any) break;
   }
-  if (okAny) { const succeededIds = typeIdsQ.filter((id) => !failedIds1455.has(id)); noteWideSuccess(wideScanState, succeededIds); for (const id of failedIds1455) noteWideIdFailure(wideScanState, id, Date.now()); return { ok: true, best, succeededIds }; } // 0-D4 R4 (cyc2481): 成功した ID の一覧を呼び出し側へ渡す
+  if (okAny) { const succeededIds = typeIdsQ.filter((id) => !failedIds1455.has(id)); noteWideSuccess(wideScanState, succeededIds); for (const id of failedIds1455) noteWideIdFailure(wideScanState, id, Date.now()); for(const id of typeIdsQ) cands[id].sort((a,b)=>a._dd-b._dd); return { ok: true, best, succeededIds, cands }; } // 0-P S2: cands are raw, gate-only
   for (const id of (failedIds1455.size ? [...failedIds1455] : typeIdsQ)) noteWideIdFailure(wideScanState, id, Date.now());
   if (LIZE_DEBUG) console.warn(`[LIZE] wide scan failed (per-id): ${lastErr}`);
   return { ok: false, best };
@@ -2135,8 +2140,8 @@ function scanCachePeek(r, typeId) {
   if (Date.now() - ent.at >= ent.ttl) return { state: "stale" };
   if (ent.loc) return { state: "hit", loc: ent.loc };
   // Phase2 INSPECT Step2: 失敗過半の走査は absent と偽らない (unknown)。旧形式エントリ (failedCells無し) で loc無しも unknown
-  if (ent.failedCells === undefined || ent.failedCells * 2 > (ent.totalCells || 2601)) return { state: "unknown" };
-  return { state: "absent" };
+  // 0-P S2: absence is never confirmed by scan failure; always unknown
+  return { state: "unknown" };
 }
 // cycle2231 収穫固着是正: 作物は成熟セルのみを走査候補にする (未成熟株の再選択ループ防止)。
 // growth が読めない作物は安全側で候補にしない (crop_maturity の fail-closed と同一)。
@@ -2157,13 +2162,13 @@ function scanBanned(r, loc, typeId, now) { // cyc2367 HARVEST-OCCLUDED-YOUNG-01:
 function scanBlockNear(bot, r, typeId, ttlJitter = 0) {
   const pt = r.percTargets || {};
   const now0 = Date.now();
-  for (const k of ["tree", "ore", "crop"]) if (pt[k] && pt[k].typeId === typeId && !scanBanned(r, pt[k], typeId, now0)) return { x: pt[k].x, y: pt[k].y, z: pt[k].z };
+  for (const k of ["tree", "ore", "crop"]) if (pt[k] && pt[k].typeId === typeId && !scanBanned(r, pt[k], typeId, now0)) { const g=gateFirstObserved(bot,[{x:pt[k].x,y:pt[k].y,z:pt[k].z}]); if(g) return g; } // 0-P S2 read-side gate
   const now = Date.now();
   if (!r.mScanMap) r.mScanMap = {};
   const ent = r.mScanMap[typeId];
   if (ent && now - ent.at < ent.ttl) { if (!ent.loc || !scanBanned(r, ent.loc, typeId, now)) return ent.loc; delete r.mScanMap[typeId]; }
-  { const wq = wideQuery(bot, [typeId], (loc, id) => scanBanned(r, loc, id, now)); if (wq.ok && (!wq.best[typeId] || cropMatureAt(bot.dimension, wq.best[typeId], typeId)) && (!Array.isArray(wq.succeededIds) || wq.succeededIds.includes(typeId))) { r.mScanMap[typeId] = { at: now, ttl: SCAN_TTL_MS + ttlJitter, loc: wq.best[typeId], failedCells: 0, totalCells: 2601 }; try { r.lastBlockScan = { typeId, failedCells: 0, totalCells: 2601, at: now, wide: true }; } catch {} return wq.best[typeId]; } } // v0.4.66: 広域探索 / 0-D4 R4 (cyc2481): リセットは wide が成功した当該 ID だけ
-  let best = null, bd = 1e9, failedCells = 0;
+  { const wq = wideQuery(bot, [typeId], (loc, id) => scanBanned(r, loc, id, now)); if (wq.ok && (!Array.isArray(wq.succeededIds) || wq.succeededIds.includes(typeId))) { const raw=(wq.cands?.[typeId]||[]).filter((c)=>cropMatureAt(bot.dimension,c,typeId)); const g=gateFirstObserved(bot, raw); r.mScanMap[typeId] = { at: now, ttl: SCAN_TTL_MS + ttlJitter, loc: g, failedCells: 0, totalCells: 2601, obs: g?{state:"observed",method:"seen",at:now}:null, obsState: g?"observed":"unknown" }; try { r.lastBlockScan = { typeId, failedCells: 0, totalCells: 2601, at: now, wide: true }; } catch {} return g; } } // 0-P S2: gated wide // v0.4.66: 広域探索 / 0-D4 R4 (cyc2481): リセットは wide が成功した当該 ID だけ
+  let best = null, bd = 1e9, failedCells = 0; const rawNear=[];
   const bx = Math.floor(bot.location.x), by = Math.floor(bot.location.y), bz = Math.floor(bot.location.z);
   for (let dx = -8; dx <= 8; dx++) for (let dy = -4; dy <= 4; dy++) for (let dz = -8; dz <= 8; dz++) {
     let b = null; try { b = bot.dimension.getBlock({ x: bx + dx, y: by + dy, z: bz + dz }); } catch {}
@@ -2171,11 +2176,11 @@ function scanBlockNear(bot, r, typeId, ttlJitter = 0) {
     if (b.typeId !== typeId) continue;
     if (!cropCellMature(b, typeId)) continue; // cycle2231: 未成熟作物は候補にしない
     if (scanBanned(r, b.location, typeId, now)) continue; // cyc2367: ban 中は次点へ譲る
-    const dd = Math.hypot(dx, dy, dz); if (dd < bd) { bd = dd; best = { x: b.location.x, y: b.location.y, z: b.location.z }; }
+    const dd = Math.hypot(dx, dy, dz); rawNear.push({x:b.location.x,y:b.location.y,z:b.location.z,_dd:dd}); if (dd < bd) { bd = dd; best = { x: b.location.x, y: b.location.y, z: b.location.z }; }
   }
-  r.mScanMap[typeId] = { at: now, ttl: SCAN_TTL_MS + ttlJitter, loc: best, failedCells, totalCells: 2601 };
+  const gatedNear = gateFirstObserved(bot, rawNear.sort((a,b)=>a._dd-b._dd)); r.mScanMap[typeId] = { at: now, ttl: SCAN_TTL_MS + ttlJitter, loc: gatedNear, failedCells, totalCells: 2601, obs: gatedNear?{state:"observed",method:"seen",at:now}:null, obsState: gatedNear?"observed":"unknown" };
   try { r.lastBlockScan = { typeId, failedCells, totalCells: 2601, at: now }; } catch {}
-  return best;
+  return gatedNear;
 }
 // v0.4.64: 複数IDを1回の走査でまとめて確定させる。原木の樹種別分割走査 (1回2種まで) は
 // TTL (2.5〜4.1秒) より一巡 (約5秒) が長く、常に未測定種が残って pending が解けなかった。
@@ -2187,9 +2192,9 @@ function scanBlocksNear(bot, r, typeIds) {
   const best = {}, bd = {};
   for (const id of typeIds) { best[id] = null; bd[id] = Infinity; }
   const pt = r.percTargets || {};
-  for (const k of ["tree", "ore", "crop"]) if (pt[k] && want.has(pt[k].typeId) && !scanBanned(r, pt[k], pt[k].typeId, now)) best[pt[k].typeId] = { x: pt[k].x, y: pt[k].y, z: pt[k].z }; // LOG-SCAN-BAN-SHADOW-01 (cyc2456): 知覚候補も ban を通す
-  { const wq = wideQuery(bot, typeIds, (loc, id) => scanBanned(r, loc, id, now)); if (wq.ok) { for (const id of typeIds) if (wq.best[id] && !cropMatureAt(bot.dimension, wq.best[id], id)) wq.best[id] = null; const resetSet = new Set(Array.isArray(wq.succeededIds) ? wideResetIds(typeIds, wq.succeededIds) : typeIds); for (const id of typeIds) r.mScanMap[id] = { at: now, ttl: SCAN_TTL_MS, loc: best[id] || wq.best[id], failedCells: resetSet.has(id) ? 0 : preservedFailedCells(r.mScanMap[id]), totalCells: 2601 }; try { r.lastBlockScan = { typeId: typeIds[0], failedCells: resetSet.has(typeIds[0]) ? 0 : preservedFailedCells(r.mScanMap[typeIds[0]]), totalCells: 2601, at: now, wide: true }; } catch {} for (const id of typeIds) if (!best[id]) best[id] = wq.best[id]; return best; } } // v0.4.66: 広域探索 / 0-D4 R4 (cyc2481): wide 成功のリセットは成功した ID だけ、他 ID は前回の失敗計数を保持
-  const failCounts = createScanFailCounts(typeIds); // 0-D4 R3 (cyc2481): 失敗計数は ID 別
+  for (const k of ["tree", "ore", "crop"]) if (pt[k] && want.has(pt[k].typeId) && !scanBanned(r, pt[k], pt[k].typeId, now)) { const g=gateFirstObserved(bot,[{x:pt[k].x,y:pt[k].y,z:pt[k].z}]); if(g) best[pt[k].typeId]=g; } // 0-P S2 read-side gate
+  { const wq = wideQuery(bot, typeIds, (loc, id) => scanBanned(r, loc, id, now)); if (wq.ok) { for (const id of typeIds) { const raw=(wq.cands?.[id]||[]).filter((c)=>cropMatureAt(bot.dimension,c,id)); wq.best[id]=gateFirstObserved(bot, raw); } const resetSet = new Set(Array.isArray(wq.succeededIds) ? wideResetIds(typeIds, wq.succeededIds) : typeIds); for (const id of typeIds) { const gloc=best[id]||wq.best[id]; r.mScanMap[id] = { at: now, ttl: SCAN_TTL_MS, loc: gloc, failedCells: resetSet.has(id) ? 0 : preservedFailedCells(r.mScanMap[id]), totalCells: 2601, obs: gloc?{state:"observed",method:"seen",at:now}:null, obsState: gloc?"observed":"unknown" }; } try { r.lastBlockScan = { typeId: typeIds[0], failedCells: resetSet.has(typeIds[0]) ? 0 : preservedFailedCells(r.mScanMap[typeIds[0]]), totalCells: 2601, at: now, wide: true }; } catch {} for (const id of typeIds) if (!best[id]) best[id] = wq.best[id]; return best; } } // v0.4.66: 広域探索 / 0-D4 R4 (cyc2481): wide 成功のリセットは成功した ID だけ、他 ID は前回の失敗計数を保持
+  const failCounts = createScanFailCounts(typeIds); const rawMulti={}; for(const id of typeIds) rawMulti[id]=[];
   const bx = Math.floor(bot.location.x), by = Math.floor(bot.location.y), bz = Math.floor(bot.location.z);
   for (let dx = -8; dx <= 8; dx++) for (let dy = -4; dy <= 4; dy++) for (let dz = -8; dz <= 8; dz++) {
     let b = null; try { b = bot.dimension.getBlock({ x: bx + dx, y: by + dy, z: bz + dz }); } catch {}
@@ -2197,10 +2202,10 @@ function scanBlocksNear(bot, r, typeIds) {
     if (!want.has(b.typeId)) continue;
     if (!cropCellMature(b, b.typeId)) continue; // cycle2231: 未成熟作物は候補にしない
     if (scanBanned(r, b.location, b.typeId, now)) continue; // LOG-SCAN-BAN-SHADOW-01 (cyc2456)
-    const dd = dx * dx + dy * dy + dz * dz;
+    const dd = dx * dx + dy * dy + dz * dz; rawMulti[b.typeId].push({x:b.location.x,y:b.location.y,z:b.location.z,_dd:dd});
     if (dd < bd[b.typeId]) { bd[b.typeId] = dd; best[b.typeId] = { x: b.location.x, y: b.location.y, z: b.location.z }; }
   }
-  for (const id of typeIds) r.mScanMap[id] = { at: now, ttl: SCAN_TTL_MS, loc: best[id], failedCells: scanFailedCellsFor(failCounts, id), totalCells: 2601 };
+  for (const id of typeIds) { const g=gateFirstObserved(bot, rawMulti[id].sort((a,b)=>a._dd-b._dd)); best[id]=g; r.mScanMap[id] = { at: now, ttl: SCAN_TTL_MS, loc: g, failedCells: scanFailedCellsFor(failCounts, id), totalCells: 2601, obs: g?{state:"observed",method:"seen",at:now}:null, obsState: g?"observed":"unknown" }; }
   try { r.lastBlockScan = { typeId: typeIds[0], failedCells: scanFailedCellsFor(failCounts, typeIds[0]), totalCells: 2601, at: now }; } catch {}
   return best;
 }
@@ -2213,9 +2218,9 @@ function inspectBlockNear(bot, r, typeId) {
     if (!out) {
       const peek = scanCachePeek(r, typeId);
       if (peek.state === "hit") out = { state: "present", source: "cache", confidence: 1, loc: peek.loc };
-      else if (peek.state === "absent") { const ent = r.mScanMap?.[typeId]; const f = ent?.failedCells ?? 0, t = ent?.totalCells ?? 2601; out = { state: "absent", source: "cache", confidence: Math.max(0, Math.min(1, 1 - f / t)), loc: null }; }
+      else if (peek.state === "absent") out = { state: "unknown", source: "cache", confidence: 0, loc: null }; // 0-P S2 absent abolished
       else if (peek.state === "unknown") out = { state: "unknown", source: "cache", confidence: 0, loc: null };
-      else { const loc = scanBlockNear(bot, r, typeId); const ent = r.mScanMap?.[typeId]; const f = ent?.failedCells ?? 0, t = ent?.totalCells ?? 2601; out = loc ? { state: "present", source: "scan", confidence: 1, loc } : (f * 2 > t ? { state: "unknown", source: "scan", confidence: 0, loc: null } : { state: "absent", source: "scan", confidence: Math.max(0, Math.min(1, 1 - f / t)), loc: null }); }
+      else { const loc = scanBlockNear(bot, r, typeId); const ent = r.mScanMap?.[typeId]; const f = ent?.failedCells ?? 0, t = ent?.totalCells ?? 2601; out = loc ? { state: "present", source: "scan", confidence: 1, loc } : { state: "unknown", source: "scan", confidence: 0, loc: null }; } // 0-P S2
     }
   } catch { out = { state: "unknown", source: "scan", confidence: 0, loc: null }; }
   try { const prev = r.lastInspect; r.lastInspect = { act: "INSPECT", state: out.state, source: out.source, confidence: out.confidence, typeId, at: Date.now() };
@@ -4290,7 +4295,7 @@ function tickMission(bot, owner, ctx, scan) {
   if (!d) return false;
   applyDirective(bot, owner, r, ctx, scan, d);
   // 鉱石 leg で周囲に見つからなければ、自分で潜って掘り進む（ブランチマイニング）
-  if (step && step.type === "gather_block" && !ft.found && (ft.detail?.state || "absent") === "absent" && r.mineLeg && !d?.target?.regionMode) tickBranchMine(bot, owner, r, ctx); // v0.4.66: 区画探索が残っている間はそちらを優先 (探し尽くしたらブランチマイニング) // Step 3b: ブランチマインは absent 確定時のみ
+  if (step && step.type === "gather_block" && !ft.found && ((ft.detail?.state || "absent") === "absent" || ((ft.detail?.state || "") === "unknown" && searchExhausted)) && r.mineLeg && !d?.target?.regionMode) tickBranchMine(bot, owner, r, ctx); // v0.4.66: 区画探索が残っている間はそちらを優先 (探し尽くしたらブランチマイニング) // Step 3b: ブランチマインは absent 確定時のみ
   return true;
 }
 // ---------- 建築 ----------
