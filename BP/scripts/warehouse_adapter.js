@@ -40,7 +40,7 @@ export function boxSnapshotOf(regBox, rawSlots) {
 }
 
 // 台帳 + スナップショット群 -> planSortMoves の入力形
-export function buildSortInput(reg, snapshots) {
+export function buildSortInput(reg, snapshots, scopeKey) {
   try {
     const boxes = (Array.isArray(snapshots) ? snapshots : []).filter((b) => b && typeof b.key === "string");
     const itemRules = (Array.isArray(reg?.itemRules) ? reg.itemRules : [])
@@ -49,7 +49,10 @@ export function buildSortInput(reg, snapshots) {
     // W3 (2): 既知分類 (完全一致 typeId -> カテゴリ) を sort 核へ供給する (cyc2059)。
     // これが無いと本番経路では category move が構造的に発火しなかった。
     const categories = { ...WAREHOUSE_ITEM_CATEGORIES };
-    return { boxes, itemRules, categories };
+    // WH-SCOPE-01 H2 (cyc2476): 単一箱スコープが指定されたときだけ scopeKeys を供給する (未指定時は従来形と完全一致)
+    const out = { boxes, itemRules, categories };
+    if (typeof scopeKey === "string" && scopeKey) out.scopeKeys = [scopeKey];
+    return out;
   } catch { return { boxes: [], itemRules: [], categories: {} }; }
 }
 

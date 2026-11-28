@@ -257,7 +257,9 @@ export function gateWarehouseSort(text) {
     if (isDeliberating(tw)) return { fire: false, kind: "question" };
     if (isQuestionForm(tw)) return { fire: false, kind: "question" };
     if (isConditionalForm(tw)) return { fire: false, kind: "conditional" };
-    return { fire: true, kind: "start" };
+    // WH-SCOPE-01 H1 (cyc2476): 単一箱指定の形だけ scope を併記する (全体形・「全部」形はキー無しで現行どおり)
+    const single = /(この|その)チェスト/.test(t) && !/(ぜんぶ|全部|全て)/.test(t);
+    return single ? { fire: true, kind: "start", scope: "single" } : { fire: true, kind: "start" };
   } catch { return { fire: false, kind: "error" }; }
 }
 

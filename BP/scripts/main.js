@@ -5213,17 +5213,27 @@ function snapshotWarehouseBox(bot, regBox) {
 }
 // 倉庫 W2 (cyc1939): 整理の実行本体。在庫調査→計画→各 move を移動直前に再確認してから実スロットへ適用する。
 // 再確認で食い違った move 以降は止め、適用済み件数と止まった理由を報告する (消失・複製・投棄なし)。
-function runWarehouseSort(p, bot, r) {
+function runWarehouseSort(p, bot, r, scopeKey) {
   try {
     const reg = r.warehouse || createWarehouseRegistry();
     const allRegBoxes = (Array.isArray(reg.boxes) ? reg.boxes : []).filter((b) => b && b.role !== "excluded");
     const seenCanon = new Set(); const regBoxes = allRegBoxes.filter((b) => { let ck = b.key; try { ck = canonicalKeyOf(reg, b.key) || b.key; } catch {} if (seenCanon.has(ck)) return false; seenCanon.add(ck); return true; }); // cyc2367 WH-RECHECK-01: ラージチェストは代表1件だけ snapshot する
+    // WH-SCOPE-01 H3 (cyc2476): 単一箱スコープ指定時は、対象箱の登録状態を先に確定させる (未登録・除外・再確認待ちは開始せず明示する)
+    if (typeof scopeKey === "string" && scopeKey) {
+      const rawBoxes = Array.isArray(reg.boxes) ? reg.boxes : [];
+      const hit = rawBoxes.find((b) => { if (!b || typeof b.key !== "string") return false; if (b.key === scopeKey) return true; try { return canonicalKeyOf(reg, b.key) === scopeKey; } catch { return false; } });
+      if (!hit) { say(p, bot, "そのチェストは整理の対象として登録されていません。先にリモコンの倉庫メニューで登録してください", true); return; }
+      if (hit.role === "excluded") { say(p, bot, "そのチェストは除外に設定されているため、整理の対象にはできませんでした", true); return; }
+      if (hit.needsRecheck) { say(p, bot, "そのチェストは登録の再確認が必要です。リモコンの倉庫メニューで確認してから、もう一度どうぞ", true); return; }
+      const rep = regBoxes.find((b) => { if (b.key === hit.key) return true; try { return canonicalKeyOf(reg, b.key) === canonicalKeyOf(reg, hit.key); } catch { return false; } });
+      if (rep) scopeKey = rep.key; // ラージチェストは snapshot 側の代表キーへそろえる
+    }
     if (!regBoxes.length) { say(p, bot, "登録された箱がまだありません。リモコンの倉庫メニューで候補を登録してください", true); return; }
     const snaps = []; const contByKey = new Map(); let unreadable = 0; let recheckDirty = false;
     for (const b of regBoxes) { const s = snapshotWarehouseBox(bot, b); if (s) { snaps.push(s); const got = warehouseContainerOf(bot, b); if (got) contByKey.set(b.key, got.cont); if (b.needsRecheck) { try { r.warehouse = confirmBox(r.warehouse || reg, b.key); recheckDirty = true; } catch {} } } else { unreadable++; if (!b.needsRecheck) { try { r.warehouse = markNeedsRecheck(r.warehouse || reg, b.key); recheckDirty = true; } catch {} } } }
     if (recheckDirty) { try { saveWarehouse(bot, r); } catch {} } // cyc2367 WH-RECHECK-01: 印の立て下げは対で保存は最大1回
     if (!snaps.length) { say(p, bot, "登録された箱を1つも開けませんでした。近くの箱だけが対象です", true); return; }
-    const plan = planSortMoves(buildSortInput(reg, snaps));
+    const plan = planSortMoves(buildSortInput(reg, snaps, scopeKey || null));
     if (!plan.moves.length) { say(p, bot, `整理しました。移動はありませんでした${plan.leftovers.length ? `。行き先が分からない物が${plan.leftovers.length}件、元の箱に残っています` : ""}${unreadable ? `。開けなかった箱が${unreadable}件あります` : ""}`, true); return; }
     let applied = 0; let stopReason = null;
     for (const mv of plan.moves) {
@@ -5759,7 +5769,16 @@ function handleChatMessage(p, rawIn) {
   }
   // ①.45 倉庫 W2 (cyc1939): 整理の依頼は注文パーサーへ流さず倉庫整理へ直結する
   // cyc2330 0-C1 G6: 判定は chat_gate の gateWarehouseSort へ一本化 (否定・熟慮・条件・質問形では発火しない)
-  if (gateWarehouseSort(raw).fire) {
+  const whGate = gateWarehouseSort(raw);
+  if (whGate.fire) {
+    // WH-SCOPE-01 H4 (cyc2476): 単一箱指定のときは照準の箱だけを対象にする (解決できなければ全体整理へ落とさず明示して開始しない)
+    if (whGate.scope === "single") {
+      let key = null;
+      try { const vb = p.getBlockFromViewDirection({ maxDistance: 10 }); if (vb && isContainerBlock(vb.block.typeId)) key = warehouseKeyOf(p.dimension.id, vb.block.location.x, vb.block.location.y, vb.block.location.z); } catch {}
+      if (!key) { system.run(() => { say(p, bot, "どのチェストか分かりませんでした。整理したいチェストを見ながら、もう一度どうぞ", true); try { conv.hear(raw, "warehouse_sort_no_target"); } catch {} }); return; }
+      system.run(() => { runWarehouseSort(p, bot, r, key); try { conv.hear(raw, "warehouse_sort_single"); } catch {} });
+      return;
+    }
     system.run(() => { runWarehouseSort(p, bot, r); try { conv.hear(raw, "warehouse_sort"); } catch {} });
     return;
   }
