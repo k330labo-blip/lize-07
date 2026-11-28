@@ -184,18 +184,23 @@ if (!provider || !eye || !point) return false;
 const cell = { x: Math.floor(point.x), y: Math.floor(point.y), z: Math.floor(point.z) };
 return lineOfSight(provider, eye, cell);
 }
+// FOV 判定の共通核 (横断基盤 FOV+見回し 第1単位, cyc2491): ブロック側 canObserveDetail と
+// エンティティ側 canObserveEntity で同一の正面視野条件を使う (片側だけ直る片側残りを防ぐ)。
+// bearing の正形は gaze_math.gazeRotation と同一: atan2(-dx, +dz) (cyc2486 A02 で確定)。
+// yawDeg が有限数でない場合は FOV を適用しない (向き不明を「見えない」へ倒さない)。
+export function outOfView(eye, px, py, pz, opts = {}) {
+if (!eye || !Number.isFinite(opts.yawDeg)) return false;
+const fov = Number.isFinite(opts.fovDeg) ? opts.fovDeg : 120;
+const bearing = Math.atan2(-(px - eye.x), pz - eye.z) * 180 / Math.PI;
+const diff = ((bearing - opts.yawDeg + 540) % 360) - 180;
+return Math.abs(diff) > fov / 2;
+}
 export function canObserveEntity(provider, eye, point, opts = {}) {
 if (!provider || !eye || !point) return false;
 const maxDist = Number.isFinite(opts.maxDist) ? opts.maxDist : OBSERVE_DEFAULT_MAX_DIST;
 const d = Math.hypot(point.x - eye.x, point.y - eye.y, point.z - eye.z);
 if (!Number.isFinite(d) || d > maxDist) return false;
-if (Number.isFinite(opts.yawDeg)) {
-const fov = Number.isFinite(opts.fovDeg) ? opts.fovDeg : 120;
-// bearing の正形は gaze_math.gazeRotation と同一: atan2(-dx, +dz) (cyc2486 A02 で確定)
-const bearing = Math.atan2(-(point.x - eye.x), point.z - eye.z) * 180 / Math.PI;
-const diff = ((bearing - opts.yawDeg + 540) % 360) - 180;
-if (Math.abs(diff) > fov / 2) return false;
-}
+if (outOfView(eye, point.x, point.y, point.z, opts)) return false;
 return lineOfSightToPoint(provider, eye, point);
 }
 
@@ -223,6 +228,7 @@ return { ok: false, reason: "empty"}; // 観測対象が存在しない
 }
 const d = Math.hypot(cell.x + 0.5 - eye.x, cell.y + 0.5 - eye.y, cell.z + 0.5 - eye.z);
 if (d > maxDist) return { ok: false, reason: "too_far"};
+if (outOfView(eye, cell.x + 0.5, cell.y + 0.5, cell.z + 0.5, opts)) return { ok: false, reason: "out_of_view"}; // 正面視野の外 (横断基盤 FOV 第1単位, cyc2491。理由はログ専用で行動判断へ渡さない)
 if (!hasExposure(provider, cell)) return { ok: false, reason: "not_exposed"}; // 完全に覆われている
 if (!lineOfSight(provider, eye, cell)) return { ok: false, reason: "no_line_of_sight"}; // 壁・床・角の向こう
 return { ok: true, reason: "observed"};
