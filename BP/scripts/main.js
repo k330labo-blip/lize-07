@@ -4374,7 +4374,7 @@ function advanceBuildGather(bot, owner, r) { const bp = r.buildPlan; if (!bp || 
 // GATHER-NOEXIT (cycle1850-a07 -> cycle1909): gather 相にも無進捗の最終出口を持たせる。
 // tickBuild の時計 (buildProgressAt) は startBuild が gather でも立てるが読み手が build 相にしか無く、
 // 通常 suspend (cannot_recover 以外) では再開・期限の担い手も無いため gather 相が恒久化した。
-// 進捗 = missingIdx の増加 or 現在の対象材料の所持数増加 (減少は snapshot 追随のみ、tickBuild と同型)。
+// 進捗 = missingIdx の増加 or 現在の対象材料の所持数の純増 (GATHER-OSCILLATION-PROGRESS-01 純増形: snapshot は到達済み最大値として保持し減少へ追随させない。減少後の回復は進捗に数えない)。
 function tickGatherNoProgress(bot, owner, r) {
   const bp = r.buildPlan; if (!bp || bp.stage !== "gather") return false;
   const nowG = Date.now();
@@ -4389,7 +4389,8 @@ function tickGatherNoProgress(bot, owner, r) {
     return folded;
   }
   if (bp.missingIdx !== (r.buildGatherProgIdx ?? 0)) { r.buildGatherProgIdx = bp.missingIdx; r.buildGatherProgInv = invN; }
-  else if (invN < (r.buildGatherProgInv ?? 0)) r.buildGatherProgInv = invN;
+  // 純増形: invN の減少へは snapshot を追随させない。buildGatherProgInv は現在の対象材料について
+  // 到達済みの最大値 (high-water) であり、上回る純増だけが進捗になる (10->9->10 の回復は進捗でない)。
   return false;
 }
 function tickBuild(bot, owner, r, ctx) {
