@@ -322,6 +322,7 @@ return r;
 }
 
 /**
+* 歩行既定 (WALK_DEFAULT=true, cyc2489) では fly 経路は不発で、本契約は FLY_ENABLE かつ歩行既定を戻した緊急時のみ有効。
 * flyTick の結果を MOVE の ActionResult へ写像する (a18/DESIGN §2.1 の案を型に固定)。
 * reason!=="" のとき常に move===null && arrived===false という fly の不変条件が前提。
 * ground 委譲は失敗ではなく in_progress (委譲先 nav が MOVE を継続する) として表す。

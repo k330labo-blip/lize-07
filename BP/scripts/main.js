@@ -7,7 +7,7 @@ import * as mcServer from "@minecraft/server";
 const mcGametest = null; // v0.4.71 統合: ベータAPI (server-gametest) は使わない構成。体 (body_sim) は null で無効化され従来移動になる。有効化するには import と manifest 依存の追加が必要 (引き継ぎ資料参照)
 import { createBodyManager } from "./body_sim.js"; // v0.4.58: カスタムコマンド系の列挙型は存在しない環境で import 自体が落ちないよう名前空間経由で参照する
 import { ActionFormData, ModalFormData } from "@minecraft/server-ui";
-import { BOT_ID, REMOTE_ID, GVC_HOSTILE_SET, isContainerBlock, isValuable, isFood, isJunk, isWeaponish, RANGED_IDS, BOSS_IDS, ACT_LINE_CATEGORY, ACT_LABEL, FLY_ENABLE, DELIVER_RANGE, LT_DELIVER_FAIL_LIMIT, LT_DELIVER_TIMEOUT_MS, BUILD_NO_PROGRESS_TIMEOUT_MS, VERSION, LIZE_DEBUG, GOAP_ADOPT_S1B, BODY_SIM_ENABLE } from "./config.js";
+import { BOT_ID, REMOTE_ID, GVC_HOSTILE_SET, isContainerBlock, isValuable, isFood, isJunk, isWeaponish, RANGED_IDS, BOSS_IDS, ACT_LINE_CATEGORY, ACT_LABEL, FLY_ENABLE, WALK_DEFAULT, DELIVER_RANGE, LT_DELIVER_FAIL_LIMIT, LT_DELIVER_TIMEOUT_MS, BUILD_NO_PROGRESS_TIMEOUT_MS, VERSION, LIZE_DEBUG, GOAP_ADOPT_S1B, BODY_SIM_ENABLE } from "./config.js";
 import { decide, decideGaze } from "./brain.js";
 import { ALL_LINES, CHAT_ALL, CHAT_LORE, LORE_DEEP_MIN_BOND, FOLLOWUPS, RULE_COUNT } from "./brain/all.js";
 import { OF_FOODS, OF_CONTAINERS } from "./brain/compat_orbital.js";
@@ -1574,7 +1574,7 @@ function flyOf(bot, r) {
 function syncFlyGoal(bot, r) {
   try {
     const fly = flyOf(bot, r);
-    if (!FLY_ENABLE || !r.target) { flyClearGoal(fly); return; }
+    if (!FLY_ENABLE || WALK_DEFAULT || !r.target) { flyClearGoal(fly); return; }
     const act = r.moveAct || "";
     const interact = INTERACT_ACTS.has(act) || act === "place_torch" || act.startsWith("pickup_") || act.startsWith("deliver") || !!r.work || (r.mission && (r.mission.status === "active" || r.mission.status === "suspended")) || (r.buildPlan && r.buildPlan.stage === "build"); // BLD1621-03 (cycle1640): 建築中も干渉プロファイルにする // queue1 fix1 (basics-digdown-dec): 保留中は branchmine の降下目標が出るため interact に含める。含めないと fly 非interact経路が目標を地面+1.2へクランプし潜行が永遠に始まらない (実測: 3000tick掘削0→81tick完走)
     flySetGoal(fly, r.target, { interact });
@@ -1927,7 +1927,7 @@ system.runInterval(() => {
     const pos0 = bot.location;
     // --- 飛行を先に試す ---
     let fres = null;
-    if (FLY_ENABLE) { try { fres = flyTick(flyOf(bot, r), pos0, 0.1, { ownerPos: r.ownerPosCache || null }); } catch (err) { try { recordMoveExp(r, { ok: false, reason: "API_ERROR" }, "fly"); } catch {} noteFail(bot, "flyTick", err, { expDone: true }); } } // 6-ML U4: 例外は MOVE 失敗として commit 済みのため fail軸 EXP は二重記録回避
+    if (FLY_ENABLE && !WALK_DEFAULT) { try { fres = flyTick(flyOf(bot, r), pos0, 0.1, { ownerPos: r.ownerPosCache || null }); } catch (err) { try { recordMoveExp(r, { ok: false, reason: "API_ERROR" }, "fly"); } catch {} noteFail(bot, "flyTick", err, { expDone: true }); } } // 6-ML U4: 例外は MOVE 失敗として commit 済みのため fail軸 EXP は二重記録回避
     if (fres) { const fr = fres.reason || ""; if (fr && fr !== r.lastFlyReason) r.flyReasonCount = (r.flyReasonCount || 0) + 1; if (fr) r.lastFlyReason = fr; if (fres.arrived) { r.flyArrivedAt = Date.now(); try { recordMoveExp(r, { ok: true }, "fly"); } catch {} } } // Phase2: fly理由の回収（追加のみ・挙動不変） // 6-ML U4: 到着は MOVE 成功として記録
     if (fres && fres.mode === "fly") {
       if (fres.move) { try { bot.teleport(fres.move, { rotation: { x: 0, y: fres.move.yaw } }); } catch {} }

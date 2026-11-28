@@ -64,13 +64,13 @@ export const ACT_LABEL = {
 
 // 飛行（ホバー移動）の kill switch。false で従来の地上移動（nav/direct）のみになる。
 export const FLY_ENABLE = true;
-export const WALK_DEFAULT = false; // ground-walk Stage 0-C (cycle0403): 宣言のみ・未参照 (既定は fly のまま、Stage 2 で反転予定)
+export const WALK_DEFAULT = true; // ground-walk 最終形 (cyc2489): 飛行完全廃止・歩行既定。fly は FLY_ENABLE の緊急 kill switch 時のみ (WALK_DEFAULT=false へ戻した場合)
 export const DELIVER_RANGE = 2.6; // 納品の到達/実行半径の単一の正 (v0.4.79, N-1)。WITHDRAW_RANGE (withdraw.js) と同値 — 受け渡し系は同距離に揃える
 export const LT_DELIVER_FAIL_LIMIT = 60; // LT-DELIVER-NOEXIT (cycle1322): 長期タスク deliver 相で到達済み入庫失敗の上限回数 (mission STALL_LIMIT と桁を揃える)
 export const LT_DELIVER_TIMEOUT_MS = 300000; // LT-DELIVER-NOEXIT (cycle1322): deliver 相全体の滞留上限 (未到達含む最終出口)
 export const BUILD_NO_PROGRESS_TIMEOUT_MS = 300000; // BUILD-HOLD-NOEXIT (cycle1343, 案A): 建築 build 相で idx/placed が5分間進まなければ終端 (保留中も数える)
 // 版数の単一の正（v0.4.1〜）。manifest説明・main.jsヘッダもこれに合わせる
-export const VERSION = "0.5.227";
+export const VERSION = "0.5.228";
 // Phase3 S1b 解禁フラグ (v0.4.21 導入、v0.4.54 READ-1 で解禁): true の間は採用tick合成の読み手 (READ-1) が有効。
 // 充足記録 (v0.4.48) と正式裁定 (v0.4.54) を経て、本版で読み手化と一体に切り替えた。
 export const GOAP_ADOPT_S1B = true;

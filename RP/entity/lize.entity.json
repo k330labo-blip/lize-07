@@ -23,9 +23,7 @@
         "hover": "animation.lize.hover"
       },
       "scripts": {
-        "animate": [
-          "hover"
-        ]
+        "animate": []
       }
     }
   }
