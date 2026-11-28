@@ -8,7 +8,10 @@
 // 規約は observability.js の outOfView と同一に揃える:
 // - bearing は gaze 規約 atan2(-dx, +dz)（度）。yawDeg は getRotation().y と同じ空間。
 // - FOV 既定は 120 度（observability / look_sweep_math の SWEEP_DEFAULT_FOV_DEG と一致）。
-// - 向き1回で被覆できるのは、セクター中心が視野（±FOV/2）内に入るセクターとする。
+// - 向き1回で被覆できるのは、セクター全体（中心 ±22.5 度）が視野（±FOV/2）内に
+//   入るセクターとする（全体規則。SURVEY-LOOK-SYNC-02 で中心規則から厳密化）。
+//   被覆が保証するのは「そのセクター方向では FOV 起因の未観測が無い」ことだけであり、
+//   LOS・露出・距離で破棄されたヒットは被覆とは別軸である（観測済みにはしない）。
 // pitch の扱い: FOV は水平（yaw）のみを仕様とする確定（cyc2492）に揃え、本被覆も水平のみ。
 // 見回しの pitch 段（上下3段）は顔を上下へ向ける見た目と将来の pitch 拡張のためであり、
 // 上下方向の観測可否は距離・LOS・露出が決める（observability.js の確定文と同一）。
@@ -30,7 +33,11 @@ export function lookSectorOf(bearingDeg) {
 }
 
 // 向き yawDeg を向いたときに被覆できるセクターのビットマスク。
-// セクター中心と yaw の角差が FOV/2 以下なら被覆したとみなす（outOfView の境界と同値: 中心方向のセルは視野内）。
+// セクター全体が視野内だったときだけ被覆したとみなす: 中心との角差 + セクター半幅
+// (22.5 度 = 360 / LOOK_SECTORS / 2) が FOV/2 以下であること（SURVEY-LOOK-SYNC-02）。
+// 中心規則だとセクター端の方向は outOfView で実際に破棄されるのに被覆扱いになり、
+// 最大 22.5 度の楔が完了判定に残る。境界は outOfView の可視側（|diff| = FOV/2 は
+// 視野内）に揃えて <= とする。
 // yawDeg が有限でない場合は 0 を返す（向き不明を「全方向見た」へ倒さない。呼び出し側が互換扱いを決める）。
 export function lookMaskForYaw(yawDeg, fovDeg = LOOK_DEFAULT_FOV_DEG) {
   if (!Number.isFinite(yawDeg)) return 0;
@@ -39,7 +46,7 @@ export function lookMaskForYaw(yawDeg, fovDeg = LOOK_DEFAULT_FOV_DEG) {
   for (let s = 0; s < LOOK_SECTORS; s++) {
     const center = normDeg(s * 45);
     const diff = Math.abs(normDeg(center - yawDeg));
-    if (diff <= fov / 2) mask |= (1 << s);
+    if (diff + 22.5 <= fov / 2) mask |= (1 << s);
   }
   return mask;
 }
