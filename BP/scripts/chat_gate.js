@@ -124,6 +124,10 @@ export function classifyNonCommand(text) {
     if (/(を|って)(要約|書き直|言い換え|まとめ直|短くまとめ)(て|して|してください|してくれ|しなさい)?[。．]?$/.test(t)) return "meta_request";
     // cyc2454 (M3): 引用文+意味・説明の対象指定がある形だけをメタとする (素の説明要求の素通し接続はしない)
     if (/(の意味を|ってどういう意味|の意味は何|を説明して)/.test(t) && /(教えて|聞きたい|知りたい|ください|何|意味|説明)/.test(t)) return "meta_request";
+    // megabench-100m 移行6 (NONCMD-GATE-02): 将来予定・例文・解析依頼も非命令 (文の形のみで判定、対象名は直書きしない)
+    if (/例文(です|だ)?\s*[:：]/.test(t) || /^例\s*[:：]/.test(t)) return "noncommand";
+    if (/という文を(解析|分析|解釈)(して|してください|してくれ)?/.test(t) || /文を(解析|分析)して/.test(t)) return "meta_request";
+    if (/(予定|つもり)(だ|です|だよ|ですね)?[。．]?$/.test(t.trim())) return "noncommand";
     if (/(せますか|できますか|れますか|ますか)[？?。．]?$/.test(t)) return "ability_question";
     // cyc2454 (ABIL 是正B): 可能形の口語疑問尾 (〜せる/れる+か・かな・？) も能力質問。尾が無い可能形単独は断定であり得るため対象外
     if (new RegExp(`${NONCMD_POTENTIAL}(?:かな|か)[。．]?$`).test(t) || new RegExp(`${NONCMD_POTENTIAL}[？?][。．]?$`).test(t)) return "ability_question";
