@@ -40,6 +40,7 @@ import { evaluatePlace, placeHoldRecord } from "./place_gate.js"; // PLACE-GATE�
 import { canObserve, gateScanResults, canObserveEntity } from "./observability.js"; // 0-P (cyc2483 S0/S1): 観測可能性ゲート (純粋核)。生走査を意味情報へ出す入口をここへ一本化する (X-ray防止)
 import { arriveRadiusFor, mainStuckCounts } from "./nav_radius_math.js"; // NAV-RADIUS-BRAINACT-01 (cyc2499): act→nav到達半径の単一の正 (純粋核) + R4 main stuck 判定
 import { createTorchGuardState, noteTorchFailure, noteTorchSuccess, isTorchCooling } from "./torch_guard_math.js"; // TORCH-SPACING-01/RETRY (cyc2500): 自律松明の失敗冷却 (純粋核)
+import { noteFollowFail } from "./follow_fail_math.js"; // FOLLOW-WALK-NOEXIT-01 縮小形 (cyc2501): 純follow未到達の見切り判定 (純粋核)
 import { gazeRotation } from "./gaze_math.js"; // POLISH-ANIM-LOOK-01 (cycle0821): 視線ピッチ連動の純粋計算
 import { applyInspectPitch, isInspectActive, shouldInspect } from "./inspect_math.js"; // POLISH-ANIM-INSPECT-01 (cycle1003): 依頼品入手時の検分 (表示層のみ)
 import { applyNodPitch, isNodActive, shouldNod } from "./nod_math.js";
@@ -356,7 +357,7 @@ function rt(bot) {
     nav: null, navDim: null, navMode: "direct", mission: undefined, missionKills: 0, deliveredFlag: false, conv: null, fallbackStreak: 0, lastCtx: null, lastChatAt: 0, lastPraiseAt: 0, lastDangerAt: 0, sideState: { cooldowns: {}, now: 0 }, sideTask: null, sideChase: null, sideHeldTask: null, sideContinuation: false, mTargetLoc: null, mTargetType: null, mTargetEntity: null, mTargetKind: null, mFound: false, mAtReturn: false, mScan: null, percOpps: [], buildPlan: null, hyst: null, suspendNotified: false, usedHonesty: [],
     lastAmbientAt: 0, equipCore: null, equipRestored: false, equipChanged: null, equipChangedAt: 0, equipFromOwner: false, justHealedAt: 0, lastAmmoCount: 0, lastHealCount: 0,
     // v0.3.9: 飛行・目標固定・ウォッチドッグ
-    fly: null, flyDim: null, flyMode: "ground", ownerPosCache: null, moveTracker: null, moveDim: null, moveState: null, moveEvents: [], surfacebreathState: null, workglanceState: null, workglanceSeenAt: 0, chestglanceState: null, lastChestGlance: null, // POLISH-ANIM-CHESTGLANCE-01 (cyc2363): 記録のみ先行 (状態は遅延生成 createChestGlanceState) catchsightState: null, catchsightPrevItemIds: null, catchsightPending: [], lastCatchSight: null, toolcheckState: null, loadpostureState: null, partnercheckState: null, ownerreturnState: null, idleState: null, lastIdle: null, idleSinceMs: null, idleAnchor: null, toolcheckSample: null, mTargetKey: "", mTargetSince: 0, mLastHave: -1, mBanKey: "", mBanUntil: 0, takeBan: null, watchHist: [], watchAt: 0, lastHopAt: 0,
+    fly: null, flyDim: null, flyMode: "ground", ownerPosCache: null, moveTracker: null, moveDim: null, moveState: null, moveEvents: [], surfacebreathState: null, workglanceState: null, workglanceSeenAt: 0, chestglanceState: null, lastChestGlance: null, // POLISH-ANIM-CHESTGLANCE-01 (cyc2363): 記録のみ先行 (状態は遅延生成 createChestGlanceState) catchsightState: null, catchsightPrevItemIds: null, catchsightPending: [], lastCatchSight: null, toolcheckState: null, loadpostureState: null, partnercheckState: null, ownerreturnState: null, idleState: null, lastIdle: null, idleSinceMs: null, idleAnchor: null, toolcheckSample: null, mTargetKey: "", mTargetSince: 0, mLastHave: -1, mBanKey: "", mBanUntil: 0, takeBan: null, watchHist: [], watchAt: 0, lastHopAt: 0, followFailSince: 0, followFailKey: "", followFailAnchor: null, followFail: null, followNotifiedKey: "",
     // v0.4.0: 長期自律タスク
     longtask: undefined, ltLegActive: false, mineLeg: null, mineDir: null, spiral: null, d2Anchor: null, // 0-D2 G2: 螺旋入口は tunnel と分離して保持 (破棄は abandonTunnel/resetPlaceState 等)
     // v0.4.1: 失敗記録・装備破損の監視
@@ -1968,7 +1969,7 @@ system.runInterval(() => {
     let res = null;
     try { res = navTick(navOf(bot, r), bot.location, 0.1, { act: r.moveAct }); } catch { try { recordMoveExp(r, { ok: false, reason: "API_ERROR" }, "nav"); } catch {} } // 6-ML U4: 従来無言だった例外を MOVE 失敗として記録のみ
     r.navMode = res?.mode || "direct";
-    r.navPartial = !!(res && res.partial); // NAV-CLIFF-WINDOW-01 (cyc2490): 到達不能 (partial) の事実を保持 (記録のみ・見切りは上位の進捗監視が受ける)
+    r.navPartial = !!(res && res.partial); // NAV-CLIFF-WINDOW-01 (cyc2490): 到達不能 (partial) の事実を保持 (stuck 加算の入力＋純follow の見切りは follow_fail_math が受ける)
     if (res && res.arrived) { try { recordMoveExp(r, { ok: true }, res.mode === "path" ? "nav" : "direct"); } catch {} } // 6-ML U4: nav 到着は MOVE 成功として記録
     if (res && res.mode === "path" && res.move) {
       const p0 = bot.location;
@@ -5027,6 +5028,19 @@ system.runInterval(() => {
       } catch {}
       r.ownerPosCache = { x: p.location.x, y: p.location.y, z: p.location.z };
       r.target = execTarget(bot, p, eff, ctx, scan);
+      // FOLLOW-WALK-NOEXIT-01 縮小形 (cyc2501): 純follow の未到達に出口を持たせる (記録+1回通知+stay格下げ)
+      try {
+        const ffEligible = mode === "follow" && r.moveAct === "follow" && !(r.mission && r.mission.status === "active") && !r.longtask && !r.buildPlan;
+        const ffTarget = r.target;
+        const ffKey = ffTarget ? `${bot.dimension.id}:${Math.floor(ffTarget.x)},${Math.floor(ffTarget.y)},${Math.floor(ffTarget.z)}` : "";
+        const ffDist = ffTarget ? Math.hypot(bot.location.x - ffTarget.x, bot.location.y - ffTarget.y, bot.location.z - ffTarget.z) : null;
+        const ff = noteFollowFail(r, { eligible: ffEligible && !!ffTarget, signal: r.stuckSec >= 3 || r.navPartial === true, targetKey: ffKey, dist: ffDist, pos: bot.location, partial: !!r.navPartial, stuckSec: r.stuckSec }, Date.now());
+        if (ff.action === "fire") {
+          say(p, bot, "そちらへは歩いて行けませんでした。ここで待っています", true);
+          dps(bot, "cb_mode", "stay");
+          try { const bl = bot.location; setAnchor(bot, r, { x: bl.x, y: groundY(bot.dimension, bl.x, bl.z, bl.y, bl.y), z: bl.z }, bot.dimension.id); } catch { setAnchor(bot, r, { ...bot.location }, bot.dimension.id); }
+        }
+      } catch {}
       setTag(bot, r, statusTagOf(bot, r, eff.act));
       execArrive(bot, p, eff, ctx, scan);
       tickAutonomy(bot, p, ctx, eff);
