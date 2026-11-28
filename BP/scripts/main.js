@@ -2606,7 +2606,7 @@ function findMissionTarget(bot, r, scan, step, scanUnknown = false) {
   if (step.type === "hunt_entity") {
     let e = null;
     if (target && target !== "hostile") e = nearestEntityOfType([...(scan?.hostiles || []), ...(scan?.animals || [])].filter((x) => !isEntityBanned(r.mBanKey, r.mBanUntil, Date.now(), x?.id)), target, bot.location); // HUNT-NEAREST-01/HUNT-BAN-CELL-01 (cyc2385): 最寄り選択＋実体ban除外 (従来は走査順 .find)
-    else e = scan?.nearestHostile || null; // HUNT-SUBST-01 (cyc2364): 種別指定時は別種への代替をしない。最寄り敵へのフォールバックは汎用指定 "hostile" のときだけ
+    else { const nh = scan?.nearestHostile || null; e = (nh && isEntityBanned(r.mBanKey, r.mBanUntil, Date.now(), nh.id)) ? ([...(scan?.hostiles || [])].filter((x) => x && x.location && !isEntityBanned(r.mBanKey, r.mBanUntil, Date.now(), x?.id)).sort((a, b) => dist(bot.location, a.location) - dist(bot.location, b.location))[0] || null) : nh; } // LOG-SCAN R-alpha (cyc2466): 汎用 hunt も実体 ban を選出段で除外 (2608 と同方針) // HUNT-SUBST-01 (cyc2364): 種別指定時は別種への代替をしない。最寄り敵へのフォールバックは汎用指定 "hostile" のときだけ
     return e ? { found: true, kind: "entity", loc: { ...e.location }, typeId: e.typeId, entity: e } : (scanUnknown ? { found: false, detail: { state: "unknown" } } : { found: false }); // typeId は実体の種別を正とする (依頼種別で名乗らない)
   }
   // 原木の扱い (0-D3 是正): 総称指定では全樹種が対象だが、特定樹種の指定ではその樹種だけを対象にする (従来は指定樹種を先頭に置くだけで全樹種が候補だった)
