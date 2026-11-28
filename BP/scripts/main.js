@@ -5068,17 +5068,29 @@ system.runInterval(() => {
       } catch {}
       r.ownerPosCache = { x: p.location.x, y: p.location.y, z: p.location.z };
       r.target = execTarget(bot, p, eff, ctx, scan);
-      // FOLLOW-WALK-NOEXIT-01 縮小形 (cyc2501): 純follow の未到達に出口を持たせる (記録+1回通知+stay格下げ)
+      // FOLLOW-WALK-NOEXIT-01 縮小形 (cyc2501) + RETURN-NOEXIT-01 (cyc2527・方向(a)裁定): 純follow と帰還 (return_home/go_home) の未到達に出口を持たせる (記録+1回通知+stay格下げ)
       try {
-        const ffEligible = mode === "follow" && r.moveAct === "follow" && !(r.mission && r.mission.status === "active") && !r.longtask && !r.buildPlan;
+        const ffBusy = !(r.mission && r.mission.status === "active") && !r.longtask && !r.buildPlan;
+        const ffIsFollow = mode === "follow" && r.moveAct === "follow";
+        const ffIsReturn = r.moveAct === "return_home" || r.moveAct === "go_home";
         const ffTarget = r.target;
         const ffKey = ffTarget ? `${bot.dimension.id}:${Math.floor(ffTarget.x)},${Math.floor(ffTarget.y)},${Math.floor(ffTarget.z)}` : "";
+        // 帰還分岐: cb_mode は問わない (go_home の脳規則は mode==="work" で発火する)。ただし目標が homeEntryPoint の入口セルと一致する tick に限る (拠点未登録時の behind(2) fallback を帰還失敗として数えない)
+        let ffEntryMatch = false;
+        if (ffIsReturn && ffTarget) {
+          try {
+            const ep = homeEntryPoint(bot, homeOf(bot));
+            ffEntryMatch = !!ep && Math.floor(ep.x) === Math.floor(ffTarget.x) && Math.floor(ep.y) === Math.floor(ffTarget.y) && Math.floor(ep.z) === Math.floor(ffTarget.z);
+          } catch {}
+        }
+        const ffEligible = ffBusy && (ffIsFollow || (ffIsReturn && ffEntryMatch));
         const ffDist = ffTarget ? Math.hypot(bot.location.x - ffTarget.x, bot.location.y - ffTarget.y, bot.location.z - ffTarget.z) : null;
-        const ff = noteFollowFail(r, { eligible: ffEligible && !!ffTarget, signal: r.stuckSec >= 3 || r.navPartial === true, targetKey: ffKey, dist: ffDist, pos: bot.location, partial: !!r.navPartial, stuckSec: r.stuckSec, trackId: `${p.id}|${bot.dimension.id}`, dim: bot.dimension.id }, Date.now());
+        const ffTrackId = ffIsReturn ? `return|${p.id}|${bot.dimension.id}|${ffKey}` : `${p.id}|${bot.dimension.id}`;
+        const ff = noteFollowFail(r, { eligible: ffEligible && !!ffTarget, signal: r.stuckSec >= 3 || r.navPartial === true, targetKey: ffKey, dist: ffDist, pos: bot.location, partial: !!r.navPartial, stuckSec: r.stuckSec, trackId: ffTrackId, dim: bot.dimension.id }, Date.now());
         if (ff.action === "fire" || ff.action === "exit_silent") {
           // FOLLOW-SUPPRESSED-NOEXIT-01: exit_silent は通知済みアンカーでの再未到達。
           // 発話はしない (通知は同一アンカーで1回) が、stay格下げとアンカー設定は毎エピソード行う。
-          if (ff.action === "fire") say(p, bot, "そちらへは歩いて行けませんでした。ここで待っています", true);
+          if (ff.action === "fire") say(p, bot, ffIsReturn ? "拠点へは歩いて戻れませんでした。ここで待っています" : "そちらへは歩いて行けませんでした。ここで待っています", true);
           dps(bot, "cb_mode", "stay");
           try { const bl = bot.location; setAnchor(bot, r, { x: bl.x, y: groundY(bot.dimension, bl.x, bl.z, bl.y, bl.y), z: bl.z }, bot.dimension.id); } catch { setAnchor(bot, r, { ...bot.location }, bot.dimension.id); }
         }
