@@ -2645,10 +2645,12 @@ function tickTunnel(bot, owner, r, ctx, goal) {
     if (b.typeId === "minecraft:air") continue;
     if (b.isLiquid || b.typeId === "minecraft:bedrock") { abandonTunnel(bot, owner, r, b.isLiquid ? "LIQUID" : "BEDROCK"); return; }
     if (!startWork(bot, r, { x: c.x, y: c.y, z: c.z, typeId: b.typeId }, { skipAccess: true })) { abandonTunnel(bot, owner, r, "GUARDED"); return; } // v0.4.76 a06 M3: 坑道セル自体が対象なので遮蔽解決はしない
+    const digWorkBefore = r.work, digLeftBefore = r.work ? r.work.left : null, digBreakBefore = r.lastBreak; // WATER-INFLOW-FREEZE-01: 実進捗の判定材料 (掘削ループ前の状態)
     for (let i = 0; i < TUNNEL_DIG_PER_TICK && r.work; i++) tickWork(bot, owner, r, ctx);
     if (r.lastBreak && r.lastBreak.ok === false && r.lastBreak.reason === "TOOL_INSUFFICIENT") { abandonTunnel(bot, owner, r, "TOOL_INSUFFICIENT"); return; }
     r.target = { x: pos.x, y: pos.y, z: pos.z };
-    r.tunnel.lastStepAt = Date.now(); r.mTargetSince = Date.now(); // 掘っている間は「進捗あり」
+    // WATER-INFLOW-FREEZE-01 是正: 進捗打刻は実進捗 (破壊成功=新規 ok な lastBreak / 同一 work の w.left 減少) があったときだけ。試行だけでは打刻しない (無条件打刻だと main.js 見切り45秒+坑道15秒免除が構造的に永遠に発火しない)
+    if ((r.lastBreak && r.lastBreak !== digBreakBefore && r.lastBreak.ok === true) || (r.work && r.work === digWorkBefore && digLeftBefore !== null && r.work.left < digLeftBefore)) { r.tunnel.lastStepAt = Date.now(); r.mTargetSince = Date.now(); }
     if (r.work) return;   // まだ掘り切れていない (硬いブロック): 次の判断で続き
     // 掘り切れたら、同じ判断の中で通路の次のマスへ (1 回で 2 マス掘れる)
     let bb = null; try { bb = dim.getBlock(c); } catch {}
