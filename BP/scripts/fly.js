@@ -210,7 +210,7 @@ export function flyTick(fly, pos, dtSec, opts = {}) {
     };
     if (checkAhead(dirx, dirz)) {
       let stillBlocked = true;
-      if (fly.raise < 3 && !(fly.interact && goal.y < pos.y - 1) && (ceil === Infinity || targetY + 1 <= ceil - 2.0)) { // v0.4.65: 目標が下にある干渉移動では上昇で回避しない（樹冠に押し上げられる）
+      if (fly.raise < 3 && !((fly.interact && goal.y < pos.y - 1) || descend) && (ceil === Infinity || targetY + 1 <= ceil - 2.0)) { // v0.4.65: 目標が下にある干渉移動では上昇で回避しない（樹冠に押し上げられる）/ FOLLOW-VERT-RAISE-CANCEL-01: 真上降下中も上昇で回避しない
         fly.raise += 1; targetY += 1;
         stillBlocked = checkAhead(dirx, dirz);
       }
