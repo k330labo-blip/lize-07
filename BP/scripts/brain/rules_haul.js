@@ -84,8 +84,8 @@ export const RULES = [
 {id:'haul_night_follow_carry_deliver',p:591,when:c=>c.env.isNight&&c.mode==='follow'&&c.inv.nearFull&&c.owner.present&&c.self.distOwner<=10,act:'deliver_all',say:'夜だし荷物渡して軽くなる',note:'夜間の追従でほぼ満載なら主人へ渡す'},
 {id:'haul_dusk_full_return_home',p:590,when:c=>c.env.isDusk&&c.inv.full&&c.home.registered&&c.home.dist<=28&&!c.home.chestFull,act:'return_home',say:'満載のまま日暮れ、帰る',note:'夕方満載なら入庫ではなく帰還を優先して安全確保'},
 // ===== G. 危険時の回収中断・回避 (583-568) =====
-{id:'haul_danger_creeper_interrupt',p:583,when:c=>c.owner.dimensionSame&&c.danger.creeperDist>=0&&c.danger.creeperDist<=7&&c.drops.count>0&&c.inv.used>0,act:'go_owner',say:'クリーパー！回収中断！',note:'クリーパー接近時は回収を中断し主人へ'},
-{id:'haul_danger_ranged_interrupt_far_drops',p:582,when:c=>c.owner.dimensionSame&&c.danger.rangedDist>=0&&c.danger.rangedDist<=12&&c.drops.nearestDist>6,act:'go_owner',say:'遠距離攻撃がいる、戻る',note:'遠距離敵がいる時は遠いドロップを諦める'},
+{id:'haul_danger_creeper_interrupt',p:583,when:c=>c.owner.dimensionSame&&c.danger.safetyCreeperDist<=7&&c.drops.count>0&&c.inv.used>0,act:'go_owner',say:'クリーパー！回収中断！',note:'クリーパー接近時は回収を中断し主人へ'},
+{id:'haul_danger_ranged_interrupt_far_drops',p:582,when:c=>c.owner.dimensionSame&&c.danger.safetyRangedDist<=12&&c.drops.nearestDist>6,act:'go_owner',say:'遠距離攻撃がいる、戻る',note:'遠距離敵がいる時は遠いドロップを諦める'},
 {id:'haul_danger_swarm_carry_escape_home',p:581,when:c=>c.danger.safetyCount>=3&&c.inv.hasValuable&&c.home.registered&&c.home.dist<=18,act:'return_home',say:'敵が多い、貴重品を運び出す！',note:'敵多数で貴重品所持なら拠点へ退避運搬'},
 {id:'haul_danger_owner_targeted_drop_haul',p:580,when:c=>c.owner.dimensionSame&&c.danger.visualOwnerTargeted&&c.drops.nearestDist>4&&c.inv.used>0,act:'go_owner',say:'主人が狙われてる、合流する',note:'主人が狙われている時は回収をやめて合流'},
 {id:'haul_lava_near_valuable_cautious',p:579,when:c=>c.danger.lavaNear&&c.drops.valuableDist>=0&&c.drops.valuableDist<=3&&!c.inv.full,act:'pickup_valuable',say:'溶岩際の貴重品、慎重に…',note:'溶岩近くでも至近の貴重品だけは回収する'},
