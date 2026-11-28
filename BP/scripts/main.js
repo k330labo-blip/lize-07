@@ -4134,8 +4134,12 @@ function tickConditionWindow(bot, owner, r, ctx) {
     r.windowCheckAt = now;
     const verdict = evalWindowEnd(win, { isRaining: typeof ctx?.env?.isRaining === "boolean" ? ctx.env.isRaining : undefined, isNight: typeof ctx?.env?.isNight === "boolean" ? ctx.env.isNight : undefined, isDawn: typeof ctx?.env?.isDawn === "boolean" ? ctx.env.isDawn : undefined, ownerHunger: typeof ctx?.owner?.hunger === "number" ? ctx.owner.hunger : undefined });
     if (verdict === "active") { r.windowEndStreak = 0; r.windowEndAt = 0; return false; }
-    if (verdict !== "ended") return false; // unknown: 止めない・進めない
-    if (!((r.windowEndStreak || 0) > 0) || !(typeof r.windowEndAt === "number" && Number.isFinite(r.windowEndAt) && r.windowEndAt > 0) || now - r.windowEndAt > 30000) { r.windowEndStreak = 0; r.windowEndAt = now; } // WINDOW-STREAK-NOTTL-01: 初回 ended の打刻から30秒を超えた観測は「連続」と数えず数え直す (unknown 区間の保持はこの窓内のみ)
+    if (verdict !== "ended") { // unknown: 止めない・進めない
+      // WINDOW-STREAK-SPARSE-01 (形A', cyc2523): TTL 失効は unknown の評価が実際に起きたときにだけ判定する (WINDOW-STREAK-NOTTL-01 の意図は unknown 区間の保持上限として維持する)。直接の ended→ended 間隔には TTL を適用しない (疎な評価間隔でも連続2回で発火する)
+      if ((r.windowEndStreak || 0) > 0 && typeof r.windowEndAt === "number" && Number.isFinite(r.windowEndAt) && r.windowEndAt > 0 && now - r.windowEndAt > 30000) { r.windowEndStreak = 0; r.windowEndAt = 0; }
+      return false;
+    }
+    if (!((r.windowEndStreak || 0) > 0) || !(typeof r.windowEndAt === "number" && Number.isFinite(r.windowEndAt) && r.windowEndAt > 0)) { r.windowEndStreak = 0; r.windowEndAt = now; } // WINDOW-STREAK-NOTTL-01: 打刻が無い/壊れている初回 ended は数え直して打刻する
     r.windowEndStreak = (r.windowEndStreak || 0) + 1;
     if (r.windowEndStreak < 2) return false;
     const raw = win.raw || "その間";
