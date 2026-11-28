@@ -183,6 +183,7 @@ import { createTrace, mapGoalEvent, mapPlanEvent, mapReplanEvent, mapInterruptAc
 import { createFailAgg, recordAction, recordNote, formatFailSummaryLines, serializeFailAggShards, restoreFailAggShardsWithReport, planShardWrites, failRate } from "./fail_vocab.js"; // Phase4 failAgg (v0.4.64): 失敗集計の純粋核。記録は noteFail/commitLastAction の内側2点だけ (S2)。読み手は状態表示のみ (S3a)。v0.4.77: S3b 永続化 (cb_failagg キー分割)
 import { pickSurveyEvictions } from "./survey_evict.js"; // survey 案C (cycle2006): 容量削除の複合キー純粋核
 import { recordHitReservoir } from "./survey_reservoir.js"; // survey 案R (cycle2036): リザーバサンプリング純粋核
+import { noteSurveyLook, lookCoverageComplete, FULL_LOOK_MASK } from "./survey_look_math.js"; // 0-O1 SURVEY-LOOK-SYNC-01 (cyc2510): 調査完了を実観測の方向被覆へ連動させる純粋核
 import { dropTupleForBlock } from "./block_drops.js";
 import { isUndergroundColumn } from "./underground_math.js"; // キュー0副次 (cycle1400): 地下判定の数え上げを純粋核へ (雪層は地形に数えない規則を回帰テストで固定)
 import { applyTossPitch, isTossActive, shouldToss } from "./toss_math.js"; // POLISH-ANIM-TOSS-01 (cycle1400): アイテム出現時の投げ出し表現 (表示層のみ・実機確認待ち)
@@ -2370,7 +2371,7 @@ function requestSurvey(dimId, rx, rz, prio = 1) {
   if (!sv) { sv = { dim: dimId, rx, rz, at: Date.now(), doneMask: 0, doneAt: null, fails: 0, hits: {}, wantAt: Date.now() }; surveys.set(key, sv); }
   else if (!surveyFresh(sv) && !surveyDone(sv)) { // SURVEY-PARTIAL-UNLOADED-RESET 是正 (cycle0252 案A): 部分進捗 (doneMask!=0) かヒットがある区画は鮮度切れで消さず at だけ打ち直す (調べた事実は鮮度と分離)。hits/seen は対で保持し units も保持する。陳腐ヒットの誤誘導は lookupSurvey の実ブロック再検証で止まる
     if (sv.doneMask !== 0 || (sv.hits && Object.keys(sv.hits).length > 0)) { sv.at = Date.now(); }
-    else { sv.doneMask = 0; sv.doneAt = null; sv.fails = 0; sv.hits = {}; sv.seen = {}; sv.units = undefined; sv.nextIdx = 0; sv.at = Date.now(); } // survey 案R (cycle2036): seen も hits と対で初期化
+    else { sv.doneMask = 0; sv.doneAt = null; sv.fails = 0; sv.hits = {}; sv.seen = {}; sv.units = undefined; sv.nextIdx = 0; sv.lookMask = 0; sv.at = Date.now(); } // survey 案R (cycle2036): seen も hits と対で初期化 / 0-O1 (cyc2510): 観測被覆も対で初期化
   }
   // ラッチ済み sv は失効しても作り直さない: doneMask/doneAt/hits は保持し、wantAt/prio のみ更新する。
   sv.wantAt = Date.now(); sv.prio = prio;
@@ -2399,6 +2400,9 @@ function surveyChunk(sv, idx) {
   let minY = -64, maxY = 319; try { minY = dim.heightRange.min; maxY = dim.heightRange.max - 1; } catch {}
   const eye = surveyEyeFor(dim, cx, cz); if (!eye) return "unloaded"; // 0-P S3: 観測者がいない区画は走査しない (調べたのに何も観測していない区画を作らない)
   const provider = surveyProviderFor(dim);
+  // 0-O1 SURVEY-LOOK-SYNC-01 (cyc2510): この走査で実際に観測した向きを区画の被覆へ記録する。
+  // 向きが読めない場合は FOV ゲート自体が適用されない (outOfView が false) ため、全方向を観測した互換扱いにする。
+  try { sv.lookMask = Number.isFinite(eye.yawDeg) ? noteSurveyLook(sv.lookMask || 0, eye.yawDeg) : FULL_LOOK_MASK; } catch {}
   if (!sv.units) sv.units = {};
   if (!sv.units[idx]) sv.units[idx] = splitVolume({ x: cx * 16, y: minY, z: cz * 16 }, { x: cx * 16 + 15, y: maxY, z: cz * 16 + 15 });
   const stack = sv.units[idx];
@@ -2459,7 +2463,8 @@ system.runInterval(() => {
     const ms = Date.now() - t0;
     if (ms > 25) surveySlowUntil = Date.now() + ms * 2; // 処理落ち防止: 重かった分だけ次を遅らせる
     sv.nextIdx = (idx + 1) % 16;
-    if (res === "done") { sv.fails = 0; sv.unloadedStreak = 0; sv.doneMask |= (1 << idx); sv.at = Date.now(); sv.wantAt = sv.at; if (sv.doneMask === 0xffff && sv.doneAt == null) sv.doneAt = sv.at; } // cyc2367 SURVEY-WANTAT-FREEZE-01: 進捗が wantAt 窓も供給する
+    if (res === "done" && !lookCoverageComplete(sv.lookMask || 0)) { sv.fails = 0; sv.unloadedStreak = 0; sv.at = Date.now(); sv.wantAt = sv.at; if (sv.units) delete sv.units[idx]; } // 0-O1 (cyc2510): 全方向を実際に観測するまでは完了にしない。走査済みユニットは被覆が揃った後の再走査で別方向のヒットを拾えるよう戻す (進捗として鮮度だけ供給する形は partial と同形)
+    else if (res === "done") { sv.fails = 0; sv.unloadedStreak = 0; sv.doneMask |= (1 << idx); sv.at = Date.now(); sv.wantAt = sv.at; if (sv.doneMask === 0xffff && sv.doneAt == null) sv.doneAt = sv.at; } // cyc2367 SURVEY-WANTAT-FREEZE-01: 進捗が wantAt 窓も供給する
     else if (res === "partial") { sv.fails = 0; sv.unloadedStreak = 0; sv.at = Date.now(); sv.wantAt = sv.at; } // cyc2367 SURVEY-WANTAT-FREEZE-01 // B-prime: progress refreshes freshness only / cycle0628: 進捗で fails リセット (survey_broken.js の nextFails と同義。断片抽出ハーネスと両立させるため実行部は自己完結形で書く)
     else if (res === "error") { sv.fails++; if (sv.fails > 40) { sv.quarantinedUntil = Date.now() + 900000; sv.fails = 0; /* cycle0659: reset fails on quarantine */ try { surveyGlobalEvents = pruneGlobalErrorEvents([...surveyGlobalEvents, { key: surveyKeyOf(sv.dim, sv.rx, sv.rz), at: Date.now() }], Date.now()); if (shouldTripGlobalLatch(surveyGlobalEvents, Date.now())) { surveyLatch = tripSurveyLatch(surveyLatch, Date.now()); console.warn("[LIZE] chunk survey paused (failures spread across regions, cooldown recovery)"); } } catch {} } } // cycle0628: 単一区画の失敗では全体を止めず当該区画だけ15分隔離。全体停止は複数区画への拡散時のみ＋5分クールダウンで回復 (恒久ラッチ surveyBroken は廃止)
     else if (res === "unloaded") { sv.unloadedStreak = (sv.unloadedStreak || 0) + 1; if (sv.unloadedStreak >= 32) { sv.unloadedUntil = Date.now() + 60000; sv.unloadedStreak = 0; } } // cyc2369 SURVEY-UNLOADED-NOEXIT-01: 失敗でも進捗でもないので fails には載せず、専用カウンタ32回(2巡)で60秒の一時除外にする
@@ -4268,7 +4273,7 @@ function tickMission(bot, owner, ctx, scan) {
       const ex = r.exploreRegion;
       if (cur && ex && ex.rx === rg.rx && ex.rz === rg.rz && Math.hypot(bot.location.x - ex.x, bot.location.z - ex.z) < 12) {
         if (!r.exploreArrivedAt) { r.exploreArrivedAt = Date.now(); try { if (!r.lookSweepState) { r.lookSweepState = createLookSweepState(); r.lookSweepState.lastFoundAt = r.mTargetSince || Date.now(); } let by; try { by = bot.getRotation?.()?.y; } catch {} startLookSweep(r.lookSweepState, Date.now(), by); } catch {} } // FOV第2単位 (cyc2492): 空洞・新区画到達時は見回しを直接開始 (ACTIVE §3)
-        else if (Date.now() - r.exploreArrivedAt > 20000 && cur.doneMask !== 0xffff) { markSurveyDone(cur); noteFail(bot, "survey:region_incomplete", new Error(`${rg.rx},${rg.rz}`)); }
+        else if (Date.now() - r.exploreArrivedAt > 20000 && cur.doneMask !== 0xffff && lookCoverageComplete(cur.lookMask || 0)) { markSurveyDone(cur); noteFail(bot, "survey:region_incomplete", new Error(`${rg.rx},${rg.rz}`)); } // 0-O1 (cyc2510): 強制完了も実観測の被覆が揃った場合だけ (観測していないのに完了にしない)。被覆未完なら到着時に開始した見回しの完了を待つ
       } else r.exploreArrivedAt = 0;
       if (step && (step.type === "gather_block" || step.type === "side_collect") && !ft.found) {
         regionSearch = true;
