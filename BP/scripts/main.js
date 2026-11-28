@@ -27,7 +27,7 @@ import createWorldMemory from "./world_memory.js";
 import { genSpeech } from "./gen_speech.js";
 import { parseOrder, resumeClarifyOrder, classifyClarifyUnmatched } from "./order_parser.js";
 import { orderAmountOrDefault } from "./qty_default_math.js"; // 0-N1 QTY-DEFAULT-01 (cyc2447): 数量省略時の対象別デフォルト (純粋核)
-import { isSmeltStationId, selectKnownSmeltStation } from "./station_math.js"; // SMELT-STATION-LIT-01 (cyc2477): 精錬設備集合の単一の正 (純粋核)
+import { isSmeltStationId, selectKnownSmeltStation, rankKnownSmeltStations, hasSmeltStationBeyondCap, classifyKnownSmeltOutcome } from "./station_math.js"; // SMELT-STATION-LIT-01 (cyc2477): 精錬設備集合の単一の正 (純粋核)
 import { shearDisclosureFor, shearForbidBlockFor, SHEAR_DISCLOSURE_NOTE, SHEAR_FORBID_BLOCK_NOTE } from "./shear_honest_math.js"; // 0-N5 SHEAR-HONEST-01 (cyc2452): 羊毛刈りの方式明示 (純粋核)。否定併記形の開始抑止 (cyc2458)
 import { resolveItem } from "./decomposer.js"; // 倉庫 W3-TEACH (cyc2355): 素材名→typeId の単一の正 (注文経路と共用)
 import { resolveRequestedTool, toolItemIdOf } from "./tool_request_math.js"; // 0-C4 R-C4-1 (cyc2375): 道具指定の実行側 reader 純粋核
@@ -2987,10 +2987,21 @@ function ensureStation(bot, r, leg) {
     if (b && present(b.typeId)) return true;
   }
   if (leg.type === "smelt") { // SMELT-STATION-RANGE-01 R1a (cyc2478): 箱走査が外れたら既知設備を1回だけ再読確認する (cap=32。接近移動 R1b は分離し統合しない)
+    // SMELT-STATION-REPAIR-CLASS-01 (cyc2480): 再読を最寄り1件で止めず候補列を反復し (B10 遮蔽の吸収)、
+    // 結果を理由 (ghost/unreadable/cap_over/no_record) へ分類して r.stationKnown へ残す。
+    // 幽霊記録 (再読できたが設備でない) だけを掃除し、再読不能 (例外/null) は一時的として掃除しない。
     try {
       const wm = wmemOf(bot);
-      const rec = wm?.knownWorkstations ? selectKnownSmeltStation(wm.knownWorkstations(dim.id), pos) : null;
-      if (rec) { let rb = null; try { rb = dim.getBlock({ x: rec.x, y: rec.y, z: rec.z }); } catch {} if (rb && isSmeltStationId(rb.typeId)) return true; }
+      const recs = wm?.knownWorkstations ? wm.knownWorkstations(dim.id) : null;
+      const cands = recs ? rankKnownSmeltStations(recs, pos) : [];
+      let ghost = 0, unreadable = 0;
+      for (const rec of cands) {
+        let rb = null, threw = false;
+        try { rb = dim.getBlock({ x: rec.x, y: rec.y, z: rec.z }); } catch { threw = true; }
+        if (rb && isSmeltStationId(rb.typeId)) return true;
+        if (!threw && rb) { ghost++; try { wm?.forgetWorkstation?.({ x: rec.x, y: rec.y, z: rec.z }, dim.id); } catch {} } else unreadable++;
+      }
+      try { r.stationKnown = { reason: classifyKnownSmeltOutcome({ ghost, unreadable, beyondCap: recs ? hasSmeltStationBeyondCap(recs, pos) : false }), at: Date.now() }; } catch {}
     } catch {}
   }
   if (!hasItem(bot, need)) return false;
@@ -3465,9 +3476,10 @@ function tickLongTask(bot, owner, r, ctx) {
       if (!ensureStation(bot, r, leg)) {
         // v0.4.67: 作業台・かまどを持っていない (計画処理が工程を入れ忘れることがある) なら、作る工程を差し込んで続ける
         const stationId = leg.type === "smelt" ? "minecraft:furnace" : "minecraft:crafting_table";
-        leg.stationRepairs = (leg.stationRepairs || 0) + 1;
+        const knownReason = leg.type === "smelt" && r.stationKnown && (Date.now() - (r.stationKnown.at || 0) < 5000) ? r.stationKnown.reason : null; // SMELT-STATION-REPAIR-CLASS-01 (cyc2480): 理由分離。cap_over (既知設備が遠方) は設備が実在するため加算も作製差し込みもしない
+        if (knownReason !== "cap_over") leg.stationRepairs = (leg.stationRepairs || 0) + 1;
         let ins = null;
-        if (!hasItem(bot, stationId) && leg.stationRepairs <= 3 && lt.legs.length <= 60) { try { const sub = planLongTask({ target: stationId, amount: 1, constraints: { forbiddenTargets: (typeof fbIds !== "undefined" ? fbIds : []) } }, countInv(bot), invDurabilityOf(bot)); if (sub && sub.feasible && sub.legs && sub.legs.length) ins = sub.legs; } catch {} }
+        if (knownReason !== "cap_over" && !hasItem(bot, stationId) && leg.stationRepairs <= 3 && lt.legs.length <= 60) { try { const sub = planLongTask({ target: stationId, amount: 1, constraints: { forbiddenTargets: (typeof fbIds !== "undefined" ? fbIds : []) } }, countInv(bot), invDurabilityOf(bot)); if (sub && sub.feasible && sub.legs && sub.legs.length) ins = sub.legs; } catch {} }
         if (ins) { lt.legs.splice(lt.legIdx, 0, ...ins); saveLongTask(bot, r); continue; }
         say(owner, bot, `長期タスクを中断しました。${leg.type === "smelt" ? "かまど" : "作業台"}を用意できませんでした`, true); return abortLongTask(bot, owner, r);
       }
