@@ -1354,7 +1354,14 @@ function tickWork(bot, owner, r, ctx) {
   }
   r.lastBreak = { act: "BREAK", ok: true, reason: null, item: w.typeId, gained: gain ? gain[1] : 0, at: Date.now() }; commitLastAction(r, r.lastBreak);
   try { if (String(w.typeId || "").includes("_ore")) { const nb = veinNeighbors(w.loc, w.typeId, (p) => { try { const bb = bot.dimension.getBlock(p); return bb ? bb.typeId : null; } catch { return null; } }); const prev = filterBanned(Array.isArray(r.veinCands) ? r.veinCands.filter((c) => c && !(c.loc.x === w.loc.x && c.loc.y === w.loc.y && c.loc.z === w.loc.z)) : [], r.mBanKey, r.mBanUntil, Date.now()).filter((c) => !isBanned(c.loc, c.typeId ?? null, r.mBanKey, r.mBanUntil, Date.now())); /* 0-D1 (cycle1514): 登録段でも ban 中セルを持ち込まない */ const nbF = filterBanned(nb, r.mBanKey, r.mBanUntil, Date.now()); for (let i = nb.length - 1; i >= 0; i--) if (!nbF.includes(nb[i])) nb.splice(i, 1); const seen = new Set(prev.map((c) => `${c.loc.x},${c.loc.y},${c.loc.z}`)); for (const c of nb) { const k = `${c.loc.x},${c.loc.y},${c.loc.z}`; if (!seen.has(k)) { seen.add(k); prev.push(c); } } r.veinCands = capVeinCands(prev, bot.location); } } catch {} // 0-D1: 鉱脈の18近傍 (面+辺・角除外) を次候補として保持し上限は距離順 (D1-R2/R3 cyc2396)
-  try { if (isTrunkType(w.typeId)) { const tnb = treeNeighbors(w.loc, w.typeId, (p) => { try { const bb = bot.dimension.getBlock(p); return bb ? bb.typeId : null; } catch { return null; } }, null); const prevT = filterBanned(Array.isArray(r.treeCands) ? r.treeCands.filter((c) => c && !(c.loc.x === w.loc.x && c.loc.y === w.loc.y && c.loc.z === w.loc.z)) : [], r.mBanKey, r.mBanUntil, Date.now()); r.treeCands = mergeTreeCands(prevT, filterBanned(tnb, r.mBanKey, r.mBanUntil, Date.now()), 32, bot.location); } } catch {} // 0-D3 R1: 同じ木の接続原木を次候補として保持 (上限は距離順 D3-R5 cyc2396)
+  try { if (isTrunkType(w.typeId)) { const mt = r.mission?.steps?.[r.mission?.currentStep]?.target ?? null;
+    const mtTail = String(mt || "").split(":").pop();
+    let al = null;
+    if (mt && (isTrunkType(mt) || mtTail === "log")) { // 0-D D3-R1+R3 (cyc2473): 登録段でも樹種を厳守 (選択段 allowedLogIds と同型化)
+      al = allowedLogIds(mt, LOG_BLOCK_IDS);
+      if (isTrunkType(mt)) { const norm = String(mt).startsWith("minecraft:") ? mt : "minecraft:" + String(mt).split(":").pop(); if (!al.includes(norm)) al.push(norm); } // R3: stem・stripped 等 LOG9 外の幹対象は自身を補完 (総称 log へは自己追加しない)
+    }
+    const tnb = treeNeighbors(w.loc, w.typeId, (p) => { try { const bb = bot.dimension.getBlock(p); return bb ? bb.typeId : null; } catch { return null; } }, al); const prevT = filterBanned(Array.isArray(r.treeCands) ? r.treeCands.filter((c) => c && !(c.loc.x === w.loc.x && c.loc.y === w.loc.y && c.loc.z === w.loc.z)) : [], r.mBanKey, r.mBanUntil, Date.now()); r.treeCands = mergeTreeCands(prevT, filterBanned(tnb, r.mBanKey, r.mBanUntil, Date.now()), 32, bot.location); } } catch {} // 0-D3 R1: 同じ木の接続原木を次候補として保持 (上限は距離順 D3-R5 cyc2396)
   r.work = null;
   return true;
 }
