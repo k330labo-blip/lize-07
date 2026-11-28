@@ -3973,19 +3973,20 @@ function tickConditionWindow(bot, owner, r, ctx) {
     const ltWin = !missionWin && r.longtask ? r.longtask.window : null;
     const bpWin = !missionWin && !ltWin && r.buildPlan ? r.buildPlan.window : null;
     const win = missionWin || ltWin || bpWin;
-    if (!win) { r.windowEndStreak = 0; r.windowEndKey = null; return false; }
+    if (!win) { r.windowEndStreak = 0; r.windowEndKey = null; r.windowEndAt = 0; return false; }
     const winKey = `${win.raw || ""}\n${win.kind || ""}`; // WINDOW-STREAK-CARRYOVER-01 (cyc2442): streak は window の同一性 (raw+kind) と組で保持し、別 window への差し替えでは持ち越さない (同一 window のチェーン継承は不変)
-    if (r.windowEndKey !== winKey) { r.windowEndKey = winKey; r.windowEndStreak = 0; }
+    if (r.windowEndKey !== winKey) { r.windowEndKey = winKey; r.windowEndStreak = 0; r.windowEndAt = 0; }
     const now = Date.now();
     if (now - (r.windowCheckAt || 0) < 3000) return false;
     r.windowCheckAt = now;
     const verdict = evalWindowEnd(win, { isRaining: typeof ctx?.env?.isRaining === "boolean" ? ctx.env.isRaining : undefined, isNight: typeof ctx?.env?.isNight === "boolean" ? ctx.env.isNight : undefined, isDawn: typeof ctx?.env?.isDawn === "boolean" ? ctx.env.isDawn : undefined, ownerHunger: typeof ctx?.owner?.hunger === "number" ? ctx.owner.hunger : undefined });
-    if (verdict === "active") { r.windowEndStreak = 0; return false; }
+    if (verdict === "active") { r.windowEndStreak = 0; r.windowEndAt = 0; return false; }
     if (verdict !== "ended") return false; // unknown: 止めない・進めない
+    if (!((r.windowEndStreak || 0) > 0) || !(typeof r.windowEndAt === "number" && Number.isFinite(r.windowEndAt) && r.windowEndAt > 0) || now - r.windowEndAt > 30000) { r.windowEndStreak = 0; r.windowEndAt = now; } // WINDOW-STREAK-NOTTL-01: 初回 ended の打刻から30秒を超えた観測は「連続」と数えず数え直す (unknown 区間の保持はこの窓内のみ)
     r.windowEndStreak = (r.windowEndStreak || 0) + 1;
     if (r.windowEndStreak < 2) return false;
     const raw = win.raw || "その間";
-    r.windowEndStreak = 0; r.windowEndKey = null; r.windowCheckAt = 0;
+    r.windowEndStreak = 0; r.windowEndKey = null; r.windowCheckAt = 0; r.windowEndAt = 0;
     if (missionWin) cancelMission(bot, owner, r, true);
     else if (bpWin) {
       // WINDOW-END-BUILDPLAN-SCOPE-01 (cyc2429): 建築相の畳み。材料集め相の子 mission も一緒に畳む。
