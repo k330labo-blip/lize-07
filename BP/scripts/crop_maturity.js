@@ -12,6 +12,7 @@ export const CROP_MATURITY_MAX = {
   "minecraft:beetroot": 3,
   "minecraft:cocoa": 2,
   "minecraft:nether_wart": 3,
+  "minecraft:sweet_berry_bush": 3,
 };
 
 export function isCropBlock(typeId) {
