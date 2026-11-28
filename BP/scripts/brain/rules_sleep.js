@@ -11,8 +11,8 @@ export const RULES = [
 {id:'sleep_owner_in_bed_calm', p:172, when:c=>Boolean(c.x?.ownerInBed===true&&c.owner.present&&(!c.x?.obs||c.x.obs.scan==="ok")&&c.danger.count===0), act:'stay_anchor', say:'おやすみなさい。見張りは私がします。夜勤は、本職でしたから', note:'主人が寝たら、その場で見張り役に回る基本形'},
 {id:'sleep_owner_in_bed_near', p:170, when:c=>Boolean(c.x?.ownerInBed===true&&c.owner.present&&c.self.distOwner<=4&&c.danger.count===0), act:'idle_hover', say:'定位置は、ベッドの隣に変更します。……近いですか。仕様です', note:'ベッドのすぐ隣で静かに待機する'},
 {id:'sleep_owner_in_bed_far', p:171, when:c=>Boolean(c.x?.ownerInBed===true&&c.owner.present&&c.self.distOwner>=10), act:'follow_close', say:'寝るなら、そばで見ています。離れた場所で待つ理由がありません', note:'主人が寝たのに離れている場合は、まず寄る'},
-{id:'sleep_owner_in_bed_danger', p:179, when:c=>Boolean(c.x?.ownerInBed===true&&c.owner.present&&c.danger.count>0), act:'stay_anchor', say:'寝ていてください。今の相手は、私が引き受けます', note:'主人が寝ている最中に敵接近。起こさず自分が盾になる'},
-{id:'sleep_owner_in_bed_creeper', p:178, when:c=>Boolean(c.x?.ownerInBed===true&&c.owner.present&&(c.danger.creeperDist??999)<=8), act:'stay_anchor', say:'……静かに。緑の来客です。あなたは、そのまま寝ていてください', note:'就寝中にクリーパー接近。声を落として対応する'},
+{id:'sleep_owner_in_bed_danger', p:179, when:c=>Boolean(c.x?.ownerInBed===true&&c.owner.present&&c.danger.safetyCount>0), act:'stay_anchor', say:'寝ていてください。今の相手は、私が引き受けます', note:'主人が寝ている最中に敵接近。起こさず自分が盾になる'},
+{id:'sleep_owner_in_bed_creeper', p:178, when:c=>Boolean(c.x?.ownerInBed===true&&c.owner.present&&(c.danger.safetyCreeperDist??999)<=8), act:'stay_anchor', say:'……静かに。緑の来客です。あなたは、そのまま寝ていてください', note:'就寝中にクリーパー接近。声を落として対応する'},
 {id:'sleep_owner_in_bed_low_hp', p:174, when:c=>Boolean(c.x?.ownerInBed===true&&c.owner.present&&c.owner.hpPct<0.5&&scanKnown(c)&&c.danger.count===0), act:'stay_anchor', say:'その体でよく起きていましたね。朝まで、私が見ています', note:'満身創痍でようやく寝た主人へのねぎらい'},
 {id:'sleep_owner_in_bed_full_inv', p:166, when:c=>Boolean(c.x?.ownerInBed===true&&c.inv.full&&c.home.registered), act:'say_only', say:'おやすみなさい。私は満載なので、先に帰る場所へ置いてきます', note:'主人が寝た＋自分が満載なら、入庫を予告してから離れる'},
 {id:'sleep_owner_in_bed_work_mode', p:165, when:c=>Boolean(c.x?.ownerInBed===true&&c.mode==='work'&&scanKnown(c)&&c.danger.count===0), act:'stay_anchor', say:'作業はここまでです。続きは朝に開いておきます。おやすみなさい', note:'作業モードでも主人が寝たら夜勤終了の挨拶'},
@@ -42,7 +42,7 @@ export const RULES = [
 {id:'sleep_night_owl_rain', p:162, when:c=>Boolean(c.env.isNight&&c.env.isRaining&&c.x?.ownerInBed!==true&&c.owner.present&&c.danger.count===0), act:'follow_close', say:'雨の夜勤です。研究所では嫌いじゃありませんでした。……あなたは、どうですか', note:'雨の夜更かしに、珍しく問いかける'},
 // ===== ファントムリスク（x.phantomRisk） =====
 {id:'sleep_phantom_warn_surface', p:176, when:c=>Boolean(c.x?.phantomRisk===true&&c.env.isNight&&!c.owner.underground&&bedAbsentKnown(c)&&c.owner.present), act:'say_only', say:'不眠が続いています。空から、羽音がします。ベッドは遠いので、今夜は低空に注意です', note:'ベッドが遠くファントム危険な夜の本警告'},
-{id:'sleep_phantom_warn_with_danger', p:177, when:c=>Boolean(c.x?.phantomRisk===true&&c.env.isNight&&c.danger.count>0&&c.owner.present), act:'follow_close', say:'地上の敵に、空の敵まで増えます。今夜は、私のそばを離れないでください', note:'敵接近＋ファントム危険の複合警告。密着する'},
+{id:'sleep_phantom_warn_with_danger', p:177, when:c=>Boolean(c.x?.phantomRisk===true&&c.env.isNight&&c.danger.safetyCount>0&&c.owner.present), act:'follow_close', say:'地上の敵に、空の敵まで増えます。今夜は、私のそばを離れないでください', note:'敵接近＋ファントム危険の複合警告。密着する'},
 {id:'sleep_phantom_underground_safe', p:163, when:c=>Boolean(c.x?.phantomRisk===true&&c.owner.underground&&c.owner.present), act:'say_only', say:'不眠ではありますが、ここは地下です。空の連中は来られません。少しだけ、安心です', note:'ファントム危険でも地下なら安全と伝える状況判断'},
 {id:'sleep_phantom_owner_low_hp', p:178, when:c=>Boolean(c.x?.phantomRisk===true&&c.env.isNight&&c.owner.hpPct<0.4&&c.owner.present), act:'follow_close', say:'その体力で空の相手は無理です。寝るか、隠れるか。今すぐ選んでください', note:'低HP＋ファントム危険は、選択肢を提示して強く迫る'},
 {id:'sleep_phantom_morning_after', p:168, when:c=>Boolean(c.x?.phantomRisk===true&&c.env.isDawn&&c.owner.present&&c.danger.count===0), act:'say_only', say:'夜が明けました。不眠の借りは、今夜こそ返しましょう。……寝てください、という意味です', note:'ファントム危険を抱えたまま迎えた朝への労い'},
@@ -51,7 +51,7 @@ export const RULES = [
 {id:'sleep_phantom_skip_likely', p:167, when:c=>Boolean(c.x?.phantomRisk===true&&c.x?.nightSkipLikely===true&&c.env.isNight&&c.owner.present), act:'say_only', say:'皆さんが寝れば、この空ともお別れです。あなたのベッドが、最後の一押しです', note:'マルチで夜スキップが見込める場合は、就寝を後押しする'},
 // ===== リスポーン・帰る場所（x.respawnSet） =====
 {id:'sleep_respawn_unset_night_far', p:173, when:c=>Boolean(c.x?.respawnSet!==true&&c.env.isNight&&c.self.distHome>=16&&c.owner.present&&c.home.registered), act:'say_only', say:'リスポーン地点が未設定です。万一のとき、帰り道は遠くなります。……私は、それが少し分かります', note:'夜＋拠点から遠い＋リスポーン未設定の複合警告。自分の境遇を重ねる'},
-{id:'sleep_respawn_unset_danger', p:174, when:c=>Boolean(c.x?.respawnSet!==true&&c.danger.count>0&&c.owner.hpPct<0.5&&c.owner.present), act:'say_only', say:'お願いです。次に安全な場所で、リスポーンを登録してください。帰る場所は、大事です', note:'危険＋低HP＋リスポーン未設定は、珍しく「お願いです」と言う'},
+{id:'sleep_respawn_unset_danger', p:174, when:c=>Boolean(c.x?.respawnSet!==true&&c.danger.safetyCount>0&&c.owner.hpPct<0.5&&c.owner.present), act:'say_only', say:'お願いです。次に安全な場所で、リスポーンを登録してください。帰る場所は、大事です', note:'危険＋低HP＋リスポーン未設定は、珍しく「お願いです」と言う'},
 {id:'sleep_respawn_unset_no_home', p:169, when:c=>Boolean(c.x?.respawnSet!==true&&!c.home.registered&&c.owner.present&&c.danger.count===0), act:'say_only', say:'あなたの帰る場所も、まだ登録されていませんね。……お揃いです。悪くないですよ', note:'リスポーン未設定＋拠点未登録は「お揃い」と受け止める'},
 {id:'sleep_respawn_set_home', p:162, when:c=>Boolean(c.x?.respawnSet===true&&c.home.registered&&c.owner.present&&c.env.isDusk), act:'say_only', say:'帰る場所は二つとも登録済みです。今夜は、安心して夜更かしできますね', note:'夕方にリスポーンと拠点の両方を確認して安堵する'},
 {id:'sleep_respawn_owner_dead_wait', p:176, when:c=>Boolean(c.owner.dead&&c.x?.respawnSet===true&&c.home.registered), act:'stay_anchor', say:'戻ってくる場所は分かっています。ここで待っています。……早く、帰ってきてください', note:'主人死亡時、リスポーン先が拠点付近なら、その場で待つ'},

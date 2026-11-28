@@ -37,7 +37,8 @@ import { isCropMature, CROP_MATURITY_MAX, isCropBlock, cropBreakGate } from "./c
 import { resolveWorkAccess, ACCESS } from "./work_access.js"; // 基礎 遮蔽除去 (v0.4.76): 作業アクセス解決の純粋核
 import { evaluateDig } from "./dig_gate.js"; // 要望バッチA (v0.4.88): 掘削の統一ゲート
 import { evaluatePlace, placeHoldRecord } from "./place_gate.js"; // PLACE-GATE段2 (cycle0522): 設置側ゲート (build配線のみ、station/torchは段3)
-import { canObserve, gateScanResults, canObserveEntity } from "./observability.js"; // 0-P (cyc2483 S0/S1): 観測可能性ゲート (純粋核)。生走査を意味情報へ出す入口をここへ一本化する (X-ray防止)
+import { canObserve, gateScanResults, canObserveEntity } from "./observability.js";
+import { emptyVisualDanger, noteVisualHostile, noteDangerCue, dangerCueSnapshot, deriveSafetyDanger } from "./danger_xray_math.js"; // 0-O2 DANGER-XRAY-01 (cyc2515): danger visual/cue/safety 分離の純粋核 // 0-P (cyc2483 S0/S1): 観測可能性ゲート (純粋核)。生走査を意味情報へ出す入口をここへ一本化する (X-ray防止)
 import { arriveRadiusFor, mainStuckCounts } from "./nav_radius_math.js"; // NAV-RADIUS-BRAINACT-01 (cyc2499): act→nav到達半径の単一の正 (純粋核) + R4 main stuck 判定
 import { createTorchGuardState, noteTorchFailure, noteTorchSuccess, isTorchCooling } from "./torch_guard_math.js"; // TORCH-SPACING-01/RETRY (cyc2500): 自律松明の失敗冷却 (純粋核)
 import { noteFollowFail } from "./follow_fail_math.js"; // FOLLOW-WALK-NOEXIT-01 縮小形 (cyc2501): 純follow未到達の見切り判定 (純粋核)
@@ -537,7 +538,7 @@ function buildContext(bot, owner) {
     owner: { present: !!owner, hpPct: owner ? (oHp.max ? oHp.cur / oHp.max : 1) : 0, hunger: 20, sneaking: false, sprinting: false, inWater: false, onFire: false, idleSec: 0, underground: false, dimensionSame: !!owner && owner.dimension.id === dim.id, dead: !owner },
     inv: { used: 0, size: 27, full: false, nearFull: false, hasFood: false, foodCount: 0, hasValuable: false, valuableCount: 0, hasTorch: false, hasWeapon: false },
     env: { isNight: false, isDawn: false, isDusk: false, isRaining: undefined, isThundering: undefined }, // PENDING-ENV-UNKNOWN-RAINEND-01 (cyc2459): 天気2項目は未観測を undefined とし、取得成功時だけ代入する (測れた晴れ=false と区別する)
-    danger: { nearestDist: 999, count: 0, creeperDist: 999, rangedDist: 999, lavaNear: false, ownerLavaNear: false, lavaBelow: false, lavaBelowDist: 999, ownerTargeted: false },
+    danger: { nearestDist: 999, count: 0, creeperDist: 999, rangedDist: 999, lavaNear: false, ownerLavaNear: false, lavaBelow: false, lavaBelowDist: 999, ownerTargeted: false, visualCount: 0, visualNearestDist: 999, visualCreeperDist: 999, visualRangedDist: 999, visualOwnerTargeted: false, cueActive: false, cueCount: 0, cueNearestDist: 999, cueDistKnown: false, cueSource: null, cueAt: null, cueLoc: null, safetyCount: 0, safetyNearestDist: 999, safetyCreeperDist: 999, safetyRangedDist: 999 }, // 0-O2: visual/cue/safety は追加フィールド。raw (先頭9件) の意味は従来どおり
     drops: { count: 0, nearestDist: -1, valuableDist: -1, foodDist: -1, ownerDroppedDist: -1 },
     home: { registered: !!home, chestFull: false, chestMissing: false, dist: homeDist, dimensionSame: homeSameDim, depositBlocked }, // cycle0740 deposit P2
     flags: { warnOk: true, justDelivered: !!r.justDelivered, justDeposited: !!r.justDeposited, bond: dp(bot, "cb_bond", 30), trust: dp(bot, "cb_trust", 30) },
@@ -602,7 +603,7 @@ function buildContext(bot, owner) {
   // 走査: 敵・ドロップ・他プレイヤー
   const radius = mode === "work" ? 20 : mode === "stay" ? 10 : 14;
   // v0.4.66: 見える範囲を拡大。指示・長期タスク中はドロップ品も遠くまで拾いに行く。
-  // 敵の危険判定 (danger) は従来の距離のまま (遠くの敵に反応して逃げる・止まるのを防ぐ)。
+  // 敵の危険判定: raw (danger) は近接事実の記録として従来距離で残す。安全反応は visual/cue 由来の safety 系を読む (0-O2)。
   const busy = !!((r.mission && r.mission.status === "active") || r.longtask);
   const ENTITY_SCAN_R = 32, itemR = busy ? 32 : radius, dangerR = Math.max(radius, 16);
   const scan = { hostiles: [], items: [], animals: [], opportunities: [], nearestItem: null, valuableItem: null, foodItem: null, ownerItem: null, nearestHostile: null, nearestVisibleHostile: null, losIds: new Set() };
@@ -645,7 +646,8 @@ function buildContext(bot, owner) {
         if (d > dangerR) continue; // v0.4.66: 危険判定は従来距離
         scan.hostiles.push(e); c.danger.count++;
         if (d < c.danger.nearestDist) { c.danger.nearestDist = d; scan.nearestHostile = e; }
-        if (vis && (!scan.nearestVisibleHostile || d < dist(bot.location, scan.nearestVisibleHostile.location))) scan.nearestVisibleHostile = e; // 0-P S5: Tier2 の最寄り敵 (目標化・攻撃はこちらを使う)。Tier1 の danger/nearestHostile は安全反応のため無条件のまま
+        if (vis && (!scan.nearestVisibleHostile || d < dist(bot.location, scan.nearestVisibleHostile.location))) scan.nearestVisibleHostile = e; // 0-P S5: Tier2 の最寄り敵 (目標化・攻撃はこちらを使う)。raw danger は近接事実の記録として無条件に残し、安全反応は safety 系を読む (0-O2)
+        if (vis) noteVisualHostile(c.danger, { vis: true, dist: d, typeId: e.typeId, isRanged: RANGED_IDS.has(e.typeId) }); // 0-O2: visual は vis (LOS+FOV) 通過分だけ。raw と同一走査・同一 d を使う
         if (e.typeId === "minecraft:creeper") c.danger.creeperDist = Math.min(c.danger.creeperDist, d);
         if (RANGED_IDS.has(e.typeId)) c.danger.rangedDist = Math.min(c.danger.rangedDist, d);
         // 0-P S5: ボスの現在HPは見えていない対象の内部状態であり、LOS 通過時だけ hpOf を実行し bossHpPct を供給する。見えていない場合は bossNear/bossKind (存在と種別の Tier1) だけを立て、bossHpPct は立てない (読み手は ?? 既定・isNum ガードで不明として扱う)。帰結として LOS 外の非 BOSS_IDS 大型個体 (max>=300) では bossNear が立たなくなるが、これは内部状態を読まない原則の意図した挙動変更である
@@ -796,6 +798,7 @@ function buildContext(bot, owner) {
   noteWakegreetTick(bot, r, c); // POLISH-ANIM-WAKEGREET-01 (cyc1939): 起床の辺も ownerInBed 設定直後でしか正しく観測できないため同位置で呼ぶ
   try { const oc0 = invOf(owner); if (oc0) c.x.ownerInvFull = oc0.emptySlotsCount === 0; } catch {}
   if (scan && scan.nearestHostile) { try { c.danger.ownerTargeted = dist(scan.nearestHostile.location, owner.location) < dist(scan.nearestHostile.location, bot.location); } catch {} }
+  if (scan && scan.nearestVisibleHostile) { try { c.danger.visualOwnerTargeted = dist(scan.nearestVisibleHostile.location, owner.location) < dist(scan.nearestVisibleHostile.location, bot.location); } catch {} } // 0-O2: visual 版は視認済みの最寄り敵だけで判定する
   // バイオーム正規化（getBiome の長いID → ルール語彙）
   try {
     const bt = dim.getBiome(bot.location); const bid = (bt?.id || bt?.name || "").toLowerCase(); r.biomeInferred = false;
@@ -921,7 +924,8 @@ function buildContext(bot, owner) {
   }
   try { const vd = owner.getViewDirection(); c.x.heading = { x: vd.x, z: vd.z }; } catch { c.x.heading = null; }
   if (r.target) { const dx = r.target.x - bot.location.x, dz = r.target.z - bot.location.z; const m = Math.hypot(dx, dz); if (m > 0.1) c.x.heading = { x: dx / m, z: dz / m }; }
-  if (c.danger.count > 0) r.lastDangerAt = Date.now();
+  try { const cue = dangerCueSnapshot(r.dangerCue, Date.now()); Object.assign(c.danger, cue); Object.assign(c.danger, deriveSafetyDanger(c.danger, cue)); } catch {} // 0-O2: cue は rt 台帳 (被弾由来) からのみ供給し、safety をここで確定する
+  if (c.danger.safetyCount > 0) r.lastDangerAt = Date.now(); // 0-O2: lastDangerAt は「確認できた危険があった時刻」
   c.gaze = {
     sinceChatSec: r.lastChatAt ? (Date.now() - r.lastChatAt) / 1000 : 99999,
     sincePraiseSec: r.lastPraiseAt ? (Date.now() - r.lastPraiseAt) / 1000 : 99999,
@@ -1037,7 +1041,7 @@ function execTarget(bot, owner, rule, ctx, scan) {
     case "pickup_nearest": return scan?.nearestItem?.location || behind(3);
     case "guard": case "zap": return scan?.nearestVisibleHostile?.location || behind(2); // 0-P S5: 移動目標は見えている敵だけ (壁越し座標へ直行しない)
     case "flee": {
-      const h = scan?.nearestHostile?.location || o; const dx = bot.location.x - h.x, dz = bot.location.z - h.z; const m = Math.hypot(dx, dz) || 1;
+      const h = scan?.nearestVisibleHostile?.location || ctx?.danger?.cueLoc || o; // 0-O2: 逃走方向の源は視認敵か被弾スナップショットだけ const dx = bot.location.x - h.x, dz = bot.location.z - h.z; const m = Math.hypot(dx, dz) || 1;
       return { x: bot.location.x + (dx / m) * 10, y: bot.location.y, z: bot.location.z + (dz / m) * 10 };
     }
     case "rise_avoid": { const b = behind(2); return { x: b.x, y: Math.max(bot.location.y, o.y) + 3, z: b.z }; } // LAVA-05 (cycle0423): 上昇は現在位置基準でないと主人より上にいる場合に下降になる。+3 は escape_hazard と同量
@@ -1290,7 +1294,7 @@ function tickWork(bot, owner, r, ctx) {
   if (!r.work) return false;
   const w = r.work;
   w.touchedAt = Date.now(); // v0.4.68: 最後に実際に掘った時刻 (途中で止まった古い作業を見分ける)
-  if (ctx.danger.nearestDist < 4 || ctx.x?.bossNear) { r.work = null; return false; }
+  if (ctx.danger.safetyNearestDist < 4 || ctx.x?.bossNear) { r.work = null; return false; } // 0-O2: 作業中断は確認できた危険だけ
   let b = null; try { b = bot.dimension.getBlock(w.loc); } catch {}
   if (!b || b.typeId !== w.typeId) { r.work = null; return false; }
   // cycle1543 収穫A-F1: 作物の成熟は BREAK の前提条件 (単一の正は crop_maturity.js)。
@@ -1492,7 +1496,7 @@ function tickAutonomy(bot, owner, ctx, effMove) {
   if (tickWork(bot, owner, r, ctx)) return;
   const mode = dp(bot, "cb_mode", "follow");
   if (mode !== "free" && mode !== "work") return;
-  if (ctx.danger.nearestDist < 7 || ctx.x?.bossNear) return;
+  if (ctx.danger.safetyNearestDist < 7 || ctx.x?.bossNear) return; // 0-O2
   if (effMove && effMove.id !== "compiled_matrix" && (effMove.p || 0) >= 150 && !/^(mood_|fb_)/.test(effMove.id || "")) return; // mood_/fb_ は暇の表明。プランナーを飢餓させない
   const mem = { visitedChunks: [], dangerSpots: [], knownContainers: [], lastGoal: r.goal, goalSince: r.goalAt, now: Date.now() };
   // Phase1 Phase D: buildPlannerMem アダプタ（M1〜M3＋knownContainers を一括解消）。getVisited(cx,cz) は単一レコード返しのため visited は recentChunks、危険は dangerNear、コンテナは knownContainers から組み立てる
@@ -4427,7 +4431,7 @@ function tickBuild(bot, owner, r, ctx) {
     if (r.buildStallSince) r.buildStallSince += Math.max(0, Date.now() - r.buildDimSince); // cycle0740 BUILDSTALL-SHIFT-NEGGUARD
     r.buildDimSince = null; r.buildDimNoted = false;
   }
-  if (ctx.danger.nearestDist < 5) {
+  if (ctx.danger.safetyNearestDist < 5) { // 0-O2: 建築ホールドは確認できた危険だけ
     // 基礎 R-1 (v0.4.81, cycle0417-a05): 危険停止は維持するが無言・無記録にしない。
     // 連続60秒で1回だけ知らせる。停止時間は stall 時計から除外する (下の復帰分岐)。
     if (r.buildDangerSince == null) r.buildDangerSince = Date.now();
@@ -4818,7 +4822,7 @@ function applyGaze(bot, owner, ctx, scan) {
   if (!gz) return;
   const r = rt(bot);
   let look = null;
-  if (gz.gaze === "danger" || gz.gaze === "danger_then_owner") look = scan?.nearestHostile?.location || owner.location;
+  if (gz.gaze === "danger" || gz.gaze === "danger_then_owner") look = scan?.nearestVisibleHostile?.location || ctx?.danger?.cueLoc || owner.location; // 0-O2: 見ていない敵は見ない。被弾時はスナップショット方向を振り向く
   else if (gz.gaze === "home") { const h = homeOf(bot); look = h ? { x: h.x, y: h.y, z: h.z } : owner.location; }
   else if (gz.gaze === "work_target" && r.work) look = r.work.loc;
   else if (gz.gaze === "nearest_item" && scan?.nearestItem) look = scan.nearestItem.location;
@@ -4864,7 +4868,7 @@ function applyGaze(bot, owner, ctx, scan) {
     if (rot && r.snowtreadState) { try { const so = snowtreadCurrentOffset(r.snowtreadState); if (so.active) rot = { ...rot, x: applySnowtreadPitch(rot.x, r.snowtreadState.phase) }; } catch {} } // POLISH-ANIM-SNOWTREAD-01 (cycle2333): 重畳 (表示層のみ・実機確認待ち)
     if (rot && isFlinchActive(r.flinchAnimAt, Date.now())) rot = { ...rot, x: applyFlinchPitch(rot.x, Date.now() - r.flinchAnimAt) }; // POLISH-ANIM-FLINCH-01 (cycle1051)
     // POLISH-ANIM-ENDERAVERT-01 (cycle1940): feeder は既存走査 scan.hostiles から最寄りエンダーマンを取る (新規走査なし)。重畳は FLINCH の直下 (表示層のみ・実機確認待ち)
-    if (rot) { try { if (!r.enderavertState) r.enderavertState = createEnderavertState(); const em = (scan?.hostiles || []).filter((x) => x.typeId === "minecraft:enderman").sort((a, b) => dist(bot.location, a.location) - dist(bot.location, b.location))[0] || null; const base = { falling: r.selfFalling === true, inWater: !!bot.isInWater, inCombat: gz.gaze === "danger" || gz.gaze === "danger_then_owner", otherOverlayActive: isFlinchActive(r.flinchAnimAt, Date.now()) }; let smp = { hasTarget: false, ...base }; if (em) { const gr = gazeRotation(bot.location, { x: em.location.x, y: em.location.y + 1.4, z: em.location.z }); let ry = ((gr.y - rot.y + 540) % 360) - 180; smp = { hasTarget: true, dist: dist(bot.location, em.location), relYawDeg: ry, ...base }; } const ev = noteEnderavert(r.enderavertState, smp, Date.now()); if (ev && (ev.entered || ev.exited)) r.lastEnderAvert = { at: Date.now(), entered: !!ev.entered, exited: !!ev.exited, reason: ev.reason || null }; const ea = sampleEnderavert(r.enderavertState, Date.now()); if (ea.active) rot = { ...rot, y: rot.y + ea.gazeYawOffsetDeg, x: rot.x + ea.gazePitchDeg }; } catch {} }
+    if (rot) { try { if (!r.enderavertState) r.enderavertState = createEnderavertState(); const em = (scan?.hostiles || []).filter((x) => x.typeId === "minecraft:enderman" && scan?.losIds?.has(x.id)).sort((a, b) => dist(bot.location, a.location) - dist(bot.location, b.location))[0] || null; const base = { falling: r.selfFalling === true, inWater: !!bot.isInWater, inCombat: gz.gaze === "danger" || gz.gaze === "danger_then_owner", otherOverlayActive: isFlinchActive(r.flinchAnimAt, Date.now()) }; let smp = { hasTarget: false, ...base }; if (em) { const gr = gazeRotation(bot.location, { x: em.location.x, y: em.location.y + 1.4, z: em.location.z }); let ry = ((gr.y - rot.y + 540) % 360) - 180; smp = { hasTarget: true, dist: dist(bot.location, em.location), relYawDeg: ry, ...base }; } const ev = noteEnderavert(r.enderavertState, smp, Date.now()); if (ev && (ev.entered || ev.exited)) r.lastEnderAvert = { at: Date.now(), entered: !!ev.entered, exited: !!ev.exited, reason: ev.reason || null }; const ea = sampleEnderavert(r.enderavertState, Date.now()); if (ea.active) rot = { ...rot, y: rot.y + ea.gazeYawOffsetDeg, x: rot.x + ea.gazePitchDeg }; } catch {} }
     if (rot && isSkyglanceActive(r.skyglanceAt, Date.now())) rot = { ...rot, x: applySkyglancePitch(rot.x, Date.now() - r.skyglanceAt) }; // POLISH-ANIM-SKYGLANCE-01 (cycle1133): 最下位優先で重畳
     if (rot && isTossActive(r.tossAnimAt, Date.now())) rot = { ...rot, x: applyTossPitch(rot.x, Date.now() - r.tossAnimAt) }; // POLISH-ANIM-TOSS-01 (cycle1400): 視線連動のみ live、腕ピッチは r.lastToss 記録 (RP配線は実機確認待ち)
     if (rot && isSummonScanActive(r.summonScanAt, Date.now())) rot = { ...rot, y: applySummonScanYaw(rot.y, Date.now() - r.summonScanAt) }; // POLISH-ANIM-SUMMONSCAN-01 (cycle1110): ヨー重畳は末尾1箇所のみ
@@ -5094,7 +5098,8 @@ world.afterEvents.entityHurt.subscribe((ev) => {
     if (e.typeId === BOT_ID) {
       const wm = wmemOf(e); if (wm) wm.recordDanger(e.location, e.dimension.id, "damage", 1);
       // 防具軽減（script 方式）: 軽減分だけ体力を戻して実効ダメージを下げる
-      const rr = rt(e); try { rr.lastSelfHurtAt = Date.now(); } catch {} // POLISH-ANIM-COMBATEND-01 (cycle0224): 自分の被弾時刻 (表示層の feeder 用)
+      const rr = rt(e); try { rr.lastSelfHurtAt = Date.now(); } catch {}
+      try { const src = ev.damageSource?.damagingEntity || null; rr.dangerCue = noteDangerCue(rr.dangerCue, { at: Date.now(), source: "self_hurt", typeId: src?.typeId || null, loc: src?.location ? { x: src.location.x, y: src.location.y, z: src.location.z } : null, dist: src?.location ? dist(e.location, src.location) : null }); } catch {} // 0-O2: 被弾は視覚以外の正当な手がかり。座標は被弾時点のスナップショットのみ // POLISH-ANIM-COMBATEND-01 (cycle0224): 自分の被弾時刻 (表示層の feeder 用)
       const core = equipCoreOf(e, rr);
       if (core && ev.damage > 0) {
         try {
@@ -5103,7 +5108,7 @@ world.afterEvents.entityHurt.subscribe((ev) => {
         } catch {}
       }
     }
-    else if (e.typeId === "minecraft:player") { const b = findBotEntity(e.id); if (b) { const wm = wmemOf(b); if (wm) wm.recordDanger(e.location, e.dimension.id, "owner_hurt", 1); try { const br = rt(b); if (!br.partnercheckState) br.partnercheckState = createPartnerCheckState(); const bp = b.location, gr = gazeRotation(bp, { x: e.location.x, y: e.location.y + 1.4, z: e.location.z }); const cur = (() => { try { return b.getRotation(); } catch { return { x: 0, y: 0 }; } })(); let relYaw = gr.y - (cur?.y || 0); relYaw = ((relYaw + 540) % 360) - 180; const d3 = Math.hypot(e.location.x - bp.x, e.location.y - bp.y, e.location.z - bp.z); notePartnerCheck(br.partnercheckState, { ownerHurtEdge: true, isOwner: true, dist: d3, targetYawDeg: relYaw, targetPitchDeg: gr.x - (cur?.x || 0), working: !!br.work, falling: br.selfFalling === true, inWater: !!b.isInWater, ownerInFront: Math.abs(relYaw) < 12 && Math.abs(gr.x - (cur?.x || 0)) < 12 }, Date.now()); br.lastPartnerCheck = br.partnercheckState.lastRecord; } catch {} } }
+    else if (e.typeId === "minecraft:player") { const b = findBotEntity(e.id); if (b) { const wm = wmemOf(b); if (wm) wm.recordDanger(e.location, e.dimension.id, "owner_hurt", 1); try { const br2 = rt(b); br2.dangerCue = noteDangerCue(br2.dangerCue, { at: Date.now(), source: "owner_hurt", typeId: null, loc: { x: e.location.x, y: e.location.y, z: e.location.z }, dist: dist(b.location, e.location) }); } catch {} try { const br = rt(b); if (!br.partnercheckState) br.partnercheckState = createPartnerCheckState(); const bp = b.location, gr = gazeRotation(bp, { x: e.location.x, y: e.location.y + 1.4, z: e.location.z }); const cur = (() => { try { return b.getRotation(); } catch { return { x: 0, y: 0 }; } })(); let relYaw = gr.y - (cur?.y || 0); relYaw = ((relYaw + 540) % 360) - 180; const d3 = Math.hypot(e.location.x - bp.x, e.location.y - bp.y, e.location.z - bp.z); notePartnerCheck(br.partnercheckState, { ownerHurtEdge: true, isOwner: true, dist: d3, targetYawDeg: relYaw, targetPitchDeg: gr.x - (cur?.x || 0), working: !!br.work, falling: br.selfFalling === true, inWater: !!b.isInWater, ownerInFront: Math.abs(relYaw) < 12 && Math.abs(gr.x - (cur?.x || 0)) < 12 }, Date.now()); br.lastPartnerCheck = br.partnercheckState.lastRecord; } catch {} } }
     else { // HUNT-CREDIT-01 (cyc2453): 被害者が Mob 等で加害者が Bot なら被弾台帳へ記録 (段2 の書き手A)
       try { const srcId = ev.damageSource?.damagingEntity?.id ?? null; if (srcId && bots.has(srcId)) { const rr = bots.get(srcId); if (!(rr.huntHits instanceof Map)) rr.huntHits = new Map(); noteHuntHit(rr.huntHits, e.id, Date.now()); } } catch {}
     }

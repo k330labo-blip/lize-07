@@ -4,7 +4,7 @@
 // セリフはリゼ（LIZE-07）口調: 一人称「私」、相手は「あなた」、短い敬語、皮肉も真顔。元・夜勤助手。
 export const RULES = [
   // ===== 機械全般：稼働を見守る =====
-  { id: 'of_machine_danger_return', p: 449, when: c => c.x?.nearMachine === true && c.x?.machineWorking === true && c.danger.count > 0 && c.self.distOwner > 6 && c.owner.present, act: 'follow_close', say: '危ないです。機械より、あなたのそばに行きます', note: '稼働中の機械＋敵接近＋主人と離れているなら機械を離れて主人へ' },
+  { id: 'of_machine_danger_return', p: 449, when: c => c.x?.nearMachine === true && c.x?.machineWorking === true && c.danger.safetyCount > 0 && c.self.distOwner > 6 && c.owner.present, act: 'follow_close', say: '危ないです。機械より、あなたのそばに行きます', note: '稼働中の機械＋敵接近＋主人と離れているなら機械を離れて主人へ' },
   { id: 'of_machine_working_drops_pickup', p: 448, when: c => c.x?.nearMachine === true && c.x?.machineWorking === true && c.drops.count > 0 && c.drops.nearestDist >= 0 && c.drops.nearestDist <= 5 && !c.inv.full, act: 'pickup_nearest', say: '落ちていますよ。回収します', note: '稼働中機械の足元のドロップは加工の邪魔になる前に拾う' },
   { id: 'of_machine_working_stay_watch', p: 447, when: c => c.x?.nearMachine === true && c.x?.machineWorking === true && c.mode === 'stay', act: 'stay_anchor', say: '持ち場を守ります。機械の音、嫌いじゃないです', note: 'stay＋稼働中機械のそばは持ち場で見守る' },
   { id: 'of_machine_working_full_deposit', p: 446, when: c => c.x?.nearMachine === true && c.inv.full && c.home.registered, act: 'deposit', say: '満載です。機械の邪魔になる前に、運びます', note: '機械の近くで満載なら先に入庫して動線を空ける' },
@@ -30,7 +30,7 @@ export const RULES = [
 
   // ===== 原子炉：慎重に、静かに =====
   { id: 'of_reactor_owner_onfire', p: 449, when: c => c.x?.nearReactor === true && c.owner.onFire && c.owner.present, act: 'follow_close', say: '燃えていますよ。……まず水です、水', note: '原子炉のそばで主人が炎上したら即座に寄る' },
-  { id: 'of_reactor_danger_return', p: 448, when: c => c.x?.nearReactor === true && c.danger.count >= 2 && c.self.distOwner > 5 && c.owner.present, act: 'follow_close', say: 'ここは危ないです。あなたのそばへ行きます', note: '原子炉＋敵多数＋離れているなら主人へ合流' },
+  { id: 'of_reactor_danger_return', p: 448, when: c => c.x?.nearReactor === true && c.danger.safetyCount >= 2 && c.self.distOwner > 5 && c.owner.present, act: 'follow_close', say: 'ここは危ないです。あなたのそばへ行きます', note: '原子炉＋敵多数＋離れているなら主人へ合流' },
   { id: 'of_reactor_full_deposit', p: 446, when: c => c.x?.nearReactor === true && c.inv.full && c.home.registered && c.home.dist > 10, act: 'deposit', say: '満載です。原子炉のそばに置く物じゃありません、運びます', note: '原子炉付近で満載なら離れた拠点へ入庫' },
   { id: 'of_reactor_night_watch', p: 444, when: c => c.x?.nearReactor === true && c.env.isNight && c.mode === 'stay', act: 'stay_anchor', say: '夜の見張りは私の仕事でした。……今もです', note: '夜＋原子炉＋stayは元夜勤助手の見張り' },
   { id: 'of_reactor_caution_comment', p: 442, when: c => c.x?.nearReactor === true && c.flags.warnOk && c.owner.present, act: 'say_only', say: '原子炉の近くです。……静かに、慎重にいきましょう', note: '原子炉接近時の基本の注意喚起' },

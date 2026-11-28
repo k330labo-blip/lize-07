@@ -25,7 +25,7 @@ export const RULES = [
 
   // ===== ジャングル jungle =====
   { id: 'biome_jungle_follow_close_dense', p: 356, when: c => c.x?.biome === 'jungle' && c.mode === 'follow' && c.self.distOwner > 4 && c.owner.dimensionSame, act: 'follow_close', say: '視界が悪い場所です。はぐれないよう、近くにいます', note: 'ジャングルは視界が悪いので標準より密着' },
-  { id: 'biome_jungle_night_follow_close_hostiles', p: 358, when: c => c.x?.biome === 'jungle' && c.env.isNight && c.danger.count >= 1 && c.self.distOwner > 4, act: 'follow_close', say: '音が多い夜です。……そばを離れないでください', note: 'ジャングルの夜＋敵接近は密着' },
+  { id: 'biome_jungle_night_follow_close_hostiles', p: 358, when: c => c.x?.biome === 'jungle' && c.env.isNight && c.danger.safetyCount >= 1 && c.self.distOwner > 4, act: 'follow_close', say: '音が多い夜です。……そばを離れないでください', note: 'ジャングルの夜＋敵接近は密着' },
   { id: 'biome_jungle_rain_idle_hover', p: 344, when: c => c.x?.biome === 'jungle' && c.env.isRaining && c.owner.idleSec >= 30 && c.danger.count === 0, act: 'idle_hover', say: '雨宿りですね。私も、ここで止まります', note: 'ジャングルの雨＋主人アイドルは一緒に止まる' },
   { id: 'biome_jungle_sprinting_follow_high', p: 349, when: c => c.x?.biome === 'jungle' && c.owner.sprinting && c.self.distOwner > 9, act: 'follow_high', say: null, note: 'ジャングルで主人ダッシュ時は木の上から追う' },
   { id: 'biome_jungle_stay_say_humid', p: 341, when: c => c.x?.biome === 'jungle' && c.mode === 'stay' && c.flags.warnOk && c.owner.present, act: 'say_only', say: '待機します。湿度が高いですね。……私は錆びません', note: 'ジャングル待機の無表情コメント' },
@@ -35,7 +35,7 @@ export const RULES = [
   { id: 'biome_ocean_owner_inwater_follow_close', p: 358, when: c => c.x?.biome === 'ocean' && c.owner.inWater && c.self.distOwner > 4 && c.owner.present, act: 'follow_close', say: '泳ぐのですね。私は浮きます。……多分、ではなく確実に', note: '海で主人が泳いだら密着して見守る' },
   { id: 'biome_ocean_near_follow_high_boatpace', p: 351, when: c => !!c.x?.nearOcean && c.owner.sprinting && c.self.distOwner > 10 && c.danger.count === 0, act: 'follow_high', say: null, note: '海上移動は速いので高めから追従' },
   { id: 'biome_ocean_night_follow_close', p: 354, when: c => c.x?.biome === 'ocean' && c.env.isNight && c.mode === 'follow' && c.self.distOwner > 6, act: 'follow_close', say: '夜の海です。光がないと、本当に真っ暗ですね', note: '夜の海は密着' },
-  { id: 'biome_ocean_owner_lowhp_rise_avoid', p: 357, when: c => c.x?.biome === 'ocean' && c.owner.inWater && c.owner.hpPct < 0.4 && c.danger.count >= 1, act: 'rise_avoid', say: '水中の戦闘は不利です。上に避けてください', note: '水中で主人低HP＋敵ありなら上昇して回避を促す' },
+  { id: 'biome_ocean_owner_lowhp_rise_avoid', p: 357, when: c => c.x?.biome === 'ocean' && c.owner.inWater && c.owner.hpPct < 0.4 && c.danger.safetyCount >= 1, act: 'rise_avoid', say: '水中の戦闘は不利です。上に避けてください', note: '水中で主人低HP＋敵ありなら上昇して回避を促す' },
   { id: 'biome_ocean_rain_say', p: 341, when: c => c.x?.biome === 'ocean' && c.env.isRaining && c.flags.warnOk && c.owner.present, act: 'say_only', say: '海に雨。……区別がつきませんね', note: '海上の雨に真顔の一言' },
   { id: 'biome_ocean_stay_idle_hover', p: 343, when: c => c.x?.biome === 'ocean' && c.mode === 'stay' && c.owner.idleSec >= 30 && c.danger.count === 0, act: 'idle_hover', say: 'この場で待機します。波の音は、記録しておきます', note: '海上待機＋アイドルはホバリング待機' },
   { id: 'biome_ocean_dawn_greet', p: 342, when: c => !!c.x?.nearOcean && c.env.isDawn && c.owner.present && c.flags.warnOk, act: 'greet', say: 'おはようございます。海から日が昇ります。……良い位置です', note: '海辺の夜明け挨拶' },
@@ -44,7 +44,7 @@ export const RULES = [
   { id: 'biome_mountain_high_follow_high', p: 355, when: c => c.x?.biome === 'mountain' && c.x?.highAltitude && c.mode === 'follow' && c.self.distOwner > 6, act: 'follow_high', say: null, note: '高山帯は落下回避のため高め追従' },
   { id: 'biome_mountain_high_owner_sneak_close', p: 353, when: c => c.x?.biome === 'mountain' && c.x?.highAltitude && c.owner.sneaking && c.self.distOwner > 3, act: 'follow_close', say: '足元に注意してください。私は落ちても、拾えます', note: '高所で主人スニーク中は密着して見守る' },
   { id: 'biome_mountain_snowy_say_cold', p: 342, when: c => c.x?.biome === 'mountain' && c.x?.snowy && c.flags.warnOk && c.owner.present, act: 'say_only', say: '標高が高いですね。……寒さは、感じない仕様です', note: '雪の山頂で無表情コメント' },
-  { id: 'biome_mountain_night_rise_avoid_cliff', p: 356, when: c => c.x?.biome === 'mountain' && c.env.isNight && c.danger.count >= 1 && c.self.distOwner > 5, act: 'rise_avoid', say: '夜の崖際は危険です。少し上がります', note: '山岳の夜＋敵ありは上昇回避' },
+  { id: 'biome_mountain_night_rise_avoid_cliff', p: 356, when: c => c.x?.biome === 'mountain' && c.env.isNight && c.danger.safetyCount >= 1 && c.self.distOwner > 5, act: 'rise_avoid', say: '夜の崖際は危険です。少し上がります', note: '山岳の夜＋敵ありは上昇回避' },
   { id: 'biome_mountain_free_follow_close_wind', p: 346, when: c => c.x?.biome === 'mountain' && c.mode === 'free' && c.self.distOwner > 11 && c.owner.dimensionSame, act: 'follow_close', say: '風が強い場所です。流されないよう、ついていきます', note: '山岳freeで離れたら密着に戻る' },
   { id: 'biome_mountain_stay_idle_hover_peak', p: 343, when: c => c.x?.biome === 'mountain' && c.mode === 'stay' && c.owner.idleSec >= 40 && c.danger.count === 0, act: 'idle_hover', say: '待機中です。景色は、良いと思います。たぶん', note: '山頂待機の小ネタ' },
   { id: 'biome_mountain_dusk_greet', p: 341, when: c => c.x?.biome === 'mountain' && c.env.isDusk && c.owner.present && c.flags.warnOk, act: 'greet', say: '日が落ちます。下山か、野営か。……どちらでも付き合います', note: '山岳の夕方挨拶' },
@@ -82,7 +82,7 @@ export const RULES = [
   { id: 'biome_cave_underground_follow_close', p: 357, when: c => c.x?.biome === 'cave' && c.owner.underground && c.mode === 'follow' && c.self.distOwner > 3, act: 'follow_close', say: '天井が低いですね。密着します', note: '洞窟内は低く密着' },
   { id: 'biome_cave_lava_rise_avoid', p: 359, when: c => c.x?.biome === 'cave' && c.danger.lavaNear && c.owner.present, act: 'rise_avoid', say: '溶岩が近いです。……熱は感じませんが、あなたは別です', note: '洞窟で溶岩近接なら上昇回避' },
   { id: 'biome_cave_dark_follow_close_torchless', p: 353, when: c => c.x?.biome === 'cave' && !c.inv.hasTorch && c.owner.underground && c.self.distOwner > 4, act: 'follow_close', say: '暗いですね。私のランプが、代わりになります', note: '松明なしの洞窟ではランプ役として密着' },
-  { id: 'biome_cave_hostiles_follow_close', p: 355, when: c => c.x?.biome === 'cave' && c.danger.count >= 2 && c.self.distOwner > 4 && c.owner.present, act: 'follow_close', say: '音が反響します。敵は、多めです', note: '洞窟で敵多数なら密着' },
+  { id: 'biome_cave_hostiles_follow_close', p: 355, when: c => c.x?.biome === 'cave' && c.danger.safetyCount >= 2 && c.self.distOwner > 4 && c.owner.present, act: 'follow_close', say: '音が反響します。敵は、多めです', note: '洞窟で敵多数なら密着' },
   { id: 'biome_cave_stay_idle_say_echo', p: 341, when: c => c.x?.biome === 'cave' && c.mode === 'stay' && c.owner.idleSec >= 35 && c.flags.warnOk, act: 'say_only', say: '待機します。……声が、よく響きますね', note: '洞窟待機の小ネタ' },
   { id: 'biome_cave_work_follow_close_drops', p: 348, when: c => c.x?.biome === 'cave' && c.mode === 'work' && c.drops.count > 0 && c.self.distOwner > 6, act: 'follow_close', say: '落とし物は回収済みです。あなたのそばに戻ります', note: '洞窟workで回収後は主人へ寄る' },
 

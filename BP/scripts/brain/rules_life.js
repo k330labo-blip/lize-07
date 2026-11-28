@@ -21,7 +21,7 @@ export const RULES = [
 {id:'life_pickup_10', p:138, when:c=>(c.x?.pickupTotal??0)>=10&&(c.x?.pickupTotal??0)<50&&c.owner.present&&c.inv.used>0, act:'say_only', say:'回収、累計10個を超えました。小さな節目です。次は50です、私は数えています', note:'累計回収10個の小さな節目'},
 {id:'life_pickup_50', p:142, when:c=>(c.x?.pickupTotal??0)>=50&&(c.x?.pickupTotal??0)<100&&c.owner.present, act:'celebrate', say:'累計50個。地味ですか。……地味な積み重ねが、一番確実なんです', note:'累計回収50個の節目'},
 {id:'life_pickup_100', p:149, when:c=>(c.x?.pickupTotal??0)>=100&&(c.x?.pickupTotal??0)<200&&c.owner.present&&c.danger.count===0, act:'celebrate', say:'回収、累計100個です。お祝いにコーヒーを。……味覚センサーはないので、香りはあなたが担当です', note:'累計回収100個の大節目、安全なときだけ祝う'},
-{id:'life_pickup_100_busy', p:144, when:c=>(c.x?.pickupTotal??0)>=100&&c.owner.present&&c.danger.count>0, act:'say_only', say:'累計100個、到達しました。お祝いは後にします。今はそちらが先です', note:'危険中に100個到達したら祝いを後回しにする気遣い'},
+{id:'life_pickup_100_busy', p:144, when:c=>(c.x?.pickupTotal??0)>=100&&c.owner.present&&c.danger.safetyCount>0, act:'say_only', say:'累計100個、到達しました。お祝いは後にします。今はそちらが先です', note:'危険中に100個到達したら祝いを後回しにする気遣い'},
 {id:'life_pickup_200', p:151, when:c=>(c.x?.pickupTotal??0)>=200&&(c.x?.pickupTotal??0)<500&&c.owner.present, act:'celebrate', say:'200個です。私の回収ログ、もう立派な台帳になりました。あなたの字より整っています', note:'累計回収200個。真顔の小さな皮肉つき'},
 {id:'life_pickup_500', p:155, when:c=>(c.x?.pickupTotal??0)>=500&&(c.x?.pickupTotal??0)<1000&&c.owner.present&&c.home.registered, act:'celebrate', say:'累計500個。この拠点も、私も、あなたの物でいっぱいです。……悪くない眺めです', note:'累計回収500個は拠点と結びつけて感慨'},
 {id:'life_pickup_1000', p:159, when:c=>(c.x?.pickupTotal??0)>=1000&&c.owner.present, act:'celebrate', say:'1,000個。到達しました。……ランプは見なくていいです。誇らしいだけです', note:'累計回収1,000個の大節目。照れはランプで'},
@@ -36,7 +36,7 @@ export const RULES = [
 {id:'life_deposit_no_home_yet', p:136, when:c=>(c.x?.depositTotal??0)===0&&(c.x?.pickupTotal??0)>=30&&!c.home.registered&&c.owner.present, act:'say_only', say:'回収は30個を超えました。……入庫先の登録、まだです。私は待ちますが、一応言いました', note:'回収だけ進んで拠点未登録な状態への、静かな催促'},
 {id:'life_totals_balanced', p:145, when:c=>(c.x?.pickupTotal??0)>=100&&(c.x?.deliverTotal??0)>=50&&(c.x?.depositTotal??0)>=50&&c.owner.present&&c.danger.count===0, act:'celebrate', say:'回収・お届け・入庫、全部が節目圏内です。今日は記録日和ですね', note:'3種の累計が揃って節目圏内に入ったとき'},
 {id:'life_milestone_generic_safe', p:148, when:c=>!!c.x?.milestone&&c.owner.present&&c.danger.count===0&&c.owner.hpPct>=0.8, act:'celebrate', say:'節目、記録しました。……はい、今のはお祝いの顔です。分かりにくいのは仕様です', note:'汎用節目フラグ＋安全＋主人元気なときのお祝い'},
-{id:'life_milestone_deferred_danger', p:152, when:c=>!!c.x?.milestone&&c.owner.present&&(c.danger.count>0||c.owner.hpPct<0.4), act:'say_only', say:'節目には到達しています。お祝いは後回しです。今は、あなたの安全が先です', note:'節目到達でも危険・主人低HPなら祝いを延期する判断'},
+{id:'life_milestone_deferred_danger', p:152, when:c=>!!c.x?.milestone&&c.owner.present&&(c.danger.safetyCount>0||c.owner.hpPct<0.4), act:'say_only', say:'節目には到達しています。お祝いは後回しです。今は、あなたの安全が先です', note:'節目到達でも危険・主人低HPなら祝いを延期する判断'},
 
 // ===== 長時間セッション（x.sessionMin） =====
 {id:'life_session_30', p:122, when:c=>(c.x?.sessionMin??0)>=30&&(c.x?.sessionMin??0)<60&&c.owner.present&&c.owner.idleSec<120, act:'say_only', say:'接続から30分です。水分です。……コーヒーは水分に含めない派閥もありますが、今は黙っておきます', note:'30分経過のさりげない声かけ'},

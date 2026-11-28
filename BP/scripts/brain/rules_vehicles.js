@@ -21,7 +21,7 @@ export const RULES = [
   { id: 'ride_fly_say_start', p: 468, when: c => Boolean(c.x?.ownerFlying && c.self.distOwner <= 10 && c.flags.warnOk && c.owner.present), act: 'say_only', say: '離陸、確認しました。後ろは私が見ています', note: 'エリトラ離陸直後の一言' },
   { id: 'ride_fly_underground_say', p: 467, when: c => Boolean(c.x?.ownerFlying && c.owner.underground && c.flags.warnOk), act: 'say_only', say: '地下で飛ぶのですか。……天井のことは、私からは言いません', note: '地下エリトラへの真顔の皮肉' },
   { id: 'ride_fly_stuck_rise', p: 474, when: c => Boolean(c.x?.ownerFlying && c.self.stuck && c.self.stuckSec >= 3), act: 'follow_high', say: '引っかかりました。上に抜けてから追います', note: '飛行追随中に自分がハマったら高めに抜けて再追随' },
-  { id: 'ride_fly_danger_near', p: 473, when: c => Boolean(c.x?.ownerFlying && c.danger.count >= 2 && c.self.distOwner > 8), act: 'follow_close', say: '敵影が複数です。着地点の近くにいます', note: '飛行中＋敵多数なら着地援護に備えて密着' },
+  { id: 'ride_fly_danger_near', p: 473, when: c => Boolean(c.x?.ownerFlying && c.danger.safetyCount >= 2 && c.self.distOwner > 8), act: 'follow_close', say: '敵影が複数です。着地点の近くにいます', note: '飛行中＋敵多数なら着地援護に備えて密着' },
 
   // ===== ボート：水上を並走する =====
   { id: 'ride_boat_catchup_far', p: 478, when: c => Boolean(c.x?.ownerInBoat && c.self.distOwner > 40 && c.owner.dimensionSame), act: 'catchup', say: '船足が速いですね。合流します', note: 'ボートで40超離れたら合流' },
@@ -37,7 +37,7 @@ export const RULES = [
   { id: 'ride_horse_catchup_far', p: 478, when: c => Boolean(c.x?.ownerOnHorse && c.self.distOwner > 40 && c.owner.dimensionSame), act: 'catchup', say: '馬が速いのです。……私も本気を出します', note: '騎乗で40超離れたら合流' },
   { id: 'ride_horse_follow_far', p: 473, when: c => Boolean(c.x?.ownerOnHorse && c.self.distOwner > 18 && c.owner.dimensionSame && !c.env.isNight), act: 'follow', say: null, note: '騎乗中距離は通常追従で並走' },
   { id: 'ride_horse_close_night', p: 472, when: c => Boolean(c.x?.ownerOnHorse && c.env.isNight && c.self.distOwner > 8), act: 'follow_close', say: '夜道です。馬の少し後ろを、私が照らす気持ちでついていきます', note: '夜の騎乗は密着並走' },
-  { id: 'ride_horse_close_danger', p: 474, when: c => Boolean(c.x?.ownerOnHorse && c.danger.count >= 1 && c.self.distOwner > 6), act: 'follow_close', say: '敵影です。馬を驚かせないよう、静かに寄ります', note: '騎乗中＋敵接近は密着警戒' },
+  { id: 'ride_horse_close_danger', p: 474, when: c => Boolean(c.x?.ownerOnHorse && c.danger.safetyCount >= 1 && c.self.distOwner > 6), act: 'follow_close', say: '敵影です。馬を驚かせないよう、静かに寄ります', note: '騎乗中＋敵接近は密着警戒' },
   { id: 'ride_horse_say_start', p: 466, when: c => Boolean(c.x?.ownerOnHorse && c.self.distOwner <= 8 && c.flags.warnOk && c.owner.present), act: 'say_only', say: '騎乗、確認しました。並走します。……私には鞍がありませんので、空からです', note: '騎乗直後の一言' },
   { id: 'ride_horse_underground_say', p: 465, when: c => Boolean(c.x?.ownerOnHorse && c.owner.underground && c.flags.warnOk), act: 'say_only', say: '地下に馬ですか。……その判断、私は記録だけしておきます', note: '地下騎乗への真顔の皮肉' },
   { id: 'ride_horse_follow_rain', p: 468, when: c => Boolean(c.x?.ownerOnHorse && c.env.isRaining && c.self.distOwner > 12), act: 'follow', say: null, note: '雨の騎乗移動は通常追従' },
@@ -61,7 +61,7 @@ export const RULES = [
   { id: 'ride_fast_high_mid', p: 474, when: c => Boolean(c.x?.fastMove && c.self.distOwner > 22 && c.self.distOwner <= 44 && c.owner.dimensionSame), act: 'follow_high', say: null, note: '高速移動中距離は高め追随で先回り気味に追う' },
   { id: 'ride_fast_follow_sprinting_plus', p: 469, when: c => Boolean(c.x?.fastMove && c.owner.sprinting && c.self.distOwner > 12), act: 'follow', say: '速度、合わせます。……これ以上は、私も保証できません', note: '高速移動＋ダッシュの複合は通常追従で追う' },
   { id: 'ride_fast_close_night', p: 472, when: c => Boolean(c.x?.fastMove && c.env.isNight && c.self.distOwner > 10), act: 'follow_close', say: '夜の高速移動です。見失う前に、近くにいます', note: '夜＋高速移動は密着' },
-  { id: 'ride_fast_close_danger', p: 473, when: c => Boolean(c.x?.fastMove && c.danger.count >= 3 && c.self.distOwner > 8), act: 'follow_close', say: '敵が多い区間です。速いですが、寄ります', note: '高速移動＋敵多数は密着警戒' },
+  { id: 'ride_fast_close_danger', p: 473, when: c => Boolean(c.x?.fastMove && c.danger.safetyCount >= 3 && c.self.distOwner > 8), act: 'follow_close', say: '敵が多い区間です。速いですが、寄ります', note: '高速移動＋敵多数は密着警戒' },
   { id: 'ride_fast_say_comment', p: 463, when: c => Boolean(c.x?.fastMove && !c.x?.ownerRiding && c.self.distOwner <= 10 && c.flags.warnOk && c.owner.present), act: 'say_only', say: '歩行とは思えない速度ですね。……記録しておきます', note: '乗り物なし高速移動への真顔コメント' },
   { id: 'ride_fast_stuck_catchup', p: 476, when: c => Boolean(c.x?.fastMove && c.self.stuck && c.self.stuckSec >= 5 && c.self.distOwner > 20 && c.owner.dimensionSame), act: 'catchup', say: '引っかかっている間に開きましたね。合流します', note: '自分がハマって高速移動に置いていかれたら合流' },
   { id: 'ride_fast_dimension_diff_say', p: 462, when: c => Boolean(c.x?.fastMove && !c.owner.dimensionSame && c.owner.present && c.flags.warnOk), act: 'say_only', say: '次元の向こうで速いのですね。……こちらでは、待つしかありません', note: '別次元で高速移動中の主人への一言' },

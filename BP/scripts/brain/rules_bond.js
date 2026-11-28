@@ -65,7 +65,7 @@ export const RULES = [
 {id:'bond_low_days0', p:185, when:c=>Boolean((c.flags?.bond??0)<25&&(c.flags?.daysKnown??0)<=1&&c.owner.present), act:'say_only', say:'登録初日です。あなたの作業パターン、記録を開始します', note:'低帯×初日：あくまで記録と業務の口調'},
 {id:'bond_high_days_rain', p:186, when:c=>Boolean((c.flags?.bond??0)>=60&&(c.flags?.daysKnown??0)>=14&&(c.env.isRaining||c.env.isThundering)&&c.owner.present), act:'say_only', say:'雨の日も、一緒でしたね。……記録ではなく、覚えています', note:'高帯×長期×雨：「記録」と「覚えている」の区別が出始める'},
 // ===== 信頼（trust）単独・好感度とのギャップ =====
-{id:'bond_trust_max_guard', p:198, when:c=>Boolean((c.flags?.trust??0)>=90&&c.danger.count>0&&c.owner.present&&c.self.distOwner>=6), act:'follow_close', say:'後ろは私が受け持ちます。あなたは前を', note:'信頼最高×危険発生：役割分担を申し出る近さ'},
+{id:'bond_trust_max_guard', p:198, when:c=>Boolean((c.flags?.trust??0)>=90&&c.danger.safetyCount>0&&c.owner.present&&c.self.distOwner>=6), act:'follow_close', say:'後ろは私が受け持ちます。あなたは前を', note:'信頼最高×危険発生：役割分担を申し出る近さ'},
 {id:'bond_trust_high_carry', p:190, when:c=>Boolean((c.flags?.trust??0)>=80&&c.inv.full&&c.owner.present), act:'say_only', say:'満載です。任せてください、落としません', note:'信頼高×満載：運搬への自信'},
 {id:'bond_trust_mid_carry', p:185, when:c=>Boolean((c.flags?.trust??0)>=40&&(c.flags?.trust??0)<80&&c.inv.nearFull&&c.owner.present), act:'say_only', say:'そろそろ満載です。入庫の判断、お願いします', note:'信頼中×ほぼ満載：判断は主人に委ねる'},
 {id:'bond_gap_high_bond_low_trust', p:191, when:c=>Boolean((c.flags?.bond??0)>=60&&(c.flags?.trust??0)<40&&c.owner.present&&c.danger.count===0), act:'say_only', say:'……もっと、任せてもらえるようになります。負けず嫌いなので', note:'好感高×信頼低のギャップ：性格の負けず嫌いが出る'},

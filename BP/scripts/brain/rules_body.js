@@ -9,11 +9,11 @@
 // optional chaining で参照し、未供給でも例外で落ちないようにしてある（decide 側でも try/catch 済み）。
 export const RULES_BODY = [
 // ===== 危険のチラ見（165〜190：即座に視線を奪う） =====
-{id:'body_danger_creeper_glance', p:188, when:c=>c.danger.creeperDist<8, gaze:'danger_then_owner', hold:0.8, note:'至近のクリーパーは一瞬見て、すぐ主人を見て知らせる（警告発話と同期する想定）'},
+{id:'body_danger_creeper_glance', p:188, when:c=>c.danger.safetyCreeperDist<8, gaze:'danger_then_owner', hold:0.8, note:'至近のクリーパーは一瞬見て、すぐ主人を見て知らせる（警告発話と同期する想定）'},
 {id:'body_danger_boss_glance', p:186, when:c=>c.x?.bossNear===true, gaze:'danger_then_owner', hold:0.9, note:'ボス級は姿を確認してから主人を見る。見続けないのが「知らせる」動き'},
-{id:'body_danger_hostile_glance', p:184, when:c=>c.danger.count>0&&c.danger.nearestDist<6, gaze:'danger_then_owner', hold:0.8, note:'近い敵全般のチラ見→主人の二相視線'},
-{id:'body_danger_owner_targeted', p:180, when:c=>c.danger.ownerTargeted&&c.danger.nearestDist<14, gaze:'danger_then_owner', hold:0.8, note:'主人が狙われている時は敵と主人の両方を確認する視線になる'},
-{id:'body_danger_ranged_watch', p:170, when:c=>c.danger.rangedDist<16&&c.danger.nearestDist>=6, gaze:'danger', hold:1.5, note:'遠距離の射手はチラ見でなく見続けて警戒する'},
+{id:'body_danger_hostile_glance', p:184, when:c=>c.danger.safetyCount>0&&c.danger.safetyNearestDist<6, gaze:'danger_then_owner', hold:0.8, note:'近い敵全般のチラ見→主人の二相視線'},
+{id:'body_danger_owner_targeted', p:180, when:c=>c.danger.visualOwnerTargeted&&c.danger.safetyNearestDist<14, gaze:'danger_then_owner', hold:0.8, note:'主人が狙われている時は敵と主人の両方を確認する視線になる'},
+{id:'body_danger_ranged_watch', p:170, when:c=>c.danger.safetyRangedDist<16&&c.danger.safetyNearestDist>=6, gaze:'danger', hold:1.5, note:'遠距離の射手はチラ見でなく見続けて警戒する'},
 {id:'body_danger_lava_stepback', p:166, when:c=>c.danger.lavaNear, gaze:'downcast', pose:'step_back', hold:1.2, note:'足元が溶岩なら下を見て半歩下がる。視線と姿勢の同時表現'},
 {id:'body_thunder_startle_sky', p:172, when:c=>c.env.isThundering, gaze:'sky', hold:0.6, note:'雷鳴に一瞬だけ空を見る（驚きの反射）。hold短めで仕事の視線を奪いすぎない'},
 // ===== 会話・応答（145〜164） =====

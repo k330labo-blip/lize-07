@@ -48,13 +48,13 @@ function uFollowOwner(c) {
 }
 
 function uGuardOwner(c) {
-  const n = num(c.danger?.count, 0);
+  const n = num(c.danger?.safetyCount, 0); // 0-O2
   if (n <= 0) return scanKnown(c) ? 0.02 : 0.30; // 走査失敗時の番兵0を「敵なし」と読まない
   let u = 0.55 + 0.1 * Math.min(n, 3);
-  const nd = num(c.danger?.nearestDist, 999);
+  const nd = num(c.danger?.safetyNearestDist, 999); // 0-O2
   if (nd < 8) u += 0.2;
-  if (num(c.danger?.creeperDist, 999) < 10) u += 0.12;
-  if (c.danger?.ownerTargeted) u += 0.1;
+  if (num(c.danger?.safetyCreeperDist, 999) < 10) u += 0.12; // 0-O2
+  if (c.danger?.visualOwnerTargeted) u += 0.1; // 0-O2
   if ((c.owner?.hpPct ?? 1) < 0.5) u += 0.1; // 主人が弱っているなら盾になる
   return u;
 }
@@ -153,7 +153,7 @@ function uExploreNearby(c, mem) {
   const oreSeen = percDist(c, "nearestOreDist"), treeSeen = percDist(c, "nearestTreeDist");
   if (oreSeen !== undefined && treeSeen !== undefined && num(oreSeen, -1) < 0 && num(treeSeen, -1) < 0) u += 0.06;
   if (c.env?.isNight) u -= 0.14;
-  if (scanKnown(c) && num(c.danger?.count, 0) > 0) u -= 0.15;
+  if (scanKnown(c) && num(c.danger?.safetyCount, 0) > 0) u -= 0.15; // 0-O2
   return Math.max(0, u);
 }
 

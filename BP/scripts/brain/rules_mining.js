@@ -46,7 +46,7 @@ export const RULES = [
   { id:'mine_high_y_placing_distance', p:763, when:c=>c.owner.present && typeof c.x?.ownerY==='number' && c.x.ownerY>80 && c.x?.ownerPlacing===true && c.self.distOwner<3, act:'follow', say:'高所の設置ですね。少し離れます', note:'Y80超で設置中＋近すぎる、高所では邪魔しない距離へ' },
   { id:'mine_deep_night_combo', p:762, when:c=>c.owner.present && c.x?.deepLevel===true && c.env.isNight && c.self.distOwner>6 && c.drops.count===0, act:'follow_close', say:'深層は夜も関係ありませんが、近くに', note:'深層域＋夜（地上の味方が来ない時間）＋距離6超' },
   { id:'mine_deep_full_deliver', p:761, when:c=>c.owner.present && c.x?.deepLevel===true && c.inv.full && c.home.registered, act:'deliver_all', say:'深層で満杯です。渡して空けます', note:'深層域で満杯、貴重な深層素材を持ち帰るため受け渡し' },
-  { id:'mine_deep_enemy_near_halt', p:760, when:c=>c.owner.present && c.x?.deepLevel===true && c.danger.count>0 && c.drops.count>0 && c.self.distOwner>6, act:'go_owner', say:'深層で敵影。回収より合流を優先します', note:'深層域＋敵あり＋距離6超、ドロップより主人の安全を優先' },
+  { id:'mine_deep_enemy_near_halt', p:760, when:c=>c.owner.present && c.x?.deepLevel===true && c.danger.safetyCount>0 && c.drops.count>0 && c.self.distOwner>6, act:'go_owner', say:'深層で敵影。回収より合流を優先します', note:'深層域＋敵あり＋距離6超、ドロップより主人の安全を優先' },
 
   // ===== D. 溶岩近接の警告（採掘文脈） =====
   { id:'mine_lava_breaking_warn', p:799, when:c=>c.owner.present && c.x?.ownerBreaking===true && c.danger.lavaNear && c.flags.warnOk, act:'warn_lava', say:'止まってください。その先、溶岩です', note:'掘削中＋溶岩近接＋警告可、掘り進める前の最優先警告' },

@@ -10,8 +10,8 @@ export function toSig(c) {
   const dim = x.dimension === "nether" ? 1 : x.dimension === "end" ? 2 : 0;
   let danger = 0;
   if (x.bossNear) danger = 5;
-  else if (c.danger.creeperDist < 8) danger = 4;
-  else if (c.danger.nearestDist < 900) danger = c.danger.nearestDist <= 6 ? 3 : c.danger.nearestDist <= 12 ? 2 : 1;
+  else if (c.danger.safetyCreeperDist < 8) danger = 4; // 0-O2
+  else if (c.danger.safetyNearestDist < 900) danger = c.danger.safetyNearestDist <= 6 ? 3 : c.danger.safetyNearestDist <= 12 ? 2 : 1; // 0-O2
   let drops = 0;
   if (c.drops.ownerDroppedDist >= 0) drops = 4;
   else if (c.drops.valuableDist >= 0) drops = 2;
