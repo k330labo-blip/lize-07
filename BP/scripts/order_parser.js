@@ -433,6 +433,29 @@ function classifyVerb(clause) {
   }
   return null;
 }
+// FORBID-ATTACKNEG-KIND-01 (cyc2507): 否定された動詞の出現は句の動詞分類の根拠にしない。
+// 「攻撃」は活用で形が変わらないため「攻撃せずに」でも classifyVerb が hunt と判定し、
+// 否定節内の動詞が注文全体の kind を奪っていた（殺さず/倒さずは語幹が一致せず不発だった）。
+// findNegatedVerb が返す否定動詞の語幹出現をマスクしてから分類する一般規則（例文ハードコードなし）。
+function classifyVerbMaskingNegated(clause) {
+  let masked = String(clause ?? "");
+  for (let n = 0; n < 4; n++) {
+    let nv = null;
+    try { nv = findNegatedVerb(masked); } catch { nv = null; }
+    if (!nv || typeof nv.index !== "number" || nv.index < 0 || nv.index >= masked.length) break;
+    let len = 1;
+    for (const [cls, stems] of VERB_STEMS) {
+      if (cls !== nv.verb) continue;
+      for (const stem of stems) {
+        const forms = [stem];
+        if (stem.length > 1 && /[\u4e00-\u9fff]/.test(stem[0])) forms.push(stem[0]);
+        for (const f of forms) if (masked.startsWith(f, nv.index) && f.length > len) len = f.length;
+      }
+    }
+    masked = masked.slice(0, nv.index) + " ".repeat(len) + masked.slice(nv.index + len);
+  }
+  return classifyVerb(masked);
+}
 const WANT_RE = /欲しい|ほしい|ちょうだい|ください|下さい|お願い/;
 const ESCORT_RE = /ついてきて|付いてきて|ついて来て|一緒に来て|一緒について|こっち来て|護衛|守って/;
 const WATCH_RE = /警戒して|見張って/;
@@ -1379,7 +1402,7 @@ export function parseOrder(input) {
   let orderPlacement = null; // 0-C4: 設置位置 (絶対=here / 相対=relative)
   clauses.forEach((clause, ci) => {
     const nonOrder = isNonOrderClause(clause, hasQuestionMark);
-    const verbClass = nonOrder ? null : classifyVerb(clause);
+    const verbClass = nonOrder ? null : classifyVerbMaskingNegated(clause);
     if (verbClass) anyVerb = true;
     const side = SIDE_START_RE.test(clause);
     const hits = nonOrder ? [] : hitsPerClause[ci];
