@@ -48,6 +48,9 @@ const TRANSPARENT_EXACT = new Set([
 "minecraft:slime_block", "minecraft:honey_block",
 // 0-P S0 (cyc2483, A01裁定 P2): 接尾辞形で拾えない単語形IDの族内不整合を是正 (草・シダ・枯れ木・薄雪・ベリー茂み・ウィザーローズは視線を遮らない)
 "minecraft:grass", "minecraft:fern", "minecraft:dead_bush", "minecraft:snow_layer", "minecraft:sweet_berry_bush", "minecraft:wither_rose",
+// cell_class P3 (cyc2493): 単語形の花6種は接尾辞で拾えず opaque になっていた族内不整合を是正。素の carpet も _carpet 終端に一致しないため完全一致で追加 (moss_carpet は終端でも拾えるが明示)
+"minecraft:dandelion", "minecraft:azure_bluet", "minecraft:sunflower", "minecraft:lilac", "minecraft:rose_bush", "minecraft:peony",
+"minecraft:carpet", "minecraft:moss_carpet",
 ]);
 
 // 一部だけ遮るブロック（接尾辞）。視線判定では保守的に「遮る」側へ倒す:
@@ -72,7 +75,7 @@ const id = String(typeId);
 if (TRANSPARENT_FLUID.has(id)) return OCCLUSION.TRANSPARENT;
 if (OPAQUE_FLUID.has(id)) return OCCLUSION.OPAQUE;
 if (TRANSPARENT_EXACT.has(id)) return OCCLUSION.TRANSPARENT;
-if (id.includes("glass")) return OCCLUSION.TRANSPARENT; // 色付きガラス・板ガラス全般
+if (id === "minecraft:glass" || id.endsWith("_glass") || id.endsWith("glass_pane")) return OCCLUSION.TRANSPARENT; // cell_class P2後半 (cyc2493): includes("glass") は glass_bottle 等の非ブロックまで透過にしていたため狭窄。色付きガラス・板ガラスは _glass / glass_pane 終端で従来どおり透過
 if (id.endsWith("_leaves")) return OCCLUSION.TRANSPARENT; // 葉は透けて見える（隙間がある）
 if (id.endsWith("_sign") || id.endsWith("_button") || id.endsWith("_pressure_plate")) return OCCLUSION.TRANSPARENT;
 if (id.endsWith("_grass") || id.endsWith("_flower") || id.endsWith("_fern") || id.endsWith("_sapling") || id.endsWith("_tulip") || id.endsWith("_orchid") || id.endsWith("_daisy")) return OCCLUSION.TRANSPARENT;

@@ -44,9 +44,12 @@ export function isUnknownCell(c) { return !!c && c.unknown === true; }
 // ---------- typeId → セル記述子（ゲーム内アダプタ用ヘルパー） ----------
 // 正式版 @minecraft/server 2.0.0 では Block の isSolid プロパティは常に undefined (ベータ専用) のため使わない。
 // 固体判定は typeId のリスト照合のみで行う (api は isLiquid のみ受け付ける)。
-const PASS_SUFFIX = ["_grass", "_flower", "_tulip", "_orchid", "_daisy", "_lily", "_fern", "_bush_dead"];
+const PASS_SUFFIX = ["_grass", "_flower", "_tulip", "_orchid", "_daisy", "_lily", "_fern", "_sapling", "_button"]; // cell_class P3 (cyc2493): _bush_dead は語順逆の死にパターンのため削除 (dead_bush は PASS_EXACT が担う)。苗木・ボタンは材質によらず体を塞がない
 const PASS_EXACT = new Set([
-  "minecraft:air", "minecraft:tall_grass", "minecraft:short_grass", "minecraft:grass",
+  "minecraft:air", "minecraft:cave_air", "minecraft:void_air", // cell_class P3-1: 空気の変種を固体扱いしない
+  "minecraft:tripwire", "minecraft:string", // cell_class P3-3: 糸・トリップワイヤーは体を塞がない
+  "minecraft:dandelion", "minecraft:azure_bluet", "minecraft:sunflower", "minecraft:lilac", "minecraft:rose_bush", "minecraft:peony", // cell_class P3-4: 単語形の花は接尾辞で拾えないため完全一致で追加
+  "minecraft:tall_grass", "minecraft:short_grass", "minecraft:grass",
   "minecraft:fern", "minecraft:large_fern", "minecraft:dead_bush", "minecraft:torch",
   "minecraft:soul_torch", "minecraft:redstone_torch", "minecraft:redstone_wire",
   "minecraft:rail", "minecraft:golden_rail", "minecraft:detector_rail", "minecraft:activator_rail",
@@ -58,7 +61,7 @@ const COSTLY_PASS = [ // [部分一致, コスト]
   ["sweet_berry_bush", 4.0], ["powder_snow", 4.0], ["cobweb", 8.0],
 ];
 const COSTLY_SOLID = [ // [部分一致, コスト]
-  ["magma", 6.0], ["campfire", 6.0],
+  ["magma", 6.0], // cell_class P3-6 (cyc2493): campfire は先行する includes("fire") で hazard になるため COSTLY_SOLID 側は到達不能な死にコードだった。正は hazard
 ];
 
 export function classifyTypeId(typeId, api = null) {
