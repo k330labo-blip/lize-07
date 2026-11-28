@@ -24,6 +24,8 @@
 // （不透明 / 透過 / 部分遮蔽 / 流体）として分類し、鉱石・チェスト・溶岩など対象の
 // 種類に依らず同じ規則を適用する。
 
+import { classifyCell } from "./cell_class.js"; // cell_class P1 (cyc2494): 視線軸分類の単一の正
+
 export const OCCLUSION = Object.freeze({
 OPAQUE: "opaque", // 視界を完全に遮る（石・土・原木など大半の固体）
 TRANSPARENT: "transparent", // 視界を通す（空気・ガラス・葉・水など）
@@ -32,36 +34,9 @@ FLUID: "fluid", // 流体（水は透過、溶岩は不透過として個別に�
 UNKNOWN: "unknown", // 分類不能・取得失敗 → 安全側（遮る扱い）
 });
 
-// 視界を通すブロック（完全一致）
-const TRANSPARENT_EXACT = new Set([
-"minecraft:air", "minecraft:cave_air", "minecraft:void_air",
-"minecraft:glass", "minecraft:glass_pane", "minecraft:tinted_glass",
-"minecraft:ice", "minecraft:barrier", "minecraft:light_block",
-"minecraft:structure_void",
-"minecraft:torch", "minecraft:soul_torch", "minecraft:redstone_torch",
-"minecraft:redstone_wire", "minecraft:rail", "minecraft:golden_rail",
-"minecraft:detector_rail", "minecraft:activator_rail",
-"minecraft:lever", "minecraft:vine", "minecraft:glow_lichen",
-"minecraft:lily_pad", "minecraft:sugar_cane", "minecraft:cobweb",
-"minecraft:fire", "minecraft:soul_fire", "minecraft:ladder",
-"minecraft:tripwire", "minecraft:string", "minecraft:scaffolding",
-"minecraft:slime_block", "minecraft:honey_block",
-// 0-P S0 (cyc2483, A01裁定 P2): 接尾辞形で拾えない単語形IDの族内不整合を是正 (草・シダ・枯れ木・薄雪・ベリー茂み・ウィザーローズは視線を遮らない)
-"minecraft:grass", "minecraft:fern", "minecraft:dead_bush", "minecraft:snow_layer", "minecraft:sweet_berry_bush", "minecraft:wither_rose",
-// cell_class P3 (cyc2493): 単語形の花6種は接尾辞で拾えず opaque になっていた族内不整合を是正。素の carpet も _carpet 終端に一致しないため完全一致で追加 (moss_carpet は終端でも拾えるが明示)
-"minecraft:dandelion", "minecraft:azure_bluet", "minecraft:sunflower", "minecraft:lilac", "minecraft:rose_bush", "minecraft:peony",
-"minecraft:carpet", "minecraft:moss_carpet",
-]);
-
-// 一部だけ遮るブロック（接尾辞）。視線判定では保守的に「遮る」側へ倒す:
-// 部分遮蔽越しに「見えた」と主張すると、床のハーフブロック越し・階段の隙間越しに
-// 隠れた対象を観測済みにしてしまう（床越し X-ray の温床）ため。
-const PARTIAL_SUFFIX = ["_slab", "_stairs", "_fence", "_wall", "_trapdoor"]; // 0-P S0 (cyc2483, A01裁定グループD): _carpet は床面の薄片で視線を遮らないため partial から外し transparent へ
-
-// 不透過の流体。溶岩の中は視認できないため、溶岩越しの対象は観測できない。
-const OPAQUE_FLUID = new Set(["minecraft:lava", "minecraft:flowing_lava"]);
-// 透過の流体。水越しには（視認範囲内で）対象が見える。
-const TRANSPARENT_FLUID = new Set(["minecraft:water", "minecraft:flowing_water"]);
+// 視線軸の分類定義 (完全一致リスト/接尾辞/流体セット) は cell_class.js の共有表へ移設済み (cell_class P1, cyc2494)。
+// 部分遮蔽 (partial) は保守的に「遮る」側へ倒す: 部分遮蔽越しに「見えた」と主張すると、
+// 床のハーフブロック越し・階段の隙間越しに隠れた対象を観測済みにしてしまう（床越し X-ray の温床）ため。
 
 /**
 * typeId の遮蔽クラスを返す。
@@ -70,18 +45,10 @@ const TRANSPARENT_FLUID = new Set(["minecraft:water", "minecraft:flowing_water"]
 * 「観測できない」側へ倒すこと。存在しないことの証拠には決してならない。
 */
 export function occlusionClass(typeId) {
+// cell_class P1 (cyc2494): 視線軸の正は cell_class.js の共有表。本関数は薄いアダプタ:
+// null/undefined → UNKNOWN の契約だけはここに残す (未読込を「遮る側」へ倒す入口)。
 if (typeId === null || typeId === undefined) return OCCLUSION.UNKNOWN;
-const id = String(typeId);
-if (TRANSPARENT_FLUID.has(id)) return OCCLUSION.TRANSPARENT;
-if (OPAQUE_FLUID.has(id)) return OCCLUSION.OPAQUE;
-if (TRANSPARENT_EXACT.has(id)) return OCCLUSION.TRANSPARENT;
-if (id === "minecraft:glass" || id.endsWith("_glass") || id.endsWith("glass_pane")) return OCCLUSION.TRANSPARENT; // cell_class P2後半 (cyc2493): includes("glass") は glass_bottle 等の非ブロックまで透過にしていたため狭窄。色付きガラス・板ガラスは _glass / glass_pane 終端で従来どおり透過
-if (id.endsWith("_leaves")) return OCCLUSION.TRANSPARENT; // 葉は透けて見える（隙間がある）
-if (id.endsWith("_sign") || id.endsWith("_button") || id.endsWith("_pressure_plate")) return OCCLUSION.TRANSPARENT;
-if (id.endsWith("_grass") || id.endsWith("_flower") || id.endsWith("_fern") || id.endsWith("_sapling") || id.endsWith("_tulip") || id.endsWith("_orchid") || id.endsWith("_daisy")) return OCCLUSION.TRANSPARENT;
-if (id.endsWith("_carpet")) return OCCLUSION.TRANSPARENT; // 0-P S0: カーペット類は視線透過 (A01裁定)
-for (const s of PARTIAL_SUFFIX) if (id.endsWith(s)) return OCCLUSION.PARTIAL;
-return OCCLUSION.OPAQUE; // 大半の固体はこちら（鉱石・チェスト等の対象物も含む）
+return classifyCell(typeId).occlusion;
 }
 
 /**

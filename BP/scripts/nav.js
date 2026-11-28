@@ -16,6 +16,8 @@
 //   if (res.mode === "path" && res.move) bot.teleport(res.move, { rotation: { x: 0, y: res.move.yaw } });
 //   else if (res.mode === "direct") { /* 現行 moveDirect() を使う */ }
 
+import { classifyCell } from "./cell_class.js"; // cell_class P1 (cyc2494): 体軸分類の単一の正
+
 export const NAV = {
   RADIUS: 16,               // グリッド半径（ブロック）
   REBUILD_DIST: 4,          // 中心からこれだけ離れたら再構築
@@ -44,49 +46,12 @@ export function isUnknownCell(c) { return !!c && c.unknown === true; }
 // ---------- typeId → セル記述子（ゲーム内アダプタ用ヘルパー） ----------
 // 正式版 @minecraft/server 2.0.0 では Block の isSolid プロパティは常に undefined (ベータ専用) のため使わない。
 // 固体判定は typeId のリスト照合のみで行う (api は isLiquid のみ受け付ける)。
-const PASS_SUFFIX = ["_grass", "_flower", "_tulip", "_orchid", "_daisy", "_lily", "_fern", "_sapling", "_button"]; // cell_class P3 (cyc2493): _bush_dead は語順逆の死にパターンのため削除 (dead_bush は PASS_EXACT が担う)。苗木・ボタンは材質によらず体を塞がない
-const PASS_EXACT = new Set([
-  "minecraft:air", "minecraft:cave_air", "minecraft:void_air", // cell_class P3-1: 空気の変種を固体扱いしない
-  "minecraft:tripwire", "minecraft:string", // cell_class P3-3: 糸・トリップワイヤーは体を塞がない
-  "minecraft:dandelion", "minecraft:azure_bluet", "minecraft:sunflower", "minecraft:lilac", "minecraft:rose_bush", "minecraft:peony", // cell_class P3-4: 単語形の花は接尾辞で拾えないため完全一致で追加
-  "minecraft:tall_grass", "minecraft:short_grass", "minecraft:grass",
-  "minecraft:fern", "minecraft:large_fern", "minecraft:dead_bush", "minecraft:torch",
-  "minecraft:soul_torch", "minecraft:redstone_torch", "minecraft:redstone_wire",
-  "minecraft:rail", "minecraft:golden_rail", "minecraft:detector_rail", "minecraft:activator_rail",
-  "minecraft:carpet", "minecraft:moss_carpet", "minecraft:lever", "minecraft:stone_button",
-  "minecraft:vine", "minecraft:glow_lichen", "minecraft:snow_layer", "minecraft:lily_pad",
-  "minecraft:sugar_cane", // cycle1110 CANE-01段1: サトウキビは水辺に立つ細い茎で体は通る (不明=固体に落ちると立ち位置探索が壊れる)
-]);
-const COSTLY_PASS = [ // [部分一致, コスト]
-  ["sweet_berry_bush", 4.0], ["powder_snow", 4.0], ["cobweb", 8.0],
-];
-const COSTLY_SOLID = [ // [部分一致, コスト]
-  ["magma", 6.0], // cell_class P3-6 (cyc2493): campfire は先行する includes("fire") で hazard になるため COSTLY_SOLID 側は到達不能な死にコードだった。正は hazard
-];
+// 体軸の分類定義 (PASS_SUFFIX/PASS_EXACT/COSTLY_PASS/COSTLY_SOLID) は cell_class.js の共有表へ移設済み (cell_class P1, cyc2494)。
 
 export function classifyTypeId(typeId, api = null) {
-  const id = String(typeId || "minecraft:air");
-  const c = cellAir();
-  if (id.includes("lava")) { c.lava = true; c.pass = false; return c; }
-  if (id.includes("water")) { c.water = true; return c; } // pass=true のまま（泳ぎ/水ノード）
-  if (id.endsWith("_door") || id.endsWith("_fence_gate") || id === "minecraft:iron_door") {
-    c.door = true; c.pass = false;
-    c.doorOpenable = !id.includes("iron");
-    return c;
-  }
-  if (id.endsWith("_trapdoor")) { c.solid = true; c.pass = false; return c; } // 閉じている前提で支持（開は統合側で要確認）
-  if (id.includes("fire") || id.endsWith("cactus") || id.includes("wither_rose")) { c.hazard = true; c.pass = false; return c; }
-  if (id.endsWith("_leaves")) { c.solid = true; c.pass = false; c.leaves = true; return c; } // v0.4.59: 葉は体は通さないが「地面」ではない (fly.groundNear が区別する)
-  for (const [sub, cost] of COSTLY_PASS) if (id.includes(sub)) { c.cost = cost; return c; }
-  for (const [sub, cost] of COSTLY_SOLID) if (id.includes(sub)) { c.solid = true; c.pass = false; c.cost = cost; return c; }
-  if (PASS_EXACT.has(id) || PASS_SUFFIX.some((s) => id.endsWith(s)) || id.endsWith("_carpet") || id.endsWith("_sign") || id.endsWith("_pressure_plate")) {
-    return c; // 通過可能
-  }
-  if (id.endsWith("_slab") && !id.includes("double")) c.top = 0.5; // 下付きハーフブロック近似
-  if ((id.endsWith("_fence") || id.endsWith("_wall")) && !id.endsWith("_fence_gate")) c.top = 1.5; // BASICS-07 (cycle1400): フェンス/塀の実衝突は1.5。top=1のままだと登れる扱いになり段差判定が狂う
-  if (api && api.isLiquid) { c.water = true; return c; }
-  c.solid = true; c.pass = false; // 不明なブロックは固体として倒す（安全側）
-  return c;
+  // cell_class P1 (cyc2494): 体軸の正は cell_class.js の共有表。本関数は薄いアダプタで、
+  // 返り値の形・フィールド・leaves/top の近似は classifyCell の body が正。
+  return { ...classifyCell(typeId, api).body };
 }
 
 // 固体判定の共通ヘルパー (キュー1 v0.4.85): isSolid プロパティ直接読みの置換先はこれだけにする。
