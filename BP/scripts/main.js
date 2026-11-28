@@ -615,8 +615,8 @@ function buildContext(bot, owner) {
         continue;
       }
       if (e.typeId === "minecraft:player") { if (d > dangerR || bodies.isBody(e)) continue; if (e.id !== owner.id) { c.x.othersNear = (c.x.othersNear || 0) + 1; c.x.otherDist = Math.min(c.x.otherDist ?? 999, d); } continue; }
-      if (e.typeId === "minecraft:lightning_bolt" || e.typeId === "minecraft:tnt") { flinchCand.push({ id: e.id, typeId: e.typeId, horizDist: Math.hypot(e.location.x - bot.location.x, e.location.z - bot.location.z) }); }
-      if (e.typeId === "minecraft:xp_orb") { if (!xpOrbCand || d < xpOrbCand.d) xpOrbCand = { id: e.id, d, loc: { x: e.location.x, y: e.location.y, z: e.location.z } }; }
+      if (vis && (e.typeId === "minecraft:lightning_bolt" || e.typeId === "minecraft:tnt")) { flinchCand.push({ id: e.id, typeId: e.typeId, horizDist: Math.hypot(e.location.x - bot.location.x, e.location.z - bot.location.z) }); } // 0-P S7 (cyc2488 A08): 表示層も壁越しに拾わない。候補化は LOS 通過分だけ (演出の発火条件は不変)
+      if (vis && e.typeId === "minecraft:xp_orb") { if (!xpOrbCand || d < xpOrbCand.d) xpOrbCand = { id: e.id, d, loc: { x: e.location.x, y: e.location.y, z: e.location.z } }; } // 0-P S7: 同上 (経験値オーブの方向も見えている分だけ)
       if (e.typeId.includes("villager")) { if (d > dangerR) continue; if (vis) { c.x.nearVillage = true; c.x.villagerDist = Math.min(c.x.villagerDist ?? 999, d); if (!e.typeId.includes("zombie") && (!villagerCand || d < villagerCand.d)) villagerCand = { id: e.id, d, loc: { x: e.location.x, y: e.location.y, z: e.location.z } }; } continue; } // 0-P S5: 村の存在・村人候補も LOS 通過分だけ登録する
       if (["minecraft:sheep", "minecraft:cow", "minecraft:pig", "minecraft:chicken"].includes(e.typeId)) { if (vis) { scan.animals.push(e); scan.opportunities.push({ kind: "entity", typeId: e.typeId, pos: { x: e.location.x, y: e.location.y, z: e.location.z }, id: e.id }); } continue; } // 0-P S5: 家畜の目標化は LOS 通過分だけ
       const isHostile = GVC_HOSTILE_SET.has(e.typeId) || (() => { try { return e.getComponent("minecraft:type_family")?.hasTypeFamily("monster"); } catch { return false; } })();
@@ -884,7 +884,10 @@ function buildContext(bot, owner) {
   c.x.timeOfDay = tod;
   try { c.x.worldDay = world.getDay(); } catch {}
   c.x.homePos = home;
-  c.x.percTargets = r.percTargets;
+  // 0-P S7 T12-07 (a) 強形 (cyc2488 統括裁定): ctx へは素通し参照を渡さず、ゲート済み知覚ライトが
+  // 入れた既知4キーだけを複写して渡す。キーと意味は不変 (削除・改名はしない)。将来 r.percTargets へ
+  // 未ゲートの書き手が増えても、ここで列挙したキー以外は ctx/planner/side_tasks へ伝播しない。
+  c.x.percTargets = {}; for (const k of ["tree", "ore", "stone", "crop"]) { const t = r.percTargets?.[k]; if (t) c.x.percTargets[k] = { x: t.x, y: t.y, z: t.z, typeId: t.typeId }; }
   c.x.opportunities = [...(scan ? scan.opportunities : []), ...(r.percOpps || [])];
   const mis = r.mission;
   c.x.order = mis && mis.status === "active" ? { active: true, kind: mis.order.kind, targetItem: mis.order.target, hostiles: mis.order.constraints.hostiles } : null;
