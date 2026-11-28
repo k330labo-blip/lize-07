@@ -27,7 +27,8 @@ import createWorldMemory from "./world_memory.js";
 import { genSpeech } from "./gen_speech.js";
 import { parseOrder, resumeClarifyOrder, classifyClarifyUnmatched } from "./order_parser.js";
 import { orderAmountOrDefault } from "./qty_default_math.js"; // 0-N1 QTY-DEFAULT-01 (cyc2447): 数量省略時の対象別デフォルト (純粋核)
-import { isSmeltStationId, selectKnownSmeltStation, rankKnownSmeltStations, hasSmeltStationBeyondCap, classifyKnownSmeltOutcome } from "./station_math.js"; // SMELT-STATION-LIT-01 (cyc2477): 精錬設備集合の単一の正 (純粋核)
+import { isSmeltStationId, selectKnownSmeltStation, rankKnownSmeltStations, hasSmeltStationBeyondCap, classifyKnownSmeltOutcome } from "./station_math.js";
+import { acceptPersistObject, stampPersistVersion } from "./persist_registry.js"; // PERSIST-REGISTRY-01 第2段2a (cyc2497): 帯域内 v:1 の判定・付与 (純粋核) // SMELT-STATION-LIT-01 (cyc2477): 精錬設備集合の単一の正 (純粋核)
 import { shearDisclosureFor, shearForbidBlockFor, SHEAR_DISCLOSURE_NOTE, SHEAR_FORBID_BLOCK_NOTE } from "./shear_honest_math.js"; // 0-N5 SHEAR-HONEST-01 (cyc2452): 羊毛刈りの方式明示 (純粋核)。否定併記形の開始抑止 (cyc2458)
 import { resolveItem } from "./decomposer.js"; // 倉庫 W3-TEACH (cyc2355): 素材名→typeId の単一の正 (注文経路と共用)
 import { resolveRequestedTool, toolItemIdOf } from "./tool_request_math.js"; // 0-C4 R-C4-1 (cyc2375): 道具指定の実行側 reader 純粋核
@@ -386,7 +387,7 @@ function rt(bot) {
   }
   if (r.endgoal === undefined) { // ENDGOAL W-A (cyc2363): 段階1 shadow 状態を DP cb_endgoal から復元 (undefined センチネル方式。壊れた保存は未開始 null)
     try { const ej = dp(bot, "cb_endgoal", ""); const eo = ej ? JSON.parse(ej) : null;
-      r.endgoal = (eo && eo.st && typeof eo.st.phase === "string") ? { st: { ...createEndgoalState(), ...eo.st }, milestones: Array.isArray(eo.milestones) ? eo.milestones.filter((x) => typeof x === "string") : [], phaseSince: eo.phaseSince || 0, endReason: eo.endReason || null, lastAction: null } : null;
+      r.endgoal = (eo && acceptPersistObject(eo).status !== "future" && acceptPersistObject(eo).status !== "invalid" && eo.st && typeof eo.st.phase === "string") ? { st: { ...createEndgoalState(), ...eo.st }, milestones: Array.isArray(eo.milestones) ? eo.milestones.filter((x) => typeof x === "string") : [], phaseSince: eo.phaseSince || 0, endReason: eo.endReason || null, lastAction: null } : null;
     } catch { r.endgoal = null; }
     r.endgoalSig = undefined;
   }
@@ -405,8 +406,8 @@ function rt(bot) {
   }
   return r;
 }
-function stats(bot) { try { return JSON.parse(dp(bot, "cb_stats", "{}")); } catch { return {}; } }
-function saveStats(bot, s) { dps(bot, "cb_stats", JSON.stringify(s)); }
+function stats(bot) { try { const p = JSON.parse(dp(bot, "cb_stats", "{}")); const a = acceptPersistObject(p); if (a.status === "future" || a.status === "invalid") return {}; const { v: _v, ...rest } = p; return rest; } catch { return {}; } } // PERSIST 2a: 旧形受理・未来版/非オブジェクトは {} へ
+function saveStats(bot, s) { dps(bot, "cb_stats", JSON.stringify(stampPersistVersion(s))); } // PERSIST 2a: v:1 付与 (遅延移行)
 function say(owner, bot, text, force = false) {
   const r = rt(bot); const now = Date.now();
   if (!force && now - r.sayCd < 7000) return false;
@@ -495,7 +496,7 @@ function buildContext(bot, owner) {
   const dim = bot.dimension;
   const mode = dp(bot, "cb_mode", "follow");
   const homeRaw = dp(bot, "cb_home", "");
-  let home = null; try { home = homeRaw ? JSON.parse(homeRaw) : null; } catch {}
+  let home = null; try { home = homeRaw ? homeOf(bot) : null; } catch {} // PERSIST 2a: 版判定・座標検証を homeOf へ一本化
   const bHp = hpOf(bot), oHp = owner ? hpOf(owner) : { cur: 0, max: 20 };
   // 基礎 R-3 (v0.4.81, cycle0417-a03): 拠点が別次元なら距離は測れない=番兵999。
   // distHome/home.dist の両方がこの homeDist を使う (片方だけ直すと読み手が分裂する)。
@@ -978,15 +979,15 @@ function deliverFilterFor(rule) {
   if (/valuable/.test(id)) return isValuable;
   return null;
 }
-function homeOf(bot) { try { return JSON.parse(dp(bot, "cb_home", "")); } catch { return null; } }
+function homeOf(bot) { try { const h = JSON.parse(dp(bot, "cb_home", "")); if (!h || acceptPersistObject(h).status === "future" || acceptPersistObject(h).status === "invalid") return null; if (!Number.isFinite(h.x) || !Number.isFinite(h.y) || !Number.isFinite(h.z)) return null; return { x: h.x, y: h.y, z: h.z, dim: h.dim || null }; } catch { return null; } } // PERSIST 2a: 旧形受理・未来版は未登録へ倒す (上書きは登録操作のみ)。座標有限性検証を anchorOf と統一
 /* FW-03/RR-08 (cycle1058): 帰還点の単一解決。次元一致時のみ入庫点 (+0.5,+1,+0.5) を返し、不一致・dim欠落・不正形は null。
    呼び手は既存フォールバック (主人背後等) へ倒すこと。コンテナセル中心 {...home} を目標化しない (体が入れないセル＋別次元座標の追跡を防ぐ) */
 function homeEntryPoint(bot, h) { try { if (!h || h.dim !== bot.dimension.id) return null; const x = Number(h.x), y = Number(h.y), z = Number(h.z); if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return null; return { x: x + 0.5, y: y + 1, z: z + 0.5 }; } catch { return null; } }
 // BH-04 (cycle1215): stay アンカーの単一の出入り口。位置も cb_mode と同じ entity DP (cb_anchor) へ保存し、
 // runtime 再生成 (再起動・再読込・bots.delete) 後も待機位置が移転しないようにする。消去も必ずここを通す
 // (DP 化と消去同期を分離すると、消したはずのアンカーが再起動で復活する)。
-function anchorOf(bot) { try { const a = JSON.parse(dp(bot, "cb_anchor", "")); if (!a || !Number.isFinite(a.x) || !Number.isFinite(a.y) || !Number.isFinite(a.z)) return null; return { x: a.x, y: a.y, z: a.z, dim: a.dim || null }; } catch { return null; } }
-function setAnchor(bot, r, loc, dimId) { try { if (r) r.anchor = loc ? { x: loc.x, y: loc.y, z: loc.z } : null; dps(bot, "cb_anchor", loc ? JSON.stringify({ x: loc.x, y: loc.y, z: loc.z, dim: dimId || null }) : ""); } catch {} }
+function anchorOf(bot) { try { const a = JSON.parse(dp(bot, "cb_anchor", "")); if (!a || acceptPersistObject(a).status === "future" || acceptPersistObject(a).status === "invalid" || !Number.isFinite(a.x) || !Number.isFinite(a.y) || !Number.isFinite(a.z)) return null; return { x: a.x, y: a.y, z: a.z, dim: a.dim || null }; } catch { return null; } } // PERSIST 2a: 旧形受理・未来版は未登録へ
+function setAnchor(bot, r, loc, dimId) { try { if (r) r.anchor = loc ? { x: loc.x, y: loc.y, z: loc.z } : null; dps(bot, "cb_anchor", loc ? JSON.stringify(stampPersistVersion({ x: loc.x, y: loc.y, z: loc.z, dim: dimId || null })) : ""); } catch {} } // PERSIST 2a: cb_anchor へ v:1 付与
 function execTarget(bot, owner, rule, ctx, scan) {
   const r = rt(bot); const act = rule ? rule.act : "follow";
   const o = owner.location; const vd = (() => { try { return owner.getViewDirection(); } catch { return { x: 0, z: 1 }; } })();
@@ -1993,7 +1994,7 @@ function persistEndgoal(bot, r, force = false) {
     const sig = [eg.st.phase, eg.st.failed || "", (eg.milestones || []).join(","), eg.endReason || "", eg.phaseSince || 0].join("|");
     if (!force && sig === r.endgoalSig) return;
     r.endgoalSig = sig;
-    dps(bot, "cb_endgoal", JSON.stringify({ st: eg.st, milestones: eg.milestones || [], phaseSince: eg.phaseSince || 0, endReason: eg.endReason || null }));
+    dps(bot, "cb_endgoal", JSON.stringify(stampPersistVersion({ st: eg.st, milestones: eg.milestones || [], phaseSince: eg.phaseSince || 0, endReason: eg.endReason || null }))); // PERSIST 2a: v:1 付与。未来版は復元段で null になり本関数は eg なしで戻るため上書きしない (quarantine)
   } catch {}
 }
 // ENDGOAL W-A F5: 節目ログの単一出口。発出済み集合 (永続化) で二重発出を防ぐ。
@@ -2862,7 +2863,7 @@ function startMission(bot, owner, r, mo, announce = true, opts = {}) {
   try { if (announce && owner) { if (!r.orderlookState) r.orderlookState = createOrderLookState(); const oo = noteOrderAccepted(r.orderlookState, { nowMs: Date.now(), dist: dist(bot.location, owner.location), suppressed: false, danger: false, falling: r.selfFalling === true }); r.orderlookState = oo.state; if (oo.fired) r.lastOrderLook = { at: Date.now() }; } } catch {}
   r.withdrawBlocked = new Set(); r.withdrawCooldownUntil = 0; r.withdrawTargetKey = null; // Phase2 WITHDRAW Step B: 試行済み情報は mission 単位で初期化
   persistMission(bot, r, true);
-  dps(bot, "cb_order", JSON.stringify({ ...mo, startedAt: Date.now() }));
+  dps(bot, "cb_order", JSON.stringify(stampPersistVersion({ ...mo, startedAt: Date.now() }))); // PERSIST 2a: v:1 付与
   if (announce) {
     const plan = planFor(mo.target, { count: mo.amount });
     const h = mo.constraints?.hostiles;
@@ -2965,7 +2966,7 @@ function startLongTask(bot, owner, r, mo, plan, announce = true) {
   r.mission = null; clearPlanRecords(r); r.ltLegActive = false; r.mineLeg = null; r.spiral = null;
   try { if (mo.tool) { applyRequestedTool(bot, owner, r, mo.tool); r.toolAppliedLegIdx = 0; } } catch {} // R-C4-1: 長期タスクでも指定道具を装備へ接続する (調達は plan の工程に任せ、ここでは装備のみ) / RG-6 (cyc2377): 開始時適用済みの印を立て、初回 tick での二重適用を防ぐ
   persistMission(bot, r, true); saveLongTask(bot, r);
-  dps(bot, "cb_order", JSON.stringify({ ...mo, longtask: true, startedAt: Date.now() }));
+  dps(bot, "cb_order", JSON.stringify(stampPersistVersion({ ...mo, longtask: true, startedAt: Date.now() }))); // PERSIST 2a: v:1 付与
   if (announce) { const tn = r.toolUseNote || ""; r.toolUseNote = null; say(owner, bot, `承知しました。${ltName}を${plan.target.count}個ですね。手段は私が組み立てます。全${plan.legs.length}工程、まず「${legLabel(plan.legs[0], lname)}」から始めます。遠くへ行くかもしれませんが、呼び戻せば戻ります${tn ? `。${tn}` : ""}${mo.shearHonest ? `。${SHEAR_DISCLOSURE_NOTE}` : ""}`, true); } // SHEAR-HONEST-01 (0-N5, cyc2452): 長期タスク経路でも方式を明示する
 }
 function completeLongTask(bot, owner, r, ok = true, note = "", msg = null) {
@@ -5188,7 +5189,7 @@ function openMenu(p, bot) {
           try { const b = p.dimension.getBlock({ x: Math.floor(p.location.x) + x, y: Math.floor(p.location.y) + y, z: Math.floor(p.location.z) + z }); if (b && isContainerBlock(b.typeId)) { loc = b.location; break outer; } } catch {}
         }
       }
-      if (loc) { dps(bot, "cb_home", JSON.stringify({ x: loc.x, y: loc.y, z: loc.z, dim: p.dimension.id })); say(p, bot, "帰る場所、登録されました。……ありがとうございます", true); }
+            if (loc) { dps(bot, "cb_home", JSON.stringify(stampPersistVersion({ x: loc.x, y: loc.y, z: loc.z, dim: p.dimension.id }))); say(p, bot, "帰る場所、登録されました。……ありがとうございます", true); } // PERSIST 2a: cb_home へ v:1 付与
       else say(p, bot, "近くにコンテナが見つかりません。チェストを見ながら、もう一度どうぞ", true);
     }
     if (res.selection === 5) { // cycle1832 F1: フォーム応答は非同期のため、実行時点で距離・次元を再検査する (U1 と同型の fail-closed)
