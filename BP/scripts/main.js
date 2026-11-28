@@ -36,7 +36,7 @@ import { isCropMature, CROP_MATURITY_MAX, isCropBlock, cropBreakGate } from "./c
 import { resolveWorkAccess, ACCESS } from "./work_access.js"; // 基礎 遮蔽除去 (v0.4.76): 作業アクセス解決の純粋核
 import { evaluateDig } from "./dig_gate.js"; // 要望バッチA (v0.4.88): 掘削の統一ゲート
 import { evaluatePlace, placeHoldRecord } from "./place_gate.js"; // PLACE-GATE段2 (cycle0522): 設置側ゲート (build配線のみ、station/torchは段3)
-import { canObserve, gateScanResults } from "./observability.js"; // 0-P (cyc2483 S0/S1): 観測可能性ゲート (純粋核)。生走査を意味情報へ出す入口をここへ一本化する (X-ray防止)
+import { canObserve, gateScanResults, canObserveEntity } from "./observability.js"; // 0-P (cyc2483 S0/S1): 観測可能性ゲート (純粋核)。生走査を意味情報へ出す入口をここへ一本化する (X-ray防止)
 import { gazeRotation } from "./gaze_math.js"; // POLISH-ANIM-LOOK-01 (cycle0821): 視線ピッチ連動の純粋計算
 import { applyInspectPitch, isInspectActive, shouldInspect } from "./inspect_math.js"; // POLISH-ANIM-INSPECT-01 (cycle1003): 依頼品入手時の検分 (表示層のみ)
 import { applyNodPitch, isNodActive, shouldNod } from "./nod_math.js";
@@ -584,7 +584,7 @@ function buildContext(bot, owner) {
   // 敵の危険判定 (danger) は従来の距離のまま (遠くの敵に反応して逃げる・止まるのを防ぐ)。
   const busy = !!((r.mission && r.mission.status === "active") || r.longtask);
   const ENTITY_SCAN_R = 32, itemR = busy ? 32 : radius, dangerR = Math.max(radius, 16);
-  const scan = { hostiles: [], items: [], animals: [], opportunities: [], nearestItem: null, valuableItem: null, foodItem: null, ownerItem: null, nearestHostile: null };
+  const scan = { hostiles: [], items: [], animals: [], opportunities: [], nearestItem: null, valuableItem: null, foodItem: null, ownerItem: null, nearestHostile: null, nearestVisibleHostile: null, losIds: new Set() };
   const flinchCand = []; // POLISH-ANIM-FLINCH-01 (cycle1051): 予兆エンティティ候補 (落雷/点火TNT)
   let xpOrbCand = null; // POLISH-ANIM-XPGLANCE-01 (cycle0628): 既存エンティティ走査で最寄り経験値オーブを拾うだけ (新規走査なし)
   let villagerCand = null; // POLISH-ANIM-VILLAGERGREET-01 (cycle0855): 既存走査で最寄り村人 (ゾンビ村人は除く) を保持するだけ (新規走査なし)
@@ -595,12 +595,14 @@ function buildContext(bot, owner) {
     for (const e of dim.getEntities({ location: bot.location, maxDistance: ENTITY_SCAN_R })) {
       if (e.id === bot.id) continue;
       const d = dist(bot.location, e.location);
+      const vis = entityVisible(bot, e); if (vis) { try { scan.losIds.add(e.id); } catch {} } // 0-P S5: Tier2 (目標化) 可否は走査1回につき実体1回だけ判定する
       if (e.typeId === "minecraft:item") {
         if (d > itemR) continue;
         let stack = null; try { stack = e.getComponent("minecraft:item")?.itemStack; } catch {}
         if (!stack) continue;
         curItemIds.add(e.id);
         if (r.takeBan && isTakeBanned(r.takeBan, e.id, stack.typeId, Date.now())) continue; // TR2136-01 (cycle2200): 見切り中の対象は走査・ポインタ・距離の全てから外す (選択側の単一の正)
+        if (vis) { // 0-P S5: ドロップの Tier2 登録 (回収目標化) は LOS 通過分だけ。curItemIds (出現辺・表示層) は Tier1 として外に残す
         scan.items.push(e); c.drops.count++;
         scan.opportunities.push({ kind: "item", typeId: stack.typeId, pos: { x: e.location.x, y: e.location.y, z: e.location.z }, amount: stack.amount, id: e.id });
         if (c.drops.nearestDist < 0 || d < c.drops.nearestDist) { c.drops.nearestDist = d; scan.nearestItem = e; }
@@ -609,25 +611,29 @@ function buildContext(bot, owner) {
         if (deathLoc && deathLoc.dim === dim.id && Date.now() - deathLoc.t < 300000 && dist(e.location, deathLoc) <= 12) {
           if (c.drops.ownerDroppedDist < 0 || d < c.drops.ownerDroppedDist) { c.drops.ownerDroppedDist = d; scan.ownerItem = e; }
         }
+        }
         continue;
       }
       if (e.typeId === "minecraft:player") { if (d > dangerR || bodies.isBody(e)) continue; if (e.id !== owner.id) { c.x.othersNear = (c.x.othersNear || 0) + 1; c.x.otherDist = Math.min(c.x.otherDist ?? 999, d); } continue; }
       if (e.typeId === "minecraft:lightning_bolt" || e.typeId === "minecraft:tnt") { flinchCand.push({ id: e.id, typeId: e.typeId, horizDist: Math.hypot(e.location.x - bot.location.x, e.location.z - bot.location.z) }); }
       if (e.typeId === "minecraft:xp_orb") { if (!xpOrbCand || d < xpOrbCand.d) xpOrbCand = { id: e.id, d, loc: { x: e.location.x, y: e.location.y, z: e.location.z } }; }
-      if (e.typeId.includes("villager")) { if (d > dangerR) continue; c.x.nearVillage = true; c.x.villagerDist = Math.min(c.x.villagerDist ?? 999, d); if (!e.typeId.includes("zombie") && (!villagerCand || d < villagerCand.d)) villagerCand = { id: e.id, d, loc: { x: e.location.x, y: e.location.y, z: e.location.z } }; continue; }
-      if (["minecraft:sheep", "minecraft:cow", "minecraft:pig", "minecraft:chicken"].includes(e.typeId)) { scan.animals.push(e); scan.opportunities.push({ kind: "entity", typeId: e.typeId, pos: { x: e.location.x, y: e.location.y, z: e.location.z }, id: e.id }); continue; }
+      if (e.typeId.includes("villager")) { if (d > dangerR) continue; if (vis) { c.x.nearVillage = true; c.x.villagerDist = Math.min(c.x.villagerDist ?? 999, d); if (!e.typeId.includes("zombie") && (!villagerCand || d < villagerCand.d)) villagerCand = { id: e.id, d, loc: { x: e.location.x, y: e.location.y, z: e.location.z } }; } continue; } // 0-P S5: 村の存在・村人候補も LOS 通過分だけ登録する
+      if (["minecraft:sheep", "minecraft:cow", "minecraft:pig", "minecraft:chicken"].includes(e.typeId)) { if (vis) { scan.animals.push(e); scan.opportunities.push({ kind: "entity", typeId: e.typeId, pos: { x: e.location.x, y: e.location.y, z: e.location.z }, id: e.id }); } continue; } // 0-P S5: 家畜の目標化は LOS 通過分だけ
       const isHostile = GVC_HOSTILE_SET.has(e.typeId) || (() => { try { return e.getComponent("minecraft:type_family")?.hasTypeFamily("monster"); } catch { return false; } })();
       if (isHostile) {
         if (d > dangerR) continue; // v0.4.66: 危険判定は従来距離
         scan.hostiles.push(e); c.danger.count++;
         if (d < c.danger.nearestDist) { c.danger.nearestDist = d; scan.nearestHostile = e; }
+        if (vis && (!scan.nearestVisibleHostile || d < dist(bot.location, scan.nearestVisibleHostile.location))) scan.nearestVisibleHostile = e; // 0-P S5: Tier2 の最寄り敵 (目標化・攻撃はこちらを使う)。Tier1 の danger/nearestHostile は安全反応のため無条件のまま
         if (e.typeId === "minecraft:creeper") c.danger.creeperDist = Math.min(c.danger.creeperDist, d);
         if (RANGED_IDS.has(e.typeId)) c.danger.rangedDist = Math.min(c.danger.rangedDist, d);
-        const hh = hpOf(e); if (BOSS_IDS.has(e.typeId) || hh.max >= 300) { c.x.bossNear = true; c.x.bossHpPct = hh.max ? hh.cur / hh.max : 1; c.x.bossKind = e.typeId === "minecraft:warden" ? "warden" : e.typeId === "minecraft:wither" ? "wither" : e.typeId === "minecraft:ender_dragon" ? "dragon" : e.typeId === "minecraft:elder_guardian" ? "elder_guardian" : "large"; if (e.typeId.includes("gv") || e.typeId.startsWith("gun:")) c.x.gvcBoss = true; }
+        // 0-P S5: ボスの現在HPは見えていない対象の内部状態であり、LOS 通過時だけ hpOf を実行し bossHpPct を供給する。見えていない場合は bossNear/bossKind (存在と種別の Tier1) だけを立て、bossHpPct は立てない (読み手は ?? 既定・isNum ガードで不明として扱う)。帰結として LOS 外の非 BOSS_IDS 大型個体 (max>=300) では bossNear が立たなくなるが、これは内部状態を読まない原則の意図した挙動変更である
+        if (vis) { const hh = hpOf(e); if (BOSS_IDS.has(e.typeId) || hh.max >= 300) { c.x.bossNear = true; c.x.bossHpPct = hh.max ? hh.cur / hh.max : 1; c.x.bossKind = e.typeId === "minecraft:warden" ? "warden" : e.typeId === "minecraft:wither" ? "wither" : e.typeId === "minecraft:ender_dragon" ? "dragon" : e.typeId === "minecraft:elder_guardian" ? "elder_guardian" : "large"; if (e.typeId.includes("gv") || e.typeId.startsWith("gun:")) c.x.gvcBoss = true; } }
+        else if (BOSS_IDS.has(e.typeId)) { c.x.bossNear = true; c.x.bossKind = e.typeId === "minecraft:warden" ? "warden" : e.typeId === "minecraft:wither" ? "wither" : e.typeId === "minecraft:ender_dragon" ? "dragon" : e.typeId === "minecraft:elder_guardian" ? "elder_guardian" : "large"; if (e.typeId.includes("gv") || e.typeId.startsWith("gun:")) c.x.gvcBoss = true; }
       }
       // HUNT-SCAN-BUCKET-01 (cyc2385): 非敵対の entity 供給源 (ウサギ/鱈/鮭/イカ/馬/ムーシュルーム等) の受け皿。
       // 家畜4種は上の分岐で処理済み。供給源集合に無い実体は保持しない (走査コストと機会提示の膨張防止)。
-      if (!isHostile && entitySourceIdSet().has(e.typeId)) { scan.animals.push(e); scan.opportunities.push({ kind: "entity", typeId: e.typeId, pos: { x: e.location.x, y: e.location.y, z: e.location.z }, id: e.id }); continue; }
+      if (!isHostile && entitySourceIdSet().has(e.typeId)) { if (vis) { scan.animals.push(e); scan.opportunities.push({ kind: "entity", typeId: e.typeId, pos: { x: e.location.x, y: e.location.y, z: e.location.z }, id: e.id }); } continue; } // 0-P S5: 供給源の目標化も LOS 通過分だけ
     }
   } catch (err) { scanOk = false; noteFail(bot, "entityScan", err); }
   // POLISH-ANIM-CATCHSIGHT-01 (cycle2200): 既存走査の id 差分でアイテム出現の辺を作る (表示層のみ・実機確認待ち)。
@@ -1004,7 +1010,7 @@ function execTarget(bot, owner, rule, ctx, scan) {
     case "pickup_food": return scan?.foodItem?.location || scan?.nearestItem?.location || behind(3);
     case "pickup_owner_drops": return scan?.ownerItem?.location || behind(3);
     case "pickup_nearest": return scan?.nearestItem?.location || behind(3);
-    case "guard": case "zap": return scan?.nearestHostile?.location || behind(2);
+    case "guard": case "zap": return scan?.nearestVisibleHostile?.location || behind(2); // 0-P S5: 移動目標は見えている敵だけ (壁越し座標へ直行しない)
     case "flee": {
       const h = scan?.nearestHostile?.location || o; const dx = bot.location.x - h.x, dz = bot.location.z - h.z; const m = Math.hypot(dx, dz) || 1;
       return { x: bot.location.x + (dx / m) * 10, y: bot.location.y, z: bot.location.z + (dz / m) * 10 };
@@ -1034,11 +1040,11 @@ function execArrive(bot, owner, rule, ctx, scan) {
       } else { recordTake(r, "execArrive", { ok: false, reason: cont ? "ITEM_NOT_FOUND" : "TARGET_UNKNOWN", item: stack?.typeId || null }); }
     }
   }
-  if ((act === "guard" || act === "zap") && scan?.nearestHostile) {
-    const hd = dist(bot.location, scan.nearestHostile.location);
+  if ((act === "guard" || act === "zap") && scan?.nearestVisibleHostile) {
+    const hd = dist(bot.location, scan.nearestVisibleHostile.location);
     const core = equipCoreOf(bot, r);
     let gunRange = 0; if (core) { try { const s = core.snapshot(); if (s.hasGun) gunRange = s.gunRange; } catch {} }
-    if (hd < 3.2 || (gunRange > 0 && hd <= gunRange)) zapEntity(bot, r, scan.nearestHostile);
+    if (hd < 3.2 || (gunRange > 0 && hd <= gunRange)) zapEntity(bot, r, scan.nearestVisibleHostile);
   }
   if (act === "use_heal_item") { const core = equipCoreOf(bot, r); if (!core) { r.lastUseItem = { act, ok: false, reason: "EQUIP_CORE_UNAVAILABLE", item: null, at: Date.now() }; commitLastAction(r, r.lastUseItem); } else { try { const res = core.useHealItem(); r.lastUseItem = { act, ok: !!res?.ok, reason: res?.reason || null, item: res?.item || null, at: Date.now() }; commitLastAction(r, r.lastUseItem); /* POLISH-SND-EAT-01 (cycle0753) */ if (res?.ok) { try { sfxEat(bot.dimension, bot.location, res?.item || null); } catch {} } } catch (e) { r.lastUseItem = { act, ok: false, reason: "API_ERROR", item: null, at: Date.now() }; commitLastAction(r, r.lastUseItem); noteFail(bot, "use_heal_item:exception", e, {expDone: true}); } } } // Phase2 USE_ITEM 無言経路 S1/S2 (v0.4.13): 記録のみ、挙動不変
   // Phase2 USE_ITEM 実体化 (milk先行): 幻影 act drink_milk を実体化。消費→有害効果(毒/衰弱)の対象除去→空バケツ返却→再読検証。
@@ -2011,7 +2017,8 @@ function buildEndgoalObs(bot, r) {
   const inEnd = dimId === "minecraft:the_end";
   let crystalsAlive = null, dragonAlive = null;
   if (inEnd && phase !== "pre_start" && phase !== "done") {
-    try { let c = 0, d = false; for (const e of bot.dimension.getEntities({ location: bot.location, maxDistance: 96 })) { if (e.typeId === "minecraft:end_crystal") c++; else if (e.typeId === "minecraft:ender_dragon") d = true; } crystalsAlive = c; dragonAlive = d; } catch { crystalsAlive = null; dragonAlive = null; }
+    // 0-P S5/P6: 相判定も LOS 必須。maxDist 96 はこの相判定だけの例外
+    try { let c = 0, d = false; for (const e of bot.dimension.getEntities({ location: bot.location, maxDistance: 96 })) { if (e.typeId === "minecraft:end_crystal") { if (entityVisible(bot, e, { maxDist: 96 })) c++; } else if (e.typeId === "minecraft:ender_dragon") { if (entityVisible(bot, e, { maxDist: 96 })) d = true; } } crystalsAlive = c; dragonAlive = d; } catch { crystalsAlive = null; dragonAlive = null; }
   }
   let hpRatio = null; try { const h = hpOfMeasured(bot); if (h && h.max > 0) hpRatio = h.cur / h.max; } catch {}
   let portalSeen = false;
@@ -2082,6 +2089,8 @@ const wideScanState = createWideScanFails(5); // 0-D4 Bprime: failures isolated 
 const SCAN_OBS_MAX_DIST = 64;
 function scanObsProvider(bot){ const dim=bot?.dimension; return (x,y,z)=>{ try{ const b=dim?.getBlock({x,y,z}); return b?(b.typeId??null):null; }catch{ return null; } }; }
 function scanObsEye(bot){ const l=bot?.location; return l?{x:l.x,y:l.y+1.6,z:l.z}:null; }
+// 0-P S5 (cyc2487): エンティティ知覚のゲート接続。provider/eye は S2 着地の scanObsProvider/scanObsEye を再利用する (同契約の別系統を作らない)。FOV は未適用 (LOS のみ必須): 正面視野の必須化は見回し/振り向き feeder と同回でないと「見えているのに撃てない」が恒常化するため残件とする。範囲明記: 距離上限64はゲート上限であり、列挙は現行走査半径 (ENTITY_SCAN_R=32、敵対は dangerR) に閉じる。
+function entityVisible(bot, e, opts = {}) { try { if (!bot || !e || !e.location) return false; const eye = scanObsEye(bot); if (!eye) return false; const pt = { x: e.location.x, y: e.location.y + 1.0, z: e.location.z }; return canObserveEntity(scanObsProvider(bot), eye, pt, opts); } catch { return false; } }
 function gateFirstObserved(bot, raw){ try{ const eye=scanObsEye(bot); if(!eye||!Array.isArray(raw)) return null; const passed=gateScanResults(scanObsProvider(bot), eye, raw.slice(0,32), {maxDist:SCAN_OBS_MAX_DIST, method:"seen", at:Date.now()}); return passed.length?passed[0].cell:null; }catch{ return null; } }
 function wideQuery(bot, typeIds, skipFn = null) { // cyc2367 HARVEST-OCCLUDED-YOUNG-01: 任意 skip（既定 null で従来不変）
   // 戻り値: { ok, best: { typeId: {x,y,z}|null } }。ok=false は「測れなかった」(呼び出し側が従来走査へ)
@@ -2639,8 +2648,8 @@ function findMissionTarget(bot, r, scan, step, scanUnknown = false) {
   const target = step.target;
   if (step.type === "hunt_entity") {
     let e = null;
-    if (target && target !== "hostile") e = nearestEntityOfType([...(scan?.hostiles || []), ...(scan?.animals || [])].filter((x) => !isEntityBanned(r.mBanKey, r.mBanUntil, Date.now(), x?.id)), target, bot.location); // HUNT-NEAREST-01/HUNT-BAN-CELL-01 (cyc2385): 最寄り選択＋実体ban除外 (従来は走査順 .find)
-    else { const nh = scan?.nearestHostile || null; e = (nh && isEntityBanned(r.mBanKey, r.mBanUntil, Date.now(), nh.id)) ? ([...(scan?.hostiles || [])].filter((x) => x && x.location && !isEntityBanned(r.mBanKey, r.mBanUntil, Date.now(), x?.id)).sort((a, b) => dist(bot.location, a.location) - dist(bot.location, b.location))[0] || null) : nh; } // LOG-SCAN R-alpha (cyc2466): 汎用 hunt も実体 ban を選出段で除外 (2608 と同方針) // HUNT-SUBST-01 (cyc2364): 種別指定時は別種への代替をしない。最寄り敵へのフォールバックは汎用指定 "hostile" のときだけ
+    if (target && target !== "hostile") e = nearestEntityOfType([...(scan?.hostiles || []), ...(scan?.animals || [])].filter((x) => x && entityVisible(bot, x) && !isEntityBanned(r.mBanKey, r.mBanUntil, Date.now(), x?.id)), target, bot.location); // 0-P S5: 狩猟選出は選出時点で LOS を再判定する (scan 時点の losIds は移動で古びるため) // HUNT-NEAREST-01/HUNT-BAN-CELL-01 (cyc2385): 最寄り選択＋実体ban除外 (従来は走査順 .find)
+    else { const nh = scan?.nearestVisibleHostile || null; e = (nh && isEntityBanned(r.mBanKey, r.mBanUntil, Date.now(), nh.id)) ? ([...(scan?.hostiles || [])].filter((x) => x && x.location && entityVisible(bot, x) && !isEntityBanned(r.mBanKey, r.mBanUntil, Date.now(), x?.id)).sort((a, b) => dist(bot.location, a.location) - dist(bot.location, b.location))[0] || null) : nh; } // 0-P S5: 再選出も LOS 通過分だけ // LOG-SCAN R-alpha (cyc2466): 汎用 hunt も実体 ban を選出段で除外 (2608 と同方針) // HUNT-SUBST-01 (cyc2364): 種別指定時は別種への代替をしない。最寄り敵へのフォールバックは汎用指定 "hostile" のときだけ
     return e ? { found: true, kind: "entity", loc: { ...e.location }, typeId: e.typeId, entity: e } : (scanUnknown ? { found: false, detail: { state: "unknown" } } : { found: false }); // typeId は実体の種別を正とする (依頼種別で名乗らない)
   }
   // 原木の扱い (0-D3 是正): 総称指定では全樹種が対象だが、特定樹種の指定ではその樹種だけを対象にする (従来は指定樹種を先頭に置くだけで全樹種が候補だった)
@@ -2711,7 +2720,7 @@ function findMissionTarget(bot, r, scan, step, scanUnknown = false) {
   }
   for (const s of sources) {
     if (s.kind === "block") { continue; }
-    else if (s.kind === "entity") { const e = nearestEntityOfType([...(scan?.hostiles || []), ...(scan?.animals || [])].filter((x) => !isEntityBanned(r.mBanKey, r.mBanUntil, Date.now(), x?.id)), s.id, bot.location); if (e) return { found: true, kind: "entity", loc: { ...e.location }, typeId: target, entity: e, detail: { state: "present" } }; if (scanUnknown) anyUnknown = true; }
+    else if (s.kind === "entity") { const e = nearestEntityOfType([...(scan?.hostiles || []), ...(scan?.animals || [])].filter((x) => x && entityVisible(bot, x) && !isEntityBanned(r.mBanKey, r.mBanUntil, Date.now(), x?.id)), s.id, bot.location); if (e) return { found: true, kind: "entity", loc: { ...e.location }, typeId: target, entity: e, detail: { state: "present" } }; if (scanUnknown) anyUnknown = true; }
     else if (s.kind === "craft") {
       const loc = scanBlockNear(bot, r, s.id); if (loc) return { found: true, kind: "block", loc, typeId: s.id, detail: { state: "present" } }; if (noteScanState(s.id)) return { found: false, detail: { state: "unknown" } };
       const it = nearestMissionItem(scan?.items, (x) => itemTypeOf(x) === s.id, r, bot.location); if (it) return { found: true, kind: "item", loc: { ...it.location }, typeId: s.id, entity: it, detail: { state: "present" } }; // PICKUP-MISSION-BAN-CELL-01 (cyc2455)
@@ -2727,6 +2736,8 @@ function findMissionTarget(bot, r, scan, step, scanUnknown = false) {
   return { found: false, detail: { state: anyUnknown ? "unknown" : "absent" } };
 }
 function zapEntity(bot, r, e) {
+  // 0-P S5: 攻撃の LOS 必須化。shootAt の applyDamage は壁を無関係に通すため、ここが壁越し射撃を止める唯一の関門。呼び出し側の距離条件とは独立に入口で必ず視線を確認する。見えていない敵は撃たない (気配としての回避は danger 側の責務)。LOS で止めた攻撃は noteHuntHit へ届かないため討伐帰属にも混ざらない
+  if (!entityVisible(bot, e)) { try { r.lastAttack = { ok: false, reason: "no_line_of_sight", at: Date.now() }; } catch {} return; }
   const core = equipCoreOf(bot, r);
   const d = dist(bot.location, e.location);
   // 銃装備時は射程内なら射撃（連射間隔・装弾・命中は中核側が管理する）
@@ -3847,8 +3858,8 @@ function execSideTask(bot, owner, r, ctx, scan) {
     if (e && dist(bot.location, e.location) < 1.9) pickupItemEntity(bot, owner, e, ctx);
   } else if (t.type === "hunt") {
     const e = [...(scan?.hostiles || []), ...(scan?.animals || [])].find((x) => x.id === t.targetId) || [...(scan?.hostiles || []), ...(scan?.animals || [])].find((x) => x.typeId === t.entityType);
-    if (e) { r.target = { ...e.location }; if (dist(bot.location, e.location) < 3.2) zapEntity(bot, r, e); }
-    else r.target = { x: t.pos.x + 0.5, y: t.pos.y, z: t.pos.z + 0.5 };
+    if (e && entityVisible(bot, e)) { r.target = { ...e.location }; if (dist(bot.location, e.location) < 3.2) zapEntity(bot, r, e); }
+    else r.target = { x: t.pos.x + 0.5, y: t.pos.y, z: t.pos.z + 0.5 }; // 0-P S5: LOS 不通過なら生座標へ直行せず、登録時に観測した座標 (t.pos) へ倒す
   } else if (t.type === "break" || t.type === "harvest") {
     if (startWork(bot, r, { x: t.pos.x, y: t.pos.y, z: t.pos.z, typeId: t.blockType })) tickWork(bot, owner, r, ctx);
     else r.target = { x: t.pos.x + 0.5, y: t.pos.y, z: t.pos.z + 0.5 };
@@ -3981,7 +3992,7 @@ function applyDirective(bot, owner, r, ctx, scan, d) {
       r.target = { ...bot.location };
       break;
     }
-    case "zap": { const e = scan?.nearestHostile; if (e) { r.target = { ...e.location }; if (dist(bot.location, e.location) < 3.2) zapEntity(bot, r, e); } r.moveAct = "zap"; break; }
+    case "zap": { const e = scan?.nearestVisibleHostile; if (e) { r.target = { ...e.location }; if (dist(bot.location, e.location) < 3.2) zapEntity(bot, r, e); } r.moveAct = "zap"; break; } // 0-P S5: 指令 zap も見えている敵だけ
     case "deliver": { const rp = returnPoint(bot, owner, m); r.target = rp; if (r.mAtReturn) doDeliver(bot, owner, r, m); r.moveAct = "follow"; break; }
     case "say": handleMissionSay(bot, owner, r, d); r.target = { ...bot.location }; break;
     default: r.target = { ...bot.location }; break;

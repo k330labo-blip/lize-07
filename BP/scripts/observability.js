@@ -170,6 +170,35 @@ return false; // 上限到達は不明として倒す
 // ---------------------------------------------------------------------------
 export const OBSERVE_DEFAULT_MAX_DIST = 64; // 0-P S0 (cyc2483): 認識距離の既定は約64ブロック (4チャンク)。露出+視線の条件は遠距離でも緩めない
 
+// ---------------------------------------------------------------------------
+// エンティティ用光線 (0-P S5, cyc2487): エンティティはセルではないため canObserve
+// (露出+非空気セル前提) は使えない。必要なのは視点から代表点まで不透明ブロックに
+// 遮られていないかだけであり、lineOfSight の DDA をそのまま使う (終端セル=代表点の
+// 属するセル。lineOfSight は対象セル自体を遮蔽として数えない)。
+// X-ray防止: getEntities で得た正確な座標・HP等の内部状態を攻撃・目標選択へ渡す前に
+// 必ずここを通す。未読込セルがあれば false (unknown を見えた側へ倒さない)。
+// 距離の既定は OBSERVE_DEFAULT_MAX_DIST (64) へ一本化する (固有定数は作らない)。
+// 64 はゲート上限であり、列挙範囲は呼び出し側の現行走査半径に閉じる (範囲明記形)。
+export function lineOfSightToPoint(provider, eye, point) {
+if (!provider || !eye || !point) return false;
+const cell = { x: Math.floor(point.x), y: Math.floor(point.y), z: Math.floor(point.z) };
+return lineOfSight(provider, eye, cell);
+}
+export function canObserveEntity(provider, eye, point, opts = {}) {
+if (!provider || !eye || !point) return false;
+const maxDist = Number.isFinite(opts.maxDist) ? opts.maxDist : OBSERVE_DEFAULT_MAX_DIST;
+const d = Math.hypot(point.x - eye.x, point.y - eye.y, point.z - eye.z);
+if (!Number.isFinite(d) || d > maxDist) return false;
+if (Number.isFinite(opts.yawDeg)) {
+const fov = Number.isFinite(opts.fovDeg) ? opts.fovDeg : 120;
+// bearing の正形は gaze_math.gazeRotation と同一: atan2(-dx, +dz) (cyc2486 A02 で確定)
+const bearing = Math.atan2(-(point.x - eye.x), point.z - eye.z) * 180 / Math.PI;
+const diff = ((bearing - opts.yawDeg + 540) % 360) - 180;
+if (Math.abs(diff) > fov / 2) return false;
+}
+return lineOfSightToPoint(provider, eye, point);
+}
+
 /**
 * 対象セルを「今、観測した」と主張してよいか。
 * 条件は全て必須: (1) 対象セルが読み込めている (2) 対象が空気でない
