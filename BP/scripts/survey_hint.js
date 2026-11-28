@@ -13,6 +13,7 @@
 //   leg:     r.mineLeg = { depth, item } (depth は絶対 Y、例 diamond → -54)
 //   pos:     bot.location = { x, y, z } (小数可)
 // 純粋モジュール: @minecraft/server を import しない。例外を投げない (全関数 try/catch)。
+import { makeInferredRegion } from "./observability.js"; // 0-P (cyc2485 S3/S6): 区画ヒントの正規形は observability が正
 // c.x 等への参照は持たない。ctx フィールドの削除・意味変更はしない (本モジュールは新規)。
 
 export const SURVEY_HINT = {
@@ -54,28 +55,34 @@ export function inDepthBand(loc, depth, band = SURVEY_HINT.DEPTH_BAND) {
 // surveys から wantIds のヒント候補を平坦化する。
 // 除外: 別次元 / 陳腐 / banKey 一致 / forbiddenKeys 一致。
 // 返り値: [{ loc:{x,y,z}, typeId, at, svRx, svRz }] (重複座標は typeId 優先順で先勝ち)
+// 0-P (cyc2485 S3/S6): 旧 collectHints は sv.hits の正確な座標をヒントとして返していた (X-ray の出口)。
+// 置換後のヒントは inferred_region のみ: surveys のカバレッジ (自分が調べた区画) + 分布知識 (depth/expectTypeId)
+// だけで生成し、隠れたブロックの座標・件数・有無は一切含めない。depth/expect が無い対象 (地表物) には出さない。
+// opts 互換: wantIds/banKey/forbiddenKeys は受ける (wantIds は expect の代替、banKey/forbiddenKeys は regionKey の除外として解釈)。
 export function collectHints(surveys, opts = {}) {
   try {
-    const { dimId = null, wantIds = null, now = Date.now(), ttlMs = SURVEY_HINT.TTL_MS, banKey = null, forbiddenKeys = null } = opts || {};
-    const want = Array.isArray(wantIds) && wantIds.length ? new Set(wantIds) : null;
-    const forb = forbiddenKeys instanceof Set ? forbiddenKeys : Array.isArray(forbiddenKeys) ? new Set(forbiddenKeys) : null;
+    const { dimId = null, wantIds = null, now = Date.now(), ttlMs = SURVEY_HINT.TTL_MS, banKey = null, forbiddenKeys = null, banRegionKey = null, depth = null, expectTypeId = null } = opts || {};
+    const expect = expectTypeId || (Array.isArray(wantIds) && wantIds.length ? wantIds[0] : null);
+    if (!isNum(depth) || !expect) return [];
+    const forb = new Set();
+    if (banRegionKey) forb.add(banRegionKey);
+    if (banKey) forb.add(banKey);
+    if (forbiddenKeys instanceof Set) for (const k of forbiddenKeys) forb.add(k);
+    else if (Array.isArray(forbiddenKeys)) for (const k of forbiddenKeys) forb.add(k);
+    const arr = surveys instanceof Map ? [...surveys.values()] : Array.isArray(surveys) ? surveys : [];
     const out = [], seen = new Set();
-    for (const sv of surveyListOf(surveys)) {
+    for (const sv of arr) {
+      if (!sv || typeof sv !== "object" || !isNum(sv.rx) || !isNum(sv.rz)) continue;
       if (dimId != null && sv.dim !== dimId) continue;
       if (!hintFresh(sv, now, ttlMs)) continue;
-      for (const id of Object.keys(sv.hits)) {
-        if (want && !want.has(id)) continue;
-        const locs = Array.isArray(sv.hits[id]) ? sv.hits[id] : [];
-        for (const loc of locs) {
-          if (!loc || !isNum(loc.x) || !isNum(loc.y) || !isNum(loc.z)) continue;
-          const k = keyOf(loc);
-          if (seen.has(k)) continue;
-          if (banKey && banKey === k) continue;
-          if (forb && forb.has(k)) continue;
-          seen.add(k);
-          out.push({ loc: { x: loc.x, y: loc.y, z: loc.z }, typeId: id, at: sv.at, svRx: sv.rx ?? null, svRz: sv.rz ?? null });
-        }
-      }
+      const regionKey = `${sv.dim}:${sv.rx},${sv.rz}`;
+      if (seen.has(regionKey) || forb.has(regionKey)) continue;
+      seen.add(regionKey);
+      out.push({
+        loc: { x: sv.rx * 64 + 32, y: depth, z: sv.rz * 64 + 32 },
+        typeId: expect, at: sv.at, svRx: sv.rx, svRz: sv.rz, regionKey,
+        region: makeInferredRegion({ regionKey, dimension: sv.dim, yMin: depth - SURVEY_HINT.DEPTH_BAND, yMax: depth + SURVEY_HINT.DEPTH_BAND, expectTypeId: expect, at: now, confidence: 0.3 }),
+      });
     }
     return out;
   } catch { return []; }
@@ -134,7 +141,7 @@ export function chooseHint(pos, hints, opts = {}) {
       if (!Number.isFinite(score)) continue;
       if (!best || score < best.score) {
         best = {
-          loc: { ...h.loc }, typeId: h.typeId, score, cluster,
+          loc: { ...h.loc }, typeId: h.typeId, regionKey: h.regionKey || null, region: h.region || null, score, cluster,
           distH: Math.hypot(h.loc.x - pos.x, h.loc.z - pos.z),
           distV: h.loc.y - pos.y,
         };
@@ -177,8 +184,8 @@ export function steerDecision(input = {}) {
     let hints = Array.isArray(o.hints) ? o.hints : null;
     if (!hints) {
       // stale_only の切り分けのため、鮮度を無視した生候補の有無も見る
-      const raw = collectHints(o.surveys, { ...o, now: o.now, ttlMs: Number.MAX_SAFE_INTEGER });
-      hints = collectHints(o.surveys, o);
+      const raw = collectHints(o.surveys, { ...o, depth, expectTypeId: o.leg?.item || o.expectTypeId || null, now: o.now, ttlMs: Number.MAX_SAFE_INTEGER });
+      hints = collectHints(o.surveys, { ...o, depth, expectTypeId: o.leg?.item || o.expectTypeId || null });
       if (!hints.length) return { mode: "random", reason: raw.length ? "stale_only" : "no_hint" };
     }
     if (!hints.length) return { mode: "random", reason: "no_hint" };

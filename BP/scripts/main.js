@@ -2348,14 +2348,20 @@ function halveUnit(va, vb) {
   if (sx >= sz) { const m = va.x + Math.floor(sx / 2) - 1; return [[va, { ...vb, x: m }], [{ ...va, x: m + 1 }, vb]]; }
   const m = va.z + Math.floor(sz / 2) - 1; return [[va, { ...vb, z: m }], [{ ...va, z: m + 1 }, vb]];
 }
+// 0-P S3: 呼び出しはゲート通過後の観測済みヒットだけに限る (呼び出し点は surveyChunk の1箇所のみ)。
 function recordHit(sv, id, loc) {
   recordHitReservoir(sv, id, loc, SURVEY_HITS_CAP); // survey 案R (cycle2036): drop-new を廃しリザーバサンプリングへ委譲 (survey_reservoir.js が単一の正)
 }
 // 1 chunk survey. Returns: "done" | "partial" | "unloaded" | "error"  (partial = progress saved in sv.units)
+// 0-P (cyc2485 S3): survey 用の観測材料。provider は生読みを typeId|null へ落とすだけ (null=未読込/失敗=unknown)。
+function surveyEyeFor(dim, cx, cz) { try { let best = null, bd = Infinity; for (const e of dim.getEntities({ type: BOT_ID })) { const d = Math.hypot(e.location.x - (cx * 16 + 8), e.location.z - (cz * 16 + 8)); if (d < bd) { bd = d; best = e; } } return best ? { x: best.location.x, y: best.location.y + 1.6, z: best.location.z } : null; } catch { return null; } }
+function surveyProviderFor(dim) { const cache = new Map(); return (x, y, z) => { const k = `${x},${y},${z}`; if (cache.has(k)) return cache.get(k); let t = null; try { const b = dim.getBlock({ x, y, z }); t = b ? b.typeId : null; } catch { t = null; } cache.set(k, t); return t; }; }
 function surveyChunk(sv, idx) {
   const dim = world.getDimension(sv.dim);
   const cx = sv.rx * 4 + (idx & 3), cz = sv.rz * 4 + (idx >> 2);
   let minY = -64, maxY = 319; try { minY = dim.heightRange.min; maxY = dim.heightRange.max - 1; } catch {}
+  const eye = surveyEyeFor(dim, cx, cz); if (!eye) return "unloaded"; // 0-P S3: 観測者がいない区画は走査しない (調べたのに何も観測していない区画を作らない)
+  const provider = surveyProviderFor(dim);
   if (!sv.units) sv.units = {};
   if (!sv.units[idx]) sv.units[idx] = splitVolume({ x: cx * 16, y: minY, z: cz * 16 }, { x: cx * 16 + 15, y: maxY, z: cz * 16 + 15 });
   const stack = sv.units[idx];
@@ -2378,12 +2384,15 @@ function surveyChunk(sv, idx) {
       return "error";
     }
     let truncated = false;
+    // 0-P S3 (X-ray防止): 生ヒットはこの配列の外へ出さない。ゲート (露出+視線+距離64) を通った分だけを
+    // recordHit で sv.hits (観測済み索引) へ入れ、通らなかった分は件数も含めて破棄する (sv.seen にも載せない)。
+    const rawCells = [];
     for (const loc of list.getBlockLocationIterator()) {
       if (++budget > SURVEY_ITER_CAP) { truncated = true; break; }
-      let id = null; try { id = dim.getBlock(loc)?.typeId ?? null; } catch {}
-      if (!id) continue;
-      recordHit(sv, id, loc);
+      rawCells.push({ x: loc.x, y: loc.y, z: loc.z });
     }
+    try { const observed = gateScanResults(provider, eye, rawCells, { maxDist: 64, method: "seen", at: Date.now() }); for (const ob of observed) if (ob.cell && ob.typeId) recordHit(sv, ob.typeId, ob.cell); } catch {}
+    rawCells.length = 0;
     if (!truncated) { stack.pop(); continue; }
     if (freshStart) {
       stack.pop();
@@ -3083,13 +3092,13 @@ function tickBranchMine(bot, owner, r, ctx) {
   // キュー7 (cycle1443): survey ヒント方向 (本関数内に置く: digdown E2E ハーネスが本関数を逐語抽出して評価するため)
   const surveyHintDir = () => {
     try {
-      const hints = collectHints(surveys, { dimId: bot.dimension?.id, now: Date.now() });
+      const hints = collectHints(surveys, { dimId: bot.dimension?.id, now: Date.now(), depth: leg?.depth ?? null, expectTypeId: leg?.item || null }); // 0-P S6: 区画ヒント (inferred_region)
       const ore = hints.filter((h) => h.typeId === leg?.item || /_ore$/.test(h.typeId || ""));
       if (!ore.length) return null;
       const best = chooseHint(bot.location, ore, { depth: leg?.depth });
       if (!best) return null;
       const dir = hintDirection(bot.location, best.loc);
-      if (dir) { try { r.lastSurveyHint = { mode: "steer", typeId: best.typeId, loc: best.loc, at: Date.now() }; } catch {} }
+      if (dir) { try { r.lastSurveyHint = { mode: "steer", typeId: best.typeId, regionKey: best.regionKey || null, at: Date.now() }; } catch {} }
       return dir;
     } catch { return null; }
   };
@@ -3107,7 +3116,7 @@ function tickBranchMine(bot, owner, r, ctx) {
       try {
         if (leg?.depth != null && Math.abs(pos.y - leg.depth) > SURVEY_HINT.DEPTH_BAND) loc = null; // pos 側深度帯外は誘導しない (steerDecision の no_depth と同一基準)
         else {
-          const hints = collectHints(surveys, { dimId: bot.dimension?.id, now });
+          const hints = collectHints(surveys, { dimId: bot.dimension?.id, now, depth: leg?.depth ?? null, expectTypeId: leg?.item || null }); // 0-P S6: 区画ヒント
           const ore = hints.filter((h) => (h.typeId === leg?.item || /_ore$/.test(h.typeId || "")) && inDepthBand(h.loc, leg?.depth));
           if (ore.length) {
             const best = chooseHint(bot.location, ore, { depth: leg?.depth });
@@ -3131,7 +3140,7 @@ function tickBranchMine(bot, owner, r, ctx) {
       const before = r.mineDir;
       const candidate = rs.changed && rs.dir ? rs.dir : before;
       const dec = decideResteer({ pos, hintLoc: loc, depth: leg?.depth, rotatedDir: before, candidateDir: candidate, state: r.resteerGuard, legKey: lk });
-      try { r.lastSurveyHint = { mode: "resteer", changed: !!(dec.apply && dec.dir && (dec.dir.x !== before.x || dec.dir.z !== before.z)), overshoot: !!rs.overshoot, guard: dec.reason, loc, at: Date.now() }; } catch {}
+      try { r.lastSurveyHint = { mode: "resteer", changed: !!(dec.apply && dec.dir && (dec.dir.x !== before.x || dec.dir.z !== before.z)), overshoot: !!rs.overshoot, guard: dec.reason, regionKey: `${bot.dimension?.id}:${Math.floor(loc.x / 64)},${Math.floor(loc.z / 64)}`, at: Date.now() }; } catch {} // 0-P S6: 正確座標でなく区画キーで記録
       if (dec.apply && dec.dir && (dec.dir.x !== before.x || dec.dir.z !== before.z)) { r.mineDir = dec.dir; r.resteerGuard = recordResteerApplied(r.resteerGuard, lk, dec.dir, before); }
     } catch {}
   };
@@ -3266,9 +3275,9 @@ function tickBranchMine(bot, owner, r, ctx) {
     // キュー7 (cycle1443): 深度帯到達後は survey ヒントへ誘導する (D2形状)。ヒント無し/陳腐/遠方は従来ランダムと完全一致。
     let steered = null;
     try {
-      const hints = collectHints(surveys, { dimId: dim?.id, now: Date.now() }).filter((h) => h.typeId === leg.item || /_ore$/.test(h.typeId || ""));
+      const hints = collectHints(surveys, { dimId: dim?.id, now: Date.now(), depth: leg?.depth ?? null, expectTypeId: leg?.item || null }).filter((h) => h.typeId === leg.item || /_ore$/.test(h.typeId || "")); // 0-P S6: 区画ヒント
       const dec = steerDecision({ pos, leg, hints, now: Date.now() });
-      try { r.lastSurveyHint = { mode: dec.mode, reason: dec.reason || null, typeId: dec.hint?.typeId || null, at: Date.now() }; } catch {}
+      try { r.lastSurveyHint = { mode: dec.mode, reason: dec.reason || null, typeId: dec.hint?.typeId || null, regionKey: dec.hint?.regionKey || null, at: Date.now() }; } catch {}
       if (dec.mode === "steer" && dec.dir) steered = dec.dir;
     } catch {}
     if (steered) r.mineDir = steered;
