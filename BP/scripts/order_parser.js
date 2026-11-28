@@ -409,8 +409,8 @@ function amountNear(text, hit) {
   if (am) { const v = parsePhrase((am[1] || "") + am[2]); if (v != null) return v; }
   // 0-C5 R-4 (v0.5.86): 反復前置（「丸石を2回、3個ずつ」）。裸数字フォールバックが
   // 「2回」の 2 を数量として先に拾うため、その前に前置反復つきフレーズを核へ渡す。
-  const pm = after.match(new RegExp(`^[のがをもは]?\\s*(?:\\d+|[一二三四五六七八九十]+)\\s*回\\s*(?:分|繰り返して|繰り返し|、|,)?\\s*${QTY_PHRASE_RE.source}`));
-  if (pm) { const v = parsePhrase(pm[0].replace(/^[のがをもは]/, "")); if (v != null) return v; }
+  const pm = after.match(new RegExp(`^[のがをもは]?\\s*(あと\\s*[、,]?\\s*(?:もう\\s*)?)?(?:\\d+|[一二三四五六七八九十]+)\\s*回\\s*(?:(?:分|繰り返して|繰り返し)\\s*[、,と]?|[、,])?\\s*${QTY_PHRASE_RE.source}(?:\\s*ずつ)?`));
+  if (pm) { const v = parsePhrase(pm[0].replace(/^[のがをもは]/, "")); if (v != null) { if (pm[1] && hit.amountDetail) hit.amountDetail = { ...hit.amountDetail, relative: true }; return v; } }
   let m = after.match(/^[のがをもは]?(\d+)/); // 単位なしの裸の数字（「ダイヤ10掘って」）
   if (m) return parseInt(m[1], 10);
   const before = text.slice(Math.max(0, hit.start - 18), hit.start);
@@ -1590,11 +1590,11 @@ export function parseOrder(input) {
   // 無い場合だけ、核 amount_parse の解釈 (前置反復) で主数量を組み直す。
   try {
     if (!(amountMeta && amountMeta.repeats != null)) {
-      const preRe = new RegExp(`(?:\\d+|[一二三四五六七八九十]+)\\s*回\\s*(?:分|繰り返して|繰り返し)?\\s*[、,]?\\s*${QTY_TERM_SRC}\\s*ずつ`);
+      const preRe = new RegExp(`(あと\\s*[、,]?\\s*(?:もう\\s*)?)?(?:\\d+|[一二三四五六七八九十]+)\\s*回\\s*(?:(?:分|繰り返して|繰り返し)\\s*[、,と]?|[、,])?\\s*${QTY_PHRASE_RE.source}(?:\\s*ずつ)?`);
       const xm = text.match(preRe);
       if (xm) {
         const parsed = amount_parse(xm[0], { itemId: main.target?.item ?? main.target?.block ?? null });
-        if (parsed && parsed.ok && parsed.repeats != null) { main.amount = parsed.total; amountMeta = parsed; }
+        if (parsed && parsed.ok && parsed.repeats != null) { main.amount = parsed.total; amountMeta = xm[1] ? { ...parsed, relative: true } : parsed; }
       }
     }
   } catch { /* 前置反復の反映失敗は従来数量のまま */ }
