@@ -392,7 +392,7 @@ function n5GapOk(text, hit, idx) { try { const gap = text.slice(hit.end, idx); i
 // (品目別スタック/複合合算/反復/相対/0個) は純粋核 amount_parse へ委ねる。
 // 詳細は hit.amountDetail に保持し、候補・注文へ amountMeta として運ぶ。
 // cyc1743 0-C5 R-1/R-3: 項の繰り返し (3項以上)・第2項以降のスタック/半スタック・小数スタックを許可し、値解釈は核 amount_parse へ委ねる
-const QTY_TERM_SRC = String.raw`(?:(?:半|はん)スタック|(?:\d+(?:\.\d+)?|[一二三四五六七八九十]+|ゼロ|零)\s*(?:スタック|個|本|枚|つ|体|匹|組|セット|箱))`;
+const QTY_TERM_SRC = String.raw`(?:(?:半|はん)スタック|(?:\d+(?:\.\d+)?|[一二三四五六七八九十]+|ゼロ|零)\s*(?:億|万)?\s*(?:スタック|個|本|枚|つ|体|匹|組|セット|箱))`; // O5-KURE-GIVE-01 (cyc2517): 位取り (億/万) を数量句にも通す (amount_math の位取りと対)
 const QTY_PHRASE_RE = new RegExp(`(${QTY_TERM_SRC}(?:\\s*と\\s*${QTY_TERM_SRC})*(?:ずつ\\s*(?:\\d+|[一二三四五六七八九十]+)\\s*回|を\\s*(?:\\d+|[一二三四五六七八九十]+)\\s*回)?)`);
 function amountNear(text, hit) {
   let itemId = null;
@@ -457,6 +457,10 @@ function classifyVerbMaskingNegated(clause) {
   return classifyVerb(masked);
 }
 const WANT_RE = /欲しい|ほしい|ちょうだい|ください|下さい|お願い/;
+// O5-KURE-GIVE-01 (cyc2517): 裸の名詞＋「くれ」は受け渡し要求 (kind:"give") であり、
+// 願望 (WANT_RE) とは分離する。末尾形だけを対象とし、「くれない／くれるな／ないでくれ」
+// の内部一致では発火させない (否定は extractNegations 側が正)。
+const GIVE_TAIL_RE = /くれ(?:よ|な|ね)?[。．！!]?$/;
 const ESCORT_RE = /ついてきて|付いてきて|ついて来て|一緒に来て|一緒について|こっち来て|護衛|守って/;
 const WATCH_RE = /警戒して|見張って/;
 const FREE_RE = /おまかせ|お任せ|自由にや|好きにし|任せるよ/;
@@ -1182,7 +1186,7 @@ function gearEnumCountOf(text, fromIndex) {
 // ---------------------------------------------------------------- 本体
 /**
  * parseOrder(text) -> 注文オブジェクト | null
- * 注文: { kind:'gather'|'build'|'hunt'|'escort'|'free',
+ * 注文: { kind:'gather'|'build'|'hunt'|'escort'|'free'|'give',
  *         target:{item,block,entity,name} | null, amount:number|null,
  *         constraints:{hostiles:'ignore'|'engage'|'avoid'|'default', dimension?, biome?},
  *         sideTasks:[{target, amount}], returnTo:'owner'|'home', raw }
@@ -1216,7 +1220,7 @@ export function parseOrder(input) {
   // 「チェストプレート」内の「チェスト」を block として拾う誤爆 (実測) を防ぐため、開始せず聞き返す。
   // 鎖防具はバニラでクラフト不可、ネザライトはダイヤ部位への鍛冶強化であり直接クラフトではない。
   try {
-    if (!/[？?]/.test(text) && !/(何個|いくつ|要る|必要|コスト)/.test(text) && /(作って|作る|ください|欲しい|ちょうだい|お願い)/.test(text)) {
+    if (!/[？?]/.test(text) && !/(何個|いくつ|要る|必要|コスト)/.test(text) && /(作って|作る|ください|欲しい|ちょうだい|お願い|くれ(?:よ|な|ね)?[。．！!]?$)/.test(text)) {
       const PART_RE = /(チェストプレート|胸当て|ヘルメット|兜|かぶと|レギンス|ブーツ|ズボン|靴)/;
       // GEAR-NETHERITE-TOOL-01 (cyc2434): 道具単品も防具と同型に倒す。PART_RE は防具部位のみで
       // 道具語が素通りし、素材別名「ネザライト」が netherite_ingot 作製へ誤目標化していた。
@@ -1235,7 +1239,7 @@ export function parseOrder(input) {
   // 素材なしの一式は、素材アイテムへの誤目標開始や無言落ちをせず clarify へ倒す
   // (理由別発話は R-5 で main.js 側に接続済み)。作製可能素材の一式は後段の F2 へ通す。
   try {
-    if (!/[？?]/.test(text) && !/(何個|いくつ|要る|必要|コスト)/.test(text) && /(作って|作る|ください|欲しい|ちょうだい|お願い)/.test(text) && /(フル|一式)/.test(text)) {
+    if (!/[？?]/.test(text) && !/(何個|いくつ|要る|必要|コスト)/.test(text) && /(作って|作る|ください|欲しい|ちょうだい|お願い|くれ(?:よ|な|ね)?[。．！!]?$)/.test(text) && /(フル|一式)/.test(text)) {
       if (/鎖|チェーン/.test(text)) return { kind: "clarify", target: null, amount: null, constraints, sideTasks: [], negations: [], unresolved: [{ slot: "material", reason: "chainmail_not_craftable" }], caps: [], returnTo: "owner", raw };
       if (/ネザライト/.test(text)) return { kind: "clarify", target: null, amount: null, constraints, sideTasks: [], negations: [], unresolved: [{ slot: "material", reason: "netherite_upgrade_only" }], caps: [], returnTo: "owner", raw };
       const craftableMatSet = /(ダイヤモンド|ダイヤ|鉄|アイアン|金|ゴールド|革|レザー)/.test(text);
@@ -1251,7 +1255,7 @@ export function parseOrder(input) {
       let gm = null;
       for (const [word, mid, disp] of GEAR_MATS) { if (text.includes(word + "フル") || text.includes(word + "のフル") || text.includes(word + "一式") || text.includes(word + "の一式")) { gm = { mid, disp }; break; } }
       if (!gm && /(防具|装備)一式/.test(text)) { for (const [word, mid, disp] of GEAR_MATS) { if (text.includes(word)) { gm = { mid, disp }; break; } } }
-      if (gm && /(作って|作る|ください|欲しい|ちょうだい|お願い)/.test(text)) {
+      if (gm && /(作って|作る|ください|欲しい|ちょうだい|お願い|くれ(?:よ|な|ね)?[。．！!]?$)/.test(text)) {
         // 0-F R-7a U7-2: 文頭の条件節は constraints.condition として保持する
         // (消費側 startOrderFromParser は gearSet 判定より前段で条件保留へ回すため、
         //  parser が条件を付けるだけで保留→再投入で一式が保持される)。
@@ -1273,7 +1277,7 @@ export function parseOrder(input) {
   // 純列挙性 (列挙外に対象句なし)・部位ごと個数なし (D-4a-1: 個数つきは通常経路へ譲る)。
   // 混在素材・非防具混在・副次つきは現行の候補/sideTasks で届いているため対象外。
   try {
-    if (!/[？?]/.test(text) && !/(何個|いくつ|要る|必要|コスト)/.test(text) && !GEAR_QUOTE_RE.test(text) && /(作って|作る|ください|欲しい|ちょうだい|お願い)/.test(text)) {
+    if (!/[？?]/.test(text) && !/(何個|いくつ|要る|必要|コスト)/.test(text) && !GEAR_QUOTE_RE.test(text) && /(作って|作る|ください|欲しい|ちょうだい|お願い|くれ(?:よ|な|ね)?[。．！!]?$)/.test(text)) {
       const mentions = scanGearPartMentions(text);
       const distinct = [...new Set(mentions.map((m) => m.pid))];
       if (mentions.length >= 2 && distinct.length >= 2) {
@@ -1510,7 +1514,8 @@ export function parseOrder(input) {
   }
 
   // 6) 発話トリガーが無ければ雑談（所持報告・感想などの誤判定防止）
-  if (!anyVerb && !WANT_RE.test(text)) return null;
+  const isGiveTail = GIVE_TAIL_RE.test(text) && negations.length === 0;
+  if (!anyVerb && !WANT_RE.test(text) && !isGiveTail) return null;
 
   // 6.5) 願望の独り言ガード: トリガーが「欲しい」だけで、依頼形（ください等）も
   // 動詞も数量も無く、独り言マーカー（なあ/すごく等）がある場合は呟きとして譲る。
@@ -1573,7 +1578,8 @@ export function parseOrder(input) {
 
   // 8) kind の決定（動詞優先、無ければ対象の種類から推定）
   let kind;
-  if (main.verbClass === "build") kind = "build";
+  if (isGiveTail && !main.verbClass) kind = "give";
+  else if (main.verbClass === "build") kind = "build";
   else if (main.verbClass === "hunt") kind = "hunt";
   else if (main.verbClass === "gather" || main.verbClass === "deliver") kind = "gather";
   else if (main.target.entity) kind = "hunt";
@@ -1657,7 +1663,7 @@ export function parseOrder(input) {
   // gather の対象はアイテム/ブロックであるべきで、entity が主目標の形は調達元が無く
   // 必ず行き詰まる (例: 「牛から牛乳を取って」→ gather/cow)。開始処理へ渡さず聞き返しへ倒す。
   // hunt の entity 目標は正規なので対象外。R-C4-4 (バケツ類の調達元) は含めない。
-  if (kind === "gather" && main.target?.entity) {
+  if ((kind === "gather" || kind === "give") && main.target?.entity) {
     return { kind: "clarify", target: main.target, amount: main.amount ?? null, constraints, sideTasks: [], negations, unresolved: [...unresolved, { slot: "target", reason: "gather_target_is_entity" }], caps, returnTo, raw };
   }
   // 0-C2 R-C2-6 U6-1 (cyc2384): 肯定形「<主対象>だけ集めて/倒して」の限定を allowOnly として保持する。

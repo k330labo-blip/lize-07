@@ -18,6 +18,8 @@ export function defaultAmountFor(kind, targetId) {
   try {
     if (kind === "hunt") return QTY_DEFAULT_HUNT;
     if (kind === "build") return QTY_DEFAULT_SINGLE;
+    // O5-KURE-GIVE-01 (cyc2517): give は gather と同じ対象別デフォルトを使う
+    // (下のスタック表分岐へそのまま通す。hunt/build の分岐へは入れない)。
     if (targetId && stackSizeOfItem(String(targetId)).size === 1) return QTY_DEFAULT_SINGLE;
     return QTY_DEFAULT_RESOURCE;
   } catch { return QTY_DEFAULT_RESOURCE; }

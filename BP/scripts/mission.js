@@ -156,6 +156,7 @@ export function createMission(order, sourcing = null) {
       placement: o.placement ?? null, // 0-C4 (cyc2020): 設置位置 (絶対/相対) も同様に保持する
       name: o.name ?? null, // 0-C4 (cyc2020): 表示名も保持する
       gearSet: Array.isArray(o.gearSet) ? [...o.gearSet] : null, // 0-F2 (cyc2020): 防具一式の部位列も保持する
+      give: !!o.give, // O5-KURE-GIVE-01 (cyc2517): 受け渡し要求の印。納品を要求個数へ限定する (doDeliver が読む)
     },
     steps,
     currentStep: 0,

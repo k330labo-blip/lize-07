@@ -3657,8 +3657,34 @@ function handleMissionSay(bot, owner, r, d) {
   }
   if (d.reason === "detour_resume") say(owner, bot, "本作業に戻ります");
 }
+// O5-KURE-GIVE-01 (cyc2517): 対象個数だけの受け渡し。長期タスク deliver 相 (addTo 往復形) が正で、
+// transferFiltered (全量寄せ) は使わない (所持の余りまで渡すと give の契約に反する)。
+// 主人へ n 個入れ、入らなかった分はリゼへ戻す。戻り値は実際に渡せた個数。
+function deliverAmountToOwner(bot, owner, target, amount) {
+  try { if (owner.dimension.id !== bot.dimension.id) return 0; } catch { return 0; }
+  const bc = invOf(bot), oc = invOf(owner);
+  if (!bc || !oc || !target || !(amount > 0)) return 0;
+  let have = 0; try { have = countOfGroup(countInv(bot), target); } catch { have = 0; }
+  const want = Math.min(have, Math.floor(amount));
+  if (want <= 0) return 0;
+  const used = consumeFrom(bc, target, want);
+  const n = used ? Object.values(used).reduce((a, v) => a + v, 0) : 0;
+  if (n <= 0) return 0;
+  const left = addTo(oc, target, n);
+  const delivered = n - left;
+  if (left > 0) addTo(bc, target, left); // 入らなかった分は自分の手元へ戻す (消さない)
+  return delivered;
+}
 function doDeliver(bot, owner, r, m) {
   if (m.order.returnTo === "home") { execArrive(bot, owner, { act: "deposit" }, r.lastCtx || {}, null); if (r.justDeposited) { r.deliveredFlag = true; r.deliverFail = false; } return; }
+  // O5-KURE-GIVE-01 (cyc2517): give の納品は要求個数だけに限定する (余剰・副産物はリゼに残る)
+  if (m.order.give && m.order.target) {
+    const movedGive = deliverAmountToOwner(bot, owner, m.order.target, m.order.amount ?? 1);
+    r.deliverFail = movedGive === 0;
+    if (movedGive === 0) noteFail(bot, "deliver:give_nothing_moved", new Error(String(m.order.target)));
+    if (movedGive > 0) { const st = stats(bot); st.deliver = (st.deliver || 0) + movedGive; saveStats(bot, st); r.deliveredFlag = true; r.justDelivered = true; system.runTimeout(() => { r.justDelivered = false; }, 100); dps(bot, "cb_bond", Math.min(100, dp(bot, "cb_bond", 30) + 1)); noteNod(r, movedGive); }
+    return;
+  }
   try { if (owner.dimension.id !== bot.dimension.id) { r.deliverFail = true; noteFail(bot, "deliver:dim_mismatch", new Error("owner in another dimension")); return; } } catch { r.deliverFail = true; return; } // cycle0659 F2 dim gate
   const oc = invOf(owner); if (!oc) { r.deliverFail = true; noteFail(bot, "deliver:no_owner_inv", new Error("owner inventory unavailable")); return; }
   const res = transferFiltered(bot, oc, null); recordStore(r, "doDeliver", res);
@@ -5549,7 +5575,7 @@ function parserOrderToMission(o) {
   // SHEAR-HONEST-01 (0-N5, cyc2452): 毛刈り意図の羊毛注文は、使わないハサミ指定を消費し
   // (調達・装備・「ハサミでやります」を出さない)、方式明示の印だけを mission へ保持する。
   const shearDisc = shearDisclosureFor({ tool: o.tool, target: t.item || t.block || null, raw: o.raw, kind: o.kind });
-  return { kind: o.kind === "hunt" ? "hunt" : "gather", target: t.item || t.block || t.entity || null, amount: orderAmountOrDefault(o), constraints: { hostiles, forbiddenTargets, caps: Array.isArray(o.caps) ? o.caps : [], window: o.constraints?.window ? { raw: o.constraints.window.raw || "", kind: o.constraints.window.kind || "" } : null, allowOnly: aoId ? { target: aoId, verb: o.allowOnly.verb ?? null } : null }, sideTasks, returnTo: o.returnTo === "home" ? "home" : "owner", name: t.name || null, tool: shearDisc ? null : (o.tool ?? null), shearHonest: !!shearDisc, placement: o.placement ?? null, gearSet: Array.isArray(o.gearSet) ? o.gearSet : null }; // 0-C2 (cycle1215): caps を mission 制約へ同梱 (保持のみ)。0-C4 (cycle1321): 道具と設置位置も保持する。R-C2-4 (cyc2380): window 写しも保持する。R-C2-6 U6-2 (cyc2384): 注文自身の allowOnly も写す (永続化はしない)
+  return { kind: o.kind === "hunt" ? "hunt" : "gather", give: o.kind === "give", target: t.item || t.block || t.entity || null, amount: orderAmountOrDefault(o), constraints: { hostiles, forbiddenTargets, caps: Array.isArray(o.caps) ? o.caps : [], window: o.constraints?.window ? { raw: o.constraints.window.raw || "", kind: o.constraints.window.kind || "" } : null, allowOnly: aoId ? { target: aoId, verb: o.allowOnly.verb ?? null } : null }, sideTasks, returnTo: o.returnTo === "home" ? "home" : "owner", name: t.name || null, tool: shearDisc ? null : (o.tool ?? null), shearHonest: !!shearDisc, placement: o.placement ?? null, gearSet: Array.isArray(o.gearSet) ? o.gearSet : null }; // 0-C2 (cycle1215): caps を mission 制約へ同梱 (保持のみ)。0-C4 (cycle1321): 道具と設置位置も保持する。R-C2-4 (cyc2380): window 写しも保持する。R-C2-6 U6-2 (cyc2384): 注文自身の allowOnly も写す (永続化はしない)
 }
 
 // Phase5 否定配線 (NEGW): 禁止・聞き返しは mission を作らない。記録と復唱/聞き返しのみ。
@@ -5699,6 +5725,27 @@ function startOrderFromParser(p, bot, r, o) {
   if (shearForbidBlockFor({ target: o.target?.item || o.target?.block || null, kind: o.kind, negations: o.negations })) {
     if ((o.negations || []).length) { try { recordSessionForbids(bot, r, { negations: (o.negations || []).filter((n) => { const nid = n?.target?.item || n?.target?.block || n?.target?.entity; return nid && nid !== (o.target?.item || o.target?.block || o.target?.entity); }) }); } catch {} }
     say(p, bot, SHEAR_FORBID_BLOCK_NOTE, true);
+    return;
+  }
+  // O5-KURE-GIVE-01 (cyc2517): 「くれ」は受け渡し要求。所持が足りれば調達せずその場で
+  // 要求個数だけ渡し、不足すれば give 印つきで調達する (完了納品も要求個数だけ。doDeliver)。
+  if (o.kind === "give") {
+    const mo = parserOrderToMission(o);
+    if (!mo.target) { say(p, bot, "対象が分かりませんでした。素材の名前を入れて、もう一度どうぞ", true); return; }
+    // 受理時点の上限明示 (0-C7): 黙って丸めない
+    if (typeof mo.amount === "number" && mo.amount > 10000) {
+      mo.amount = 10000;
+      say(p, bot, `上限は10,000個です。${mo.name || "その品物"}は10,000個で受けます`, true);
+    }
+    if (r.mission && (r.mission.status === "active" || r.mission.status === "suspended")) { say(p, bot, "今の指示の途中です。やめるなら「やめて」と言ってください", true); return; }
+    let have = 0; try { have = countOfGroup(countInv(bot), mo.target); } catch { have = 0; }
+    if (have >= mo.amount) {
+      const moved = deliverAmountToOwner(bot, p, mo.target, mo.amount);
+      if (moved > 0) { say(p, bot, `${mo.name || "その品物"}を${moved}個、渡しました`, true); return; }
+      say(p, bot, "渡せませんでした。あなたの荷物に空きを作ってください", true); return;
+    }
+    if ((o.negations || []).length) { try { recordSessionForbids(bot, r, { negations: (o.negations || []).filter((n) => { const nid = n?.target?.item || n?.target?.block || n?.target?.entity; return nid && nid !== mo.target; }) }); } catch {} }
+    startMission(bot, p, r, mo);
     return;
   }
   if (o.kind === "free") { dps(bot, "cb_mode", "free"); say(p, bot, "おまかせ、了解です。状況は私が見ます", true); return; }

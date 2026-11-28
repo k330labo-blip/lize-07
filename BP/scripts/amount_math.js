@@ -9,6 +9,19 @@ export function parseNumberToken(s) {
   try {
     if (typeof s !== "string" || !s) return null;
     if (/^\d+$/.test(s)) return parseInt(s, 10);
+    // O5-KURE-GIVE-01 (cyc2517): 位取り単位「億」「万」。係数は parseNumberToken 自身で
+    // 再帰して読む (一億=1×10^8、二億=2×10^8、十万=10×10^4、二十万=20×10^4)。
+    // 単位だけ (「億」「万」単独) は係数1として読む (日本語の数詞として正)。
+    for (const [unit, mag] of [["億", 100000000], ["万", 10000]]) {
+      const ui = s.indexOf(unit);
+      if (ui >= 0) {
+        const head = s.slice(0, ui), tail = s.slice(ui + 1);
+        const hv = head === "" ? 1 : parseNumberToken(head);
+        const tv = tail === "" ? 0 : parseNumberToken(tail);
+        if (hv == null || tv == null) return null;
+        return hv * mag + tv;
+      }
+    }
     if (s === "十") return 10;
     if (s === "ゼロ" || s === "零") return 0;
     if (s.includes("十")) {
@@ -79,7 +92,7 @@ const CORRECTION_RE = /(やっぱり|いや|じゃなくて|ではなく|じゃ�
 function readTerm(s, size) {
   let m = s.match(new RegExp(`^(半|はん)スタック`));
   if (m) return { value: halfStack(size), len: m[0].length, half: true };
-  m = s.match(new RegExp(`^${NUM}\\s*スタック`));
+  m = s.match(new RegExp(`^${NUM}\\s*(億|万)?\\s*スタック`));
   if (m) {
     const raw = m[1];
     if (/^\d+\.\d+$/.test(raw)) {
@@ -88,14 +101,16 @@ function readTerm(s, size) {
       const v = whole * size + (frac >= 0.5 ? halfStack(size) : 0);
       return { value: v, len: m[0].length };
     }
-    const n = parseNumberToken(raw);
-    if (n == null) return null;
+    const n0 = parseNumberToken(raw);
+    if (n0 == null) return null;
+    const n = n0 * (m[2] === "億" ? 100000000 : m[2] === "万" ? 10000 : 1);
     return { value: n * size, len: m[0].length };
   }
-  m = s.match(new RegExp(`^${NUM}\\s*${UNIT}`));
+  m = s.match(new RegExp(`^${NUM}\\s*(億|万)?\\s*${UNIT}`));
   if (m) {
-    const n = parseNumberToken(m[1]);
-    if (n == null) return null;
+    const n0 = parseNumberToken(m[1]);
+    if (n0 == null) return null;
+    const n = n0 * (m[2] === "億" ? 100000000 : m[2] === "万" ? 10000 : 1);
     return { value: n, len: m[0].length };
   }
   return null;
@@ -138,7 +153,7 @@ export function amount_parse(segment, ctx = {}) {
     // 数量の開始位置を探す（メンション等の前置語は読み飛ばす）
     // cyc-next R-4: 「あと、3個」「あともう3個」でも相対指定が落ちないよう、
     // 読点と「もう」を「あと」の後ろに許す。
-    const startRe = new RegExp(`(あと\\s*[、,]?\\s*(?:もう\\s*)?)?((半|はん)スタック|${NUM}\\s*(スタック|${UNIT}))`);
+    const startRe = new RegExp(`(あと\\s*[、,]?\\s*(?:もう\\s*)?)?((半|はん)スタック|${NUM}\\s*(?:億|万)?\\s*(スタック|${UNIT}))`);
     const sm = s.match(startRe);
     if (!sm) return { ...emptyResult(sizeInfo), corrected };
     if (sm[1]) relative = true;
