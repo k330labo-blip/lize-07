@@ -151,7 +151,9 @@ export function executeCraftLeg(cont, leg) {
 }
 
 // 精錬 leg の実行。材料に加えて燃料も消費する。失敗時は材料・燃料を全て戻す。
-export function executeSmeltLeg(cont, leg) {
+// SMELT-FUEL-UNRESERVED-01: 任意の第3引数 restNeeds（後続 leg 群の needs 集計）を受け取り、
+// 後続 leg が材料として必要とする分は燃料として消費しない（予約）。未指定時は現行挙動と等価。
+export function executeSmeltLeg(cont, leg, restNeeds) {
   const needs = leg.needs || {};
   const totalInput = Object.values(needs).reduce((a, n) => a + n, 0);
   for (const [item, n] of Object.entries(needs)) {
@@ -164,7 +166,7 @@ export function executeSmeltLeg(cont, leg) {
   // HS-5 是正: 燃料は材料として確保される分を差し引いた実効在庫で数える
   const reservedOf = (fid) => {
     const members = fid.startsWith("group:") ? (GROUPS[fid] || []) : [fid];
-    let r = 0; for (const m of members) r += needs[m] || 0; return r;
+    let r = 0; for (const m of members) r += (needs[m] || 0) + (restNeeds?.[m] || 0); return r;
   };
   for (const [fid, val] of FUEL_FALLBACK) {
     if (burn >= totalInput) break;

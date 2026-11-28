@@ -285,12 +285,12 @@ function tickSuspendedResume(bot, r) {
   const m = r && r.mission; if (!m || m.status !== "suspended" || (m.suspendReason !== "cannot_recover" && m.suspendReason !== "inv_unreadable")) return null;
   if (!m.suspendWaitSince || !Number.isFinite(m.suspendWaitSince) || m.suspendWaitSince <= 0 || m.suspendWaitSince > Date.now()) { m.suspendWaitSince = Date.now(); persistMission(bot, r, true); } // cycle1807: 初回設定の瞬間に強制保存する (waiting 経路は保存を呼ばないため) / cycle2311: 未来値・文字列等の異常値は現在時刻へ打ち直す (無検証採用だと期限切れに到達しない)
   if (m.suspendReason === "inv_unreadable") {
-    if (invOf(bot)) { m.blocked = null; m.invUnreadObs = 0; m.status = "active"; m.suspendReason = null; m.suspendWaitSince = null; persistMission(bot, r, true); return "resumed"; }
+    if (invOf(bot)) { m.blocked = null; m.invUnreadObs = 0; m.status = "active"; m.suspendReason = null; m.suspendWaitSince = null; r.suspendNotified = false; persistMission(bot, r, true); return "resumed"; } // SUSPEND-NOTIFY-ONESHOT-01: 再開確定点で通知済み印を戻す (次回保留でも通知する)
     if (Date.now() - m.suspendWaitSince > SUSPEND_RESUME_WAIT_MS) return "expired";
     return "waiting";
   }
   const h = hpOfMeasured(bot);
-  if (h && (h.cur / h.max) >= 0.5) { m.blocked = null; m.recoverObs = 0; m.status = "active"; m.suspendReason = null; m.suspendWaitSince = null; persistMission(bot, r, true); return "resumed"; }
+  if (h && (h.cur / h.max) >= 0.5) { m.blocked = null; m.recoverObs = 0; m.status = "active"; m.suspendReason = null; m.suspendWaitSince = null; r.suspendNotified = false; persistMission(bot, r, true); return "resumed"; } // SUSPEND-NOTIFY-ONESHOT-01: 再開確定点で通知済み印を戻す
   if (Date.now() - m.suspendWaitSince > SUSPEND_RESUME_WAIT_MS) return "expired";
   return "waiting";
 }
@@ -3330,6 +3330,8 @@ function tickToolPrepPromote(bot, owner, r) {
     return true;
   } catch { return false; }
 }
+// SMELT-FUEL-UNRESERVED-01: 後続 leg 群の needs 集計 (精錬の燃料予約へ任意の第3引数として渡す。leg 本体へは書き込まない)
+function restNeedsAfter(legs, idx) { const out = {}; if (!Array.isArray(legs)) return out; for (let i = idx + 1; i < legs.length; i++) { const rn = legs[i]?.needs; if (!rn) continue; for (const [k, v] of Object.entries(rn)) if (Number.isFinite(v) && v > 0) out[k] = (out[k] || 0) + v; } return out; }
 // CRAFT/SMELT-PARTIAL-01: leg 実行前に既所持分を差し引いた残量へ縮小する (gather 分岐の remain 換算と同型)
 function shrinkLegToRemain(leg, have) {
   const need = leg.need || 1, remain = need - have;
@@ -3470,7 +3472,7 @@ function tickLongTask(bot, owner, r, ctx) {
         say(owner, bot, `長期タスクを中断しました。${leg.type === "smelt" ? "かまど" : "作業台"}を用意できませんでした`, true); return abortLongTask(bot, owner, r);
       }
       const execLeg = shrinkLegToRemain(leg, countOfGroup(countInv(bot), leg.item)) || leg;
-      const res = leg.type === "craft" ? executeCraftLeg(invOf(bot), execLeg) : executeSmeltLeg(invOf(bot), execLeg);
+      const res = leg.type === "craft" ? executeCraftLeg(invOf(bot), execLeg) : executeSmeltLeg(invOf(bot), execLeg, restNeedsAfter(lt.legs, lt.legIdx));
       // 6-ML ML-H01/H02 (cycle1322, a02): CRAFT/SMELT の実行結果を result 軸へ記録する (記録のみ・分岐不変)。
       // fromCraftResult は act を持たないため、rec 形へ射影してから commit する (そのままでは EXP 化されない)。
       try { const norm = fromCraftResult(res); const rec = { act: leg.type === "craft" ? "CRAFT" : "SMELT", ok: !!norm?.ok, reason: norm?.reason || null, item: res?.produced || leg.item || null, gained: res?.ok ? (execLeg.need || 0) : 0, at: Date.now() }; if (leg.type === "craft") r.lastCraft = rec; else r.lastSmelt = rec; commitLastAction(r, rec); } catch {}
