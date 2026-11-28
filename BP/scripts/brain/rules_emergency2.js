@@ -43,7 +43,7 @@ export const RULES = [
 {id:'emg2_void_hostile_knockback',p:918,when:c=>Boolean(c.x?.voidRisk&&c.danger.safetyCount>0&&c.danger.safetyNearestDist<8),act:'flee',say:'ノックバックで落ちます。縁から離れます',note:'奈落＋敵接近（吹き飛ばし落下）で離脱'},
 {id:'emg2_void_carrying_valuable',p:916,when:c=>Boolean(c.x?.voidRisk&&c.inv.hasValuable&&c.inv.valuableCount>=2),act:'flee',say:'この荷物を奈落に落とすわけにはいきません',note:'貴重品多数運搬中の奈落リスクで離脱'},
 {id:'emg2_void_night',p:913,when:c=>Boolean(c.x?.voidRisk&&c.env.isNight&&c.owner.present&&c.flags.warnOk),act:'warn_hostile',say:'暗くて縁が見えません。足元、奈落です',note:'夜間の奈落を警告'},
-{id:'emg2_void_owner_sneaking_safe',p:905,when:c=>Boolean(c.x?.voidRisk&&c.owner.sneaking&&c.danger.count===0&&c.owner.present),act:'say_only',say:'スニーク移動、確認。静かに見ています',note:'奈落縁をスニーク移動中は安全側として見守る'},
+{id:'emg2_void_owner_sneaking_safe',p:905,when:c=>Boolean(c.x?.voidRisk&&c.owner.sneaking&&c.danger.safetyCount===0&&c.owner.present),act:'say_only',say:'スニーク移動、確認。静かに見ています',note:'奈落縁をスニーク移動中は安全側として見守る'},
 {id:'emg2_void_self_stuck',p:914,when:c=>Boolean(c.x?.voidRisk&&c.self.stuck&&c.self.stuckSec>3),act:'rise_avoid',say:'縁で引っかかっています。浮いて外します',note:'奈落付近で自分のスタックを上昇回避'},
 {id:'emg2_void_ranged',p:915,when:c=>Boolean(c.x?.voidRisk&&c.danger.safetyRangedDist<14&&c.owner.present),act:'flee',say:'矢の一発で落ちます。射線から外れます',note:'奈落＋射手の複合で離脱'},
 // === クモの巣 (webStuck) ===

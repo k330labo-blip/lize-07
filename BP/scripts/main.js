@@ -675,9 +675,9 @@ function buildContext(bot, owner) {
       r.catchsightPrevItemIds = curItemIds;
     }
   } catch {}
-  try { if (!r.xpglanceState) r.xpglanceState = createXpGlanceState(); const resX = noteXpGlance(r.xpglanceState, { orbId: xpOrbCand ? xpOrbCand.id : "", orbPos: xpOrbCand ? xpOrbCand.loc : null, selfPos: bot.location, sameDimension: true, suppressed: (c.danger?.count ?? 0) > 0 || r.selfFalling === true }, Date.now()); if (resX === "fired") r.lastXpGlance = { at: Date.now(), orbId: xpOrbCand?.id || null }; } catch {} // POLISH-ANIM-XPGLANCE-01 (cycle0628): feeder は既存走査のオーブ候補のみ (表示層のみ・実機確認待ち)
+  try { if (!r.xpglanceState) r.xpglanceState = createXpGlanceState(); const resX = noteXpGlance(r.xpglanceState, { orbId: xpOrbCand ? xpOrbCand.id : "", orbPos: xpOrbCand ? xpOrbCand.loc : null, selfPos: bot.location, sameDimension: true, suppressed: ((r.lastCtx?.danger?.safetyCount ?? 0) > 0) || r.selfFalling === true }, Date.now()); if (resX === "fired") r.lastXpGlance = { at: Date.now(), orbId: xpOrbCand?.id || null }; } catch {} // POLISH-ANIM-XPGLANCE-01 (cycle0628): feeder は既存走査のオーブ候補のみ (表示層のみ・実機確認待ち)
   noteFlinch(bot, r, flinchCand); // POLISH-ANIM-FLINCH-01 (cycle1051): 出現の辺でのみ発火 (表示層のみ)
-  noteSkyglance(r, c.env.isRaining, c.danger && c.danger.count > 0); // POLISH-ANIM-SKYGLANCE-01 (cycle1133)
+  noteSkyglance(r, c.env.isRaining, (r.lastCtx?.danger?.safetyCount ?? 0) > 0); // POLISH-ANIM-SKYGLANCE-01 (cycle1133)
   noteHorizonGlance(bot, r, c); // POLISH-ANIM-HORIZONGLANCE-01 (cycle0320)
   noteFullMoonGaze(bot, r, c); // POLISH-ANIM-FULLMOONGAZE-01 (v0.5.80): feeder 接続 (表示層のみ・実機確認待ち)
   noteNightwatchTick(bot, r, c); // POLISH-ANIM-NIGHTWATCH-01 (cycle0340)
@@ -731,7 +731,7 @@ function buildContext(bot, owner) {
   c.x.ownerLevel = owner.level || 0;
   // POLISH-ANIM-LEVELUPNOD-01 feeder (cyc2122): ownerLevel 設定直後の1箇所のみ。新規走査なし、表示層のみ・実機確認待ち。
   // 設定より前に置くと undefined を読み続け永遠に発火しないため、この置き順を維持すること (wiring test が固定)。
-  try { if (!r.levelupnodState) r.levelupnodState = createLevelupNodState(); const dimNow = c.x.dimension; const dimChanged = r.levelupnodPrevDim != null && r.levelupnodPrevDim !== dimNow; r.levelupnodPrevDim = dimNow; const nowL = Date.now(); let overlayL = false; try { overlayL = isNodActive(r.nodAnimAt, nowL) || isFlinchActive(r.flinchAnimAt, nowL) || isSettleActive(r.settleAnimAt, nowL) || isDeliverBowActive(r.deliverBowAt, nowL); } catch {} const supL = ((c.danger?.count ?? 0) > 0) || r.selfFalling === true || !!bot.isInWater || !!r.work || !c.owner.dimensionSame; const resL = noteOwnerLevel(r.levelupnodState, { level: c.x.ownerLevel, nowMs: nowL, dimensionChanged: dimChanged, suppressed: supL, overlayActive: overlayL }); if (resL?.fired) { r.levelupnodAnimAt = nowL; r.lastLevelupNod = { atMs: nowL, fromLevel: resL.fromLevel, toLevel: resL.toLevel, delta: (resL.toLevel ?? 0) - (resL.fromLevel ?? 0) }; } } catch {}
+  try { if (!r.levelupnodState) r.levelupnodState = createLevelupNodState(); const dimNow = c.x.dimension; const dimChanged = r.levelupnodPrevDim != null && r.levelupnodPrevDim !== dimNow; r.levelupnodPrevDim = dimNow; const nowL = Date.now(); let overlayL = false; try { overlayL = isNodActive(r.nodAnimAt, nowL) || isFlinchActive(r.flinchAnimAt, nowL) || isSettleActive(r.settleAnimAt, nowL) || isDeliverBowActive(r.deliverBowAt, nowL); } catch {} const supL = ((r.lastCtx?.danger?.safetyCount ?? 0) > 0) || r.selfFalling === true || !!bot.isInWater || !!r.work || !c.owner.dimensionSame; const resL = noteOwnerLevel(r.levelupnodState, { level: c.x.ownerLevel, nowMs: nowL, dimensionChanged: dimChanged, suppressed: supL, overlayActive: overlayL }); if (resL?.fired) { r.levelupnodAnimAt = nowL; r.lastLevelupNod = { atMs: nowL, fromLevel: resL.fromLevel, toLevel: resL.toLevel, delta: (resL.toLevel ?? 0) - (resL.fromLevel ?? 0) }; } } catch {}
   try { c.x.daysTogether = Math.max(0, world.getDay() - (dp(bot, "cb_firstday", world.getDay()))); } catch {}
   c.x.firstToday = r.greetedDay !== world.getDay();
   c.x.ownerBreaking = !!ort.breakAt && Date.now() - ort.breakAt < 3000;
@@ -895,7 +895,7 @@ function buildContext(bot, owner) {
     try {
       if (!r.ownerfalltrackState) r.ownerfalltrackState = createOwnerfalltrackState();
       const gr2 = gazeRotation(bot.location, owner.location); let cur2 = null; try { cur2 = bot.getRotation(); } catch {}
-      const sample = { ownerFalling: !!c.x.falling, fallDist, relYawDeg: (gr2 && cur2) ? ((gr2.y - cur2.y + 540) % 360) - 180 : undefined, relPitchDeg: (gr2 && cur2) ? gr2.x - cur2.x : undefined, inCombat: !!((c?.danger?.count ?? 0) > 0), selfFalling: r.selfFalling === true, working: !!r.work, inWater: !!c?.owner?.inWater };
+      const sample = { ownerFalling: !!c.x.falling, fallDist, relYawDeg: (gr2 && cur2) ? ((gr2.y - cur2.y + 540) % 360) - 180 : undefined, relPitchDeg: (gr2 && cur2) ? gr2.x - cur2.x : undefined, inCombat: !!((r.lastCtx?.danger?.safetyCount ?? 0) > 0), selfFalling: r.selfFalling === true, working: !!r.work, inWater: !!c?.owner?.inWater };
       const res2 = noteOwnerfalltrack(r.ownerfalltrackState, sample, Date.now());
       r.ownerfalltrackSample = sample;
       if (res2 && res2.fired) r.lastOwnerFallTrack = { at: Date.now(), episode: r.ownerfalltrackState.episode };
@@ -1370,7 +1370,7 @@ function tickWork(bot, owner, r, ctx) {
     const yawTo = gr && cur ? ((gr.y - cur.y + 540) % 360) - 180 : 0;
     const pitchTo = gr && cur ? gr.x - cur.x : 0;
     let inWaterL = false; try { inWaterL = !!bot.isInWater; } catch {}
-    const out = tickLookLead({ nowMs: Date.now(), msUntilAction: Math.max(0, (w.left - 1)) * 50, yawToNextDeg: yawTo, pitchToNextDeg: pitchTo, targetKey: `cell:${w.loc.x},${w.loc.y},${w.loc.z}`, suppressed: !!((ctx?.danger?.count ?? 0) > 0) || r.selfFalling === true || inWaterL, state: r.lookleadState });
+    const out = tickLookLead({ nowMs: Date.now(), msUntilAction: Math.max(0, (w.left - 1)) * 50, yawToNextDeg: yawTo, pitchToNextDeg: pitchTo, targetKey: `cell:${w.loc.x},${w.loc.y},${w.loc.z}`, suppressed: !!((ctx?.danger?.safetyCount ?? 0) > 0) || r.selfFalling === true || inWaterL, state: r.lookleadState });
     r.lookleadState = out.state; r.lookleadSample = out; r.lookleadSampleAt = Date.now();
     if (out.fired) r.lastLookLead = { at: Date.now(), targetKey: `cell:${w.loc.x},${w.loc.y},${w.loc.z}` };
   } catch {}
@@ -1507,7 +1507,7 @@ function tickAutonomy(bot, owner, ctx, effMove) {
   } } catch {}
   let g = null; try { g = chooseGoal(ctx, mem); } catch {}
   if (!g) return;
-  if (g.goal !== r.goal) { r.goal = g.goal; r.goalAt = Date.now(); if (mode === "free" && g.reason) say(owner, bot, g.reason); try { const gev = mapGoalEvent({ goal: g.goal, utility: g.utility, scores: Array.isArray(g.scores) ? g.scores.map((s) => [s?.goal, s?.utility]) : undefined, x: { hp: ctx.self?.hpPct ?? null, dg: ctx.danger?.count ?? null, scan: ctx.x?.obs?.scan ?? null, inv: ctx.x?.obs?.inv ?? null } }); if (gev) r.trace?.record(gev); } catch {} }
+  if (g.goal !== r.goal) { r.goal = g.goal; r.goalAt = Date.now(); if (mode === "free" && g.reason) say(owner, bot, g.reason); try { const gev = mapGoalEvent({ goal: g.goal, utility: g.utility, scores: Array.isArray(g.scores) ? g.scores.map((s) => [s?.goal, s?.utility]) : undefined, x: { hp: ctx.self?.hpPct ?? null, dg: ctx.danger?.safetyCount ?? null, scan: ctx.x?.obs?.scan ?? null, inv: ctx.x?.obs?.inv ?? null } }); if (gev) r.trace?.record(gev); } catch {} }
   switch (g.goal) {
     case "gather_wood": case "mine_ore": case "farm_crops": case "gather_stone": { const t0628 = r.percTargets?.[GATHER_TARGETS[g.goal]]; let blocked0628 = false; try { blocked0628 = !!t0628 && isForbiddenWorkTarget(r.sessionForbids, t0628.typeId, dropOfWorkTarget); } catch {} try { if (t0628 && isAllowedByAllowOnly(r.allowOnly, t0628.typeId, "gather") === false) blocked0628 = true; } catch {} if (blocked0628) wanderTo(r, bot, owner); else if (!startWork(bot, r, t0628)) wanderTo(r, bot, owner); break; } // forbids G6-c (cycle0628): 禁止対象は startWork へ渡さない (知覚選出の除外の防衛線) + U5-1 (cyc2387): allowOnly 許可外の知覚対象も自律選出では startWork へ渡さない
     case "place_torch_dark": { // cycle2117 torchfix: 足元へ降りる目標を張り syncFlyGoal の interact 降下に載せる (張るだけでは消費しない)
@@ -1638,7 +1638,7 @@ function noteMove(bot, r, engine) {
       if (!r.routecheckState || r.routecheckDim !== bot.dimension.id) { r.routecheckState = createRoutecheckState(); r.routecheckDim = bot.dimension.id; r.routecheckPrevPos = null; }
       const rp2 = r.routecheckPrevPos;
       const stepH = rp2 ? Math.hypot(pos.x - rp2.x, pos.z - rp2.z) : 0;
-      const rcEv = noteRoutecheck(r.routecheckState, { moving: stepH > 0.01, stepDist: stepH, arrived: eng === "idle", falling: !grounded, inWater: !!bot.isInWater, justTeleported: eng === "teleport", working: !!r.work, danger: !!(((r.lastCtx?.danger?.count) ?? 0) > 0) }, Date.now());
+      const rcEv = noteRoutecheck(r.routecheckState, { moving: stepH > 0.01, stepDist: stepH, arrived: eng === "idle", falling: !grounded, inWater: !!bot.isInWater, justTeleported: eng === "teleport", working: !!r.work, danger: !!(((r.lastCtx?.danger?.safetyCount) ?? 0) > 0) }, Date.now());
       if (rcEv && rcEv.fired) r.lastRoutecheck = { at: Date.now(), reason: rcEv.reason, armPitchDeg: -30 };
       r.routecheckPrevPos = { x: pos.x, z: pos.z };
     } catch {}
@@ -1949,7 +1949,7 @@ system.runInterval(() => {
     // 作り込み POLISH-SND-LAND-01 (cycle0942): 着地音の実配線。sfxLand は定義済みだが未配線だった。selfFalling (supplySelfFalling) の真→偽の辺で、落下距離2以上なら足元素材の step 音を強めに鳴らす (表示層のみ・実機確認待ち)
     // 作り込み POLISH-FX-ENVRESIDUE-01 (cycle0942): 環境残留表現の状態機械を配線。出水/粉雪脱出の辺から減衰プロファイルで残留を出す。パーティクルIDは未照合 (profile の particleId=null) のため現時点では r.lastResidue への記録のみで、照合済みIDが入った媒体から実表示が始まる (虚偽の見た目を作らない)。表示層のみ・実機確認待ち
     try { const insideRes = bot.isInWater ? "water" : ((r.lastCtx && r.lastCtx.x && r.lastCtx.x.selfFreezing) ? "powder_snow" : null); if (!r.residueState) r.residueState = createResidueState(); const rtRes = residueTick(r.residueState, insideRes, Date.now()); r.residueState = rtRes.state; if (rtRes.emit) { r.lastResidue = { medium: rtRes.medium, particle: rtRes.particleId, at: Date.now() }; if (rtRes.particleId) { try { emitResidueParticle(bot.dimension, bot.location, rtRes.medium); } catch {} } } } catch {}
-    try { if (!r.breathColdState) r.breathColdState = { lastFiredAtMs: null, nextDueAtMs: null, coldSinceMs: null, fireCount: 0, wasEligible: false }; const bx = r.lastCtx?.x; const firedB = noteBreathCold(r.breathColdState, { cold: bx?.biome === "snow", inPowderSnow: bx?.selfFreezing === true, inWater: !!bot.isInWater, dimension: (() => { try { return bot.dimension.id; } catch { return null; } })(), danger: !!((r.lastCtx?.danger?.count ?? 0) > 0), falling: r.selfFalling === true, nowMs: Date.now() }); if (firedB) r.lastBreathCold = { at: Date.now(), count: r.breathColdState.fireCount }; } catch {} // POLISH-FX-BREATHCOLD-01 (cycle1343): 寒冷地で約4秒周期に発火を記録のみ (粒子ID未照合のため spawnParticle は呼ばない、ENVRESIDUE と同方式・実機確認待ち)
+    try { if (!r.breathColdState) r.breathColdState = { lastFiredAtMs: null, nextDueAtMs: null, coldSinceMs: null, fireCount: 0, wasEligible: false }; const bx = r.lastCtx?.x; const firedB = noteBreathCold(r.breathColdState, { cold: bx?.biome === "snow", inPowderSnow: bx?.selfFreezing === true, inWater: !!bot.isInWater, dimension: (() => { try { return bot.dimension.id; } catch { return null; } })(), danger: !!((r.lastCtx?.danger?.safetyCount ?? 0) > 0), falling: r.selfFalling === true, nowMs: Date.now() }); if (firedB) r.lastBreathCold = { at: Date.now(), count: r.breathColdState.fireCount }; } catch {} // POLISH-FX-BREATHCOLD-01 (cycle1343): 寒冷地で約4秒周期に発火を記録のみ (粒子ID未照合のため spawnParticle は呼ばない、ENVRESIDUE と同方式・実機確認待ち)
     try { const fallingNow = !!(r.lastCtx && r.lastCtx.x && r.lastCtx.x.selfFalling); if (fallingNow) { if (typeof r.selfFallPeakY === "number") r._landPeakY = r.selfFallPeakY; } else if (r._landFalling) { const peak = (typeof r._landPeakY === "number") ? r._landPeakY : bot.location.y; if (peak - bot.location.y >= 2) { const below2 = bot.dimension.getBlock({ x: Math.floor(bot.location.x), y: Math.floor(bot.location.y - 0.5), z: Math.floor(bot.location.z) }); if (below2 && solidOfTypeId(below2.typeId)) { try { sfxLand(bot.dimension, bot.location, below2.typeId); } catch {} } } r._landPeakY = null; } r._landFalling = fallingNow; } catch {}
     if (!r.target) { try { noteMove(bot, r, "idle"); } catch {} if (r.body) bodies.followBot(bot, r); continue; }
     const pos0 = bot.location;
@@ -3564,7 +3564,7 @@ function tickLongTask(bot, owner, r, ctx) {
       pickUpPlacedStation(bot, r); // v0.4.67: 自分で置いた作業台・かまどは持ち歩く (置きっぱなしだと、遠くで次の工程を始めた時に用意できず中断していた)
       if (res.bucketPending > 0) { // SMELT P2: 空バケツ返却の残数は足元へ16個ずつ落とし、失敗は記録する (drink_milk と同型)
         let rest = res.bucketPending, dropFailed = false;
-        while (rest > 0) { const chunk = Math.min(16, rest); try { bot.dimension.spawnItem(new ItemStack("minecraft:bucket", chunk), bot.location); rest -= chunk; try { if (shouldToss({ spawned: true, suppressed: !!((r.lastCtx?.danger?.count ?? 0) > 0) || !!r.work, lastFiredMs: r.tossAnimLastAt ?? null, nowMs: Date.now() })) { r.tossAnimAt = Date.now(); r.tossAnimLastAt = r.tossAnimAt; r.lastToss = { at: r.tossAnimAt, armPitchDeg: -35 }; } } catch {} } catch { dropFailed = true; break; } } // POLISH-ANIM-TOSS-01 (cycle1400): 出現成功の辺でのみ投げ出し表現を開始 (表示層のみ)
+        while (rest > 0) { const chunk = Math.min(16, rest); try { bot.dimension.spawnItem(new ItemStack("minecraft:bucket", chunk), bot.location); rest -= chunk; try { if (shouldToss({ spawned: true, suppressed: !!((r.lastCtx?.danger?.safetyCount ?? 0) > 0) || !!r.work, lastFiredMs: r.tossAnimLastAt ?? null, nowMs: Date.now() })) { r.tossAnimAt = Date.now(); r.tossAnimLastAt = r.tossAnimAt; r.lastToss = { at: r.tossAnimAt, armPitchDeg: -35 }; } } catch {} } catch { dropFailed = true; break; } } // POLISH-ANIM-TOSS-01 (cycle1400): 出現成功の辺でのみ投げ出し表現を開始 (表示層のみ)
         if (dropFailed || rest > 0) noteFail(bot, "smelt:bucket_lost", new Error("empty bucket drop failed"));
       }
       if (res.rollbackLost && Object.keys(res.rollbackLost).length) { // CRAFT-TX-LOST-NOREADER-01: 戻し切れなかった材料の申告を受け、失われた品目と個数を明示する (bucketPending と同型の受け皿)
@@ -3717,7 +3717,7 @@ function noteLookback(r, c) {
     const d = c.self?.distOwner;
     r.lookbackPrevDist = d;
     let inWater = false; try { inWater = !!c.x?.inWater; } catch {}
-    if (shouldLookback({ prevDist: prev, dist: d, danger: !!(c.danger && c.danger.count > 0), working: !!r.work, falling: r.selfFalling === true, inWater, inspectActive: isInspectActive(r.inspectAnimAt, Date.now()), nodActive: isNodActive(r.nodAnimAt, Date.now()), flinchActive: isFlinchActive(r.flinchAnimAt, Date.now()), summonScanActive: isSummonScanActive(r.summonScanAt, Date.now()), skyglanceActive: isSkyglanceActive(r.skyglanceAt, Date.now()), lastFiredMs: r.lookbackAnimLastAt ?? null, nowMs: Date.now() })) { r.lookbackAnimAt = Date.now(); r.lookbackAnimLastAt = r.lookbackAnimAt; }
+    if (shouldLookback({ prevDist: prev, dist: d, danger: !!(c.danger && c.danger.safetyCount > 0), working: !!r.work, falling: r.selfFalling === true, inWater, inspectActive: isInspectActive(r.inspectAnimAt, Date.now()), nodActive: isNodActive(r.nodAnimAt, Date.now()), flinchActive: isFlinchActive(r.flinchAnimAt, Date.now()), summonScanActive: isSummonScanActive(r.summonScanAt, Date.now()), skyglanceActive: isSkyglanceActive(r.skyglanceAt, Date.now()), lastFiredMs: r.lookbackAnimLastAt ?? null, nowMs: Date.now() })) { r.lookbackAnimAt = Date.now(); r.lookbackAnimLastAt = r.lookbackAnimAt; }
   } catch {}
 }
 // POLISH-ANIM-DRYOFF-01 (cycle1322): 雨上がりの辺でのみ水払いを開始する (表示層のみ・実機確認待ち)。状態は dryoffState に分離保持し skyglance の prevRaining と干渉しない
@@ -3729,7 +3729,7 @@ function noteThreshold(bot, dim, r, c) {
     const fx = Math.floor(bot.location.x), fy = Math.floor(bot.location.y), fz = Math.floor(bot.location.z);
     const solid = (x, y, z) => { try { const b = dim.getBlock({ x, y, z }); return !!b && solidOfTypeId(b.typeId) && !b.isLiquid; } catch { return false; } };
     const inOpening = (solid(fx - 1, fy, fz) && solid(fx + 1, fy, fz)) || (solid(fx, fy, fz - 1) && solid(fx, fy, fz + 1));
-    const fired = noteThresholdState(r.thresholdState, { inOpening, nowMs: Date.now(), danger: !!(c?.danger && c.danger.count > 0), hasWorkTarget: !!r.work, falling: r.selfFalling === true, inWater: !!c?.x?.inWater, flinchActive: isFlinchActive(r.flinchAnimAt, Date.now()) });
+    const fired = noteThresholdState(r.thresholdState, { inOpening, nowMs: Date.now(), danger: !!(c?.danger && c.danger.safetyCount > 0), hasWorkTarget: !!r.work, falling: r.selfFalling === true, inWater: !!c?.x?.inWater, flinchActive: isFlinchActive(r.flinchAnimAt, Date.now()) });
     if (fired) r.lastThreshold = { at: Date.now(), firedCount: r.thresholdState.firedCount };
   } catch {}
 }
@@ -3746,7 +3746,7 @@ function noteIcebalanceTick(bot, dim, r, c) {
     let yawDeg = null;
     try { const rot = bot.getRotation(); if (rot && Number.isFinite(rot.y)) yawDeg = rot.y; } catch {}
     let flying = false; try { flying = bot.isFlying === true; } catch {}
-    const fired = noteIcebalanceState(r.icebalanceState, { groundCategory, horizSpeed, yawDeg, nowMs: Date.now(), danger: !!(c?.danger && c.danger.count > 0), hasWorkTarget: !!r.work, falling: r.selfFalling === true, selfFalling: r.selfFalling === true, inWater: !!c?.x?.inWater, flying, flinchActive: isFlinchActive(r.flinchAnimAt, Date.now()), intentionalDescent: !!(r.mission?.descent || r.spiralDescent) });
+    const fired = noteIcebalanceState(r.icebalanceState, { groundCategory, horizSpeed, yawDeg, nowMs: Date.now(), danger: !!(c?.danger && c.danger.safetyCount > 0), hasWorkTarget: !!r.work, falling: r.selfFalling === true, selfFalling: r.selfFalling === true, inWater: !!c?.x?.inWater, flying, flinchActive: isFlinchActive(r.flinchAnimAt, Date.now()), intentionalDescent: !!(r.mission?.descent || r.spiralDescent) });
     if (fired) { const s = sampleIcebalance(r.icebalanceState, Date.now()); r.lastIcebalance = { at: Date.now(), firedCount: r.icebalanceState.firedCount, trigger: s.trigger, rollSign: s.rollSign }; }
   } catch {}
 }
@@ -3767,7 +3767,7 @@ function noteSnowtreadTick(bot, dim, r, c) {
       r.snowtreadLastPos = { x: bot.location.x, z: bot.location.z }; r.snowtreadLastAt = now;
     } catch {}
     let flying = false; try { flying = bot.isFlying === true; } catch {}
-    const ev = noteSnowtread(r.snowtreadState, { surfaceCategory, grounded: !flying && r.selfFalling !== true, moving: moved > 0.01, speed, falling: r.selfFalling === true, flying, inWater: !!bot.isInWater, combat: !!((c?.danger?.count ?? 0) > 0) }, r.snowtreadDist || 0);
+    const ev = noteSnowtread(r.snowtreadState, { surfaceCategory, grounded: !flying && r.selfFalling !== true, moving: moved > 0.01, speed, falling: r.selfFalling === true, flying, inWater: !!bot.isInWater, combat: !!((c?.danger?.safetyCount ?? 0) > 0) }, r.snowtreadDist || 0);
     if (ev && ev.entered) r.lastSnowtread = { at: now, episode: r.snowtreadState.episode };
   } catch {}
 }
@@ -3780,7 +3780,7 @@ function noteStepupTick(bot, dim, r, c) {
     if (!r.stepupState) r.stepupState = createStepupState();
     const footY = Math.floor(bot.location.y);
     let flying = false; try { flying = bot.isFlying === true; } catch {}
-    const fired = noteStepupState(r.stepupState, { footY, nowMs: Date.now(), danger: !!(c?.danger && c.danger.count > 0), hasWorkTarget: !!r.work, falling: r.selfFalling === true, selfFalling: r.selfFalling === true, inWater: !!c?.x?.inWater, flying, hovering: flying, flinchActive: isFlinchActive(r.flinchAnimAt, Date.now()), intentionalDescent: !!(r.mission?.descent || r.spiralDescent) });
+    const fired = noteStepupState(r.stepupState, { footY, nowMs: Date.now(), danger: !!(c?.danger && c.danger.safetyCount > 0), hasWorkTarget: !!r.work, falling: r.selfFalling === true, selfFalling: r.selfFalling === true, inWater: !!c?.x?.inWater, flying, hovering: flying, flinchActive: isFlinchActive(r.flinchAnimAt, Date.now()), intentionalDescent: !!(r.mission?.descent || r.spiralDescent) });
     if (fired) { const s = sampleStepup(r.stepupState, Date.now()); r.lastStepup = { at: Date.now(), firedCount: r.stepupState.firedCount, trigger: s.trigger }; }
   } catch {}
 }
@@ -3799,7 +3799,7 @@ function noteEdgepeek(bot, dim, r, c) {
     if (!solid(fx + dx, fy - 1, fz + dz)) {
       for (let d = 1; d <= 8; d++) { if (solid(fx + dx, fy - 1 - d, fz + dz)) { dropDepth = d; break; } }
     } else { dropDepth = 0; }
-    const fired = noteEdgepeekState(r.edgepeekState, { dropDepth, nowMs: Date.now(), danger: !!(c?.danger && c.danger.count > 0), hasWorkTarget: !!r.work, falling: r.selfFalling === true, selfFalling: r.selfFalling === true, inWater: !!c?.x?.inWater, flinchActive: isFlinchActive(r.flinchAnimAt, Date.now()), intentionalDescent: !!(r.mission?.descent || r.spiralDescent) });
+    const fired = noteEdgepeekState(r.edgepeekState, { dropDepth, nowMs: Date.now(), danger: !!(c?.danger && c.danger.safetyCount > 0), hasWorkTarget: !!r.work, falling: r.selfFalling === true, selfFalling: r.selfFalling === true, inWater: !!c?.x?.inWater, flinchActive: isFlinchActive(r.flinchAnimAt, Date.now()), intentionalDescent: !!(r.mission?.descent || r.spiralDescent) });
     if (fired) r.lastEdgepeek = { at: Date.now(), firedCount: r.edgepeekState.firedCount };
   } catch {}
 }
@@ -3826,7 +3826,7 @@ function noteRainshelter(bot, dim, r, c) {
       } catch {}
     }
     const mode = (r.work || r.mission) ? "work" : "idle";
-    const res = noteRainShelter(r.rainshelterState, { isRaining: raining, rainSinceMs: r.rainSinceMs, nowMs: now, mode, exposed: r.rainshelterExposed ?? null, coverRelYawDeg: r.rainshelterCoverYaw ?? null, inCombat: false, dangerNear: !!((c?.danger?.count ?? 0) > 0), falling: r.selfFalling === true, inWater: !!c?.x?.inWater, underground: !!c?.x?.underground, workTargetActive: !!r.work, higherGazeActive: isFlinchActive(r.flinchAnimAt, now) });
+    const res = noteRainShelter(r.rainshelterState, { isRaining: raining, rainSinceMs: r.rainSinceMs, nowMs: now, mode, exposed: r.rainshelterExposed ?? null, coverRelYawDeg: r.rainshelterCoverYaw ?? null, inCombat: false, dangerNear: !!((c?.danger?.safetyCount ?? 0) > 0), falling: r.selfFalling === true, inWater: !!c?.x?.inWater, underground: !!c?.x?.underground, workTargetActive: !!r.work, higherGazeActive: isFlinchActive(r.flinchAnimAt, now) });
     if (res?.fired) r.lastRainShelter = { at: now, yawDeg: r.rainshelterState.lockedYawDeg };
   } catch {}
 }
@@ -3835,7 +3835,7 @@ function noteDryoff(r, c) {
     if (!r || !c) return;
     if (!r.dryoffState) r.dryoffState = { prevRaining: undefined, startedAtMs: null, lastFiredAtMs: null };
     let inWater = false; try { inWater = !!c.x?.inWater; } catch {}
-    const fired = noteDryoffState(r.dryoffState, { isRaining: c.env?.isRaining, nowMs: Date.now(), danger: !!(c.danger && c.danger.count > 0), hasWorkTarget: !!r.work, falling: r.selfFalling === true, inWater, flinchActive: isFlinchActive(r.flinchAnimAt, Date.now()), inspectActive: isInspectActive(r.inspectAnimAt, Date.now()), nodActive: isNodActive(r.nodAnimAt, Date.now()), skyglanceActive: isSkyglanceActive(r.skyglanceAt, Date.now()), lookbackActive: isLookbackActive(r.lookbackAnimAt, Date.now()), summonScanActive: isSummonScanActive(r.summonScanAt, Date.now()) });
+    const fired = noteDryoffState(r.dryoffState, { isRaining: c.env?.isRaining, nowMs: Date.now(), danger: !!(c.danger && c.danger.safetyCount > 0), hasWorkTarget: !!r.work, falling: r.selfFalling === true, inWater, flinchActive: isFlinchActive(r.flinchAnimAt, Date.now()), inspectActive: isInspectActive(r.inspectAnimAt, Date.now()), nodActive: isNodActive(r.nodAnimAt, Date.now()), skyglanceActive: isSkyglanceActive(r.skyglanceAt, Date.now()), lookbackActive: isLookbackActive(r.lookbackAnimAt, Date.now()), summonScanActive: isSummonScanActive(r.summonScanAt, Date.now()) });
     if (fired) r.dryoffAt = r.dryoffState.startedAtMs;
   } catch {}
 }
@@ -3852,7 +3852,7 @@ function noteHorizonGlance(bot, r, c) {
     if (!r) return;
     if (!r.horizonState) r.horizonState = createHorizonState();
     const phase = c?.env?.isDawn ? "dawn" : c?.env?.isDusk ? "dusk" : c?.env?.isNight ? "night" : "day";
-    const ev = noteHorizon(r.horizonState, { phase, nowMs: Date.now(), danger: !!((c?.danger?.count ?? 0) > 0), hasWorkTarget: !!r.work, falling: r.selfFalling === true, inWater: !!bot.isInWater, skyVisible: undefined });
+    const ev = noteHorizon(r.horizonState, { phase, nowMs: Date.now(), danger: !!((c?.danger?.safetyCount ?? 0) > 0), hasWorkTarget: !!r.work, falling: r.selfFalling === true, inWater: !!bot.isInWater, skyVisible: undefined });
     if (ev?.fired) r.lastHorizonGlance = { at: Date.now(), band: phase };
   } catch {}
 }
@@ -3865,7 +3865,7 @@ function noteFullMoonGaze(bot, r, c) {
     if (!r.fullmoonState) r.fullmoonState = createFullMoonState();
     let phaseIdx; try { const mp = typeof world.getMoonPhase === "function" ? world.getMoonPhase() : undefined; phaseIdx = typeof mp === "number" ? mp : undefined; } catch { phaseIdx = undefined; }
     let nightKey; try { nightKey = world.getDay(); } catch { nightKey = undefined; }
-    const ev = noteFullMoon(r.fullmoonState, { moonPhaseIndex: phaseIdx, nightKey, isNight: c?.env?.isNight, nowMs: Date.now(), danger: !!((c?.danger?.count ?? 0) > 0), combat: !!((c?.danger?.count ?? 0) > 0), falling: r.selfFalling === true, inWater: !!bot.isInWater, isRaining: c?.env?.isRaining === true, hasWorkTarget: !!r.work });
+    const ev = noteFullMoon(r.fullmoonState, { moonPhaseIndex: phaseIdx, nightKey, isNight: c?.env?.isNight, nowMs: Date.now(), danger: !!((c?.danger?.safetyCount ?? 0) > 0), combat: !!((c?.danger?.safetyCount ?? 0) > 0), falling: r.selfFalling === true, inWater: !!bot.isInWater, isRaining: c?.env?.isRaining === true, hasWorkTarget: !!r.work });
     if (ev?.fired) r.lastFullMoonGaze = { at: Date.now(), nightKey };
   } catch {}
 }
@@ -3895,7 +3895,7 @@ function noteNightwatchTick(bot, r, c) {
     const idleMs = r.idleSinceMs != null ? now - r.idleSinceMs : null;
     // a16 条件: otherOverlayActive は過渡的な上位重畳のみ (持続型を含めると常時抑制で発火不能)、
     // hovering は実飛行中のみ (常時 true だと受動待機で発火不能) のため、ここではどちらも渡さない
-    const ev = noteNightwatch(r.nightwatchState, { phase, idleSustainedMs: idleMs, nowMs: now, danger: !!((c?.danger?.count ?? 0) > 0), hasWorkTarget: !!r.work, falling: r.selfFalling === true, inWater: !!bot.isInWater });
+    const ev = noteNightwatch(r.nightwatchState, { phase, idleSustainedMs: idleMs, nowMs: now, danger: !!((c?.danger?.safetyCount ?? 0) > 0), hasWorkTarget: !!r.work, falling: r.selfFalling === true, inWater: !!bot.isInWater });
     if (ev?.fired) r.lastNightwatch = { at: now };
   } catch {}
 }
@@ -4068,7 +4068,7 @@ function missionTargetValid(bot, r) {
   try { if (r.mTargetEntity && isEntityBanned(r.mBanKey, r.mBanUntil, Date.now(), r.mTargetEntity?.id)) return false; } catch {}
   if (r.mTargetKind === "fill_medium" && !r.mTargetEntity) { let b = null; try { b = bot.dimension.getBlock(r.mTargetLoc); } catch {} return !!b && b.typeId === r.mTargetType; } // R-C4-4 S3: block媒体はセル再読で固定を解く。entity媒体は下の汎用entity検査へ落とす
   if (r.mTargetKind === "block") { let b = null; try { b = bot.dimension.getBlock(r.mTargetLoc); } catch {} return !!b && b.typeId === r.mTargetType; }
-  if (r.mTargetEntity) { try { const valid = typeof r.mTargetEntity.isValid === "function" ? !!r.mTargetEntity.isValid() : !!r.mTargetEntity.isValid; if (!valid) return false; if (r.mTargetKind === "item") { // PICKUP-ITEMVALID-01 (cyc2365 A04): アイテム実体の typeId は常時 "minecraft:item" で依頼IDと一致しないため、種別照合はスタックの typeId で行う (従来は常時 false で固定が死に毎tick再走査＋見切り不発だった)
+  if (r.mTargetEntity) { try { const valid = typeof r.mTargetEntity.isValid === "function" ? !!r.mTargetEntity.isValid() : !!r.mTargetEntity.isValid; if (!valid) return false; if (r.mTargetKind === "entity") { const e = r.mTargetEntity; let losOk = false; try { losOk = canObserveEntity(scanObsProvider(bot), scanObsEye(bot), { x: e.location.x, y: e.location.y + 1.0, z: e.location.z }, {}); } catch { losOk = true; } if (!losOk) return false; } if (r.mTargetKind === "item") { // PICKUP-ITEMVALID-01 (cyc2365 A04): アイテム実体の typeId は常時 "minecraft:item" で依頼IDと一致しないため、種別照合はスタックの typeId で行う (従来は常時 false で固定が死に毎tick再走査＋見切り不発だった)
       let stackType = null; try { stackType = r.mTargetEntity.getComponent("minecraft:item")?.itemStack?.typeId || null; } catch {}
       if (r.mTargetType && stackType && stackType !== r.mTargetType) return false; return true; }
     if (r.mTargetType && r.mTargetType !== "hostile" && r.mTargetType.includes(":") && r.mTargetEntity.typeId && r.mTargetEntity.typeId !== r.mTargetType) return false; return true; } catch { return false; } } // HUNT-SUBST-01 (cyc2364): 固定対象も block 分岐と同型に種別照合する (汎用指定はスキップ)
@@ -4328,7 +4328,7 @@ function tickMission(bot, owner, ctx, scan) {
   const obs = {
     regionSearch, searchExhausted,
     invCounts, kills: r.missionKills || 0, nearestDist,
-    dangerDist: ctx.danger.nearestDist, pos: posSnap, dim: dimSnap,
+    dangerDist: ctx.danger.safetyNearestDist, pos: posSnap, dim: dimSnap,
     foundTarget: !!ft.found, foundSide: r.sideTask ? r.sideTask.itemType : null, sideContinuation: r.sideContinuation === true,
     selfHpPct: ctx.self.hpPct, invFull: ctx.inv.full, atReturn: r.mAtReturn, delivered: !!r.deliveredFlag, posKnown, // Step 3c-2: 位置が測れていない間は true にならない
     invKnown: ctx.x?.obs ? ctx.x.obs.inv === "ok" : ctx.x?.invOk !== false, dangerKnown: ctx.x?.obs ? ctx.x.obs.scan === "ok" : ctx.x?.scanOk !== false,
@@ -4561,7 +4561,7 @@ function tryFactoryRequest(p, bot, r, rawText) {
 // POLISH-ANIM-INSPECT-01 (cycle1003): 依頼品の全量取得成功時に検分の見下ろしを開始する (表示層のみ・実機確認待ち)
 function noteInspectPickup(bot, r, ctx, typeId) {
   try {
-    const ok = shouldInspect({ pickedTypeId: typeId, mission: r.mission ? { target: r.mission.order?.target } : null, longtask: r.longtask ? { target: r.longtask.target } : null, dangerCount: ctx?.danger?.count ?? null, dangerKnown: ctx?.x?.obs?.scan === "ok", lastFiredMs: r.inspectAnimLastAt ?? null, nowMs: Date.now() });
+    const ok = shouldInspect({ pickedTypeId: typeId, mission: r.mission ? { target: r.mission.order?.target } : null, longtask: r.longtask ? { target: r.longtask.target } : null, dangerCount: ctx?.danger?.safetyCount ?? null, dangerKnown: ctx?.x?.obs?.scan === "ok", lastFiredMs: r.inspectAnimLastAt ?? null, nowMs: Date.now() }); // 0-O2段階2 (U4): dangerCount の値は safetyCount (確認できた危険の件数)。入力名は核 (shouldInspect) 側の互換のため不変
     if (ok) { r.inspectAnimAt = Date.now(); r.inspectAnimLastAt = r.inspectAnimAt; }
   } catch {}
 }
@@ -4574,7 +4574,7 @@ function noteSurfacebreathTick(bot, r, c) {
     let inWater = false; try { inWater = !!bot.isInWater; } catch {}
     let rising = false; try { rising = bot.getVelocity().y > 0.05; } catch {}
     const prevFired = r.surfacebreathState.lastFiredAtMs;
-    stepSurfacebreath(r.surfacebreathState, { inWater, rising, danger: !!(c?.danger && c.danger.count > 0), falling: r.selfFalling === true, hasWorkTarget: !!r.work, summonScanActive: isSummonScanActive(r.summonScanAt, Date.now()) }, Date.now());
+    stepSurfacebreath(r.surfacebreathState, { inWater, rising, danger: !!(c?.danger && c.danger.safetyCount > 0), falling: r.selfFalling === true, hasWorkTarget: !!r.work, summonScanActive: isSummonScanActive(r.summonScanAt, Date.now()) }, Date.now());
     if (r.surfacebreathState.lastFiredAtMs !== prevFired && r.surfacebreathState.lastFiredAtMs !== null) r.lastSurfaceBreath = { at: r.surfacebreathState.lastFiredAtMs };
   } catch {}
 }
@@ -4586,7 +4586,7 @@ function noteBubblebreathTick(bot, r, c) {
     if (!bot || !r) return;
     if (!r.bubblebreathState) r.bubblebreathState = createBubblebreathState();
     let inWater; try { inWater = bot.isInWater; } catch { inWater = undefined; }
-    const res = stepBubblebreath(r.bubblebreathState, { inWater, danger: !!(c?.danger && c.danger.count > 0), falling: r.selfFalling === true, portalSteadyActive: isPortalsteadyActive(r.portalsteadyState, Date.now()) }, Date.now());
+    const res = stepBubblebreath(r.bubblebreathState, { inWater, danger: !!(c?.danger && c.danger.safetyCount > 0), falling: r.selfFalling === true, portalSteadyActive: isPortalsteadyActive(r.portalsteadyState, Date.now()) }, Date.now());
     if (res.fired) r.lastBubbleBreath = { at: Date.now(), count: r.bubblebreathState.fireCount, submergedMs: res.submergedMs };
   } catch {}
 }
@@ -4606,7 +4606,7 @@ function noteWakestretchTick(bot, r, c) {
     }
     if (!idle) r.wakestretchSeenIdleSince = null;
     let inWater = false; try { inWater = !!bot.isInWater; } catch {}
-    const res = noteWakestretch(r.wakestretchState, { idle, combat: !!(c?.danger && c.danger.count > 0), falling: r.selfFalling === true, inWater }, now);
+    const res = noteWakestretch(r.wakestretchState, { idle, combat: !!(c?.danger && c.danger.safetyCount > 0), falling: r.selfFalling === true, inWater }, now);
     if (res && res.fired) { const cur = wakestretchCurrent(r.wakestretchState, now); r.lastWakestretch = { at: now, pitchDeg: cur.pitchDeg, yawDeg: cur.yawDeg, armPitchDeg: cur.armPitchDeg, episode: cur.episode }; } // 腕ピッチは記録のみ
   } catch {}
 }
@@ -4625,7 +4625,7 @@ function noteToolCheckTick(bot, r, c) {
       idleMs = now - r.idleSinceMs;
     }
     let inWater = false; try { inWater = !!bot.isInWater; } catch {}
-    const suppressed = working || !!(c?.danger && c.danger.count > 0) || r.selfFalling === true || inWater || isSummonScanActive(r.summonScanAt, now) || isPortalsteadyActive(r.portalsteadyState, now) || isFlinchActive(r.flinchAnimAt, now) || isInspectActive(r.inspectAnimAt, now);
+    const suppressed = working || !!(c?.danger && c.danger.safetyCount > 0) || r.selfFalling === true || inWater || isSummonScanActive(r.summonScanAt, now) || isPortalsteadyActive(r.portalsteadyState, now) || isFlinchActive(r.flinchAnimAt, now) || isInspectActive(r.inspectAnimAt, now);
     const out = tickToolCheck({ nowMs: now, idleMs, suppressed, state: r.toolcheckState });
     r.toolcheckState = out.state; r.toolcheckSample = out;
     if (out.fired) r.lastToolCheck = { at: now, idleMs, armPitchDeg: -28 }; // 腕ピッチは RP 受け口が無い間は記録のみ
@@ -4639,7 +4639,7 @@ function noteIdleTick(bot, r, c) {
     if (!r.idleState) r.idleState = createIdleState();
     const now = Date.now();
     let inWater = false; try { inWater = !!bot.isInWater; } catch {}
-    const rec = noteIdle(r.idleState, { idle: r.idleSinceMs != null, mode: "owner_wait", overlayActive: r.toolcheckSample?.active === true, inCombat: !!(c?.danger && c.danger.count > 0), falling: r.selfFalling === true, inWater }, now);
+    const rec = noteIdle(r.idleState, { idle: r.idleSinceMs != null, mode: "owner_wait", overlayActive: r.toolcheckSample?.active === true, inCombat: !!(c?.danger && c.danger.safetyCount > 0), falling: r.selfFalling === true, inWater }, now);
     const s = sampleIdle(r.idleState, now);
     if (s.active || rec?.entered) r.lastIdle = { atMs: now, mode: s.mode, bodyYOffsetBlocks: s.bodyYOffsetBlocks, headTiltDeg: s.headTiltDeg, gazePitchDeg: s.gazePitchDeg, entered: !!rec?.entered };
   } catch {}
@@ -4652,7 +4652,7 @@ function noteLoadPostureTick(bot, r, c) {
     const now = Date.now();
     let ratio = null;
     try { const cont = invOf(bot); if (cont) { let used = 0; for (let i = 0; i < cont.size; i++) if (cont.getItem(i)) used++; ratio = cont.size > 0 ? used / cont.size : null; } } catch {}
-    const sample = { ratio, working: !!r.work || !!r.mission || !!r.longtask || !!r.buildPlan, danger: !!(c?.danger && c.danger.count > 0), selfFalling: r.selfFalling === true, inWater: !!bot.isInWater }; // 注: ホバーはリゼの既定移動のため feeder では抑制に含めない (含めると常時抑制で到達不能になる。核側の別名受理は維持)
+    const sample = { ratio, working: !!r.work || !!r.mission || !!r.longtask || !!r.buildPlan, danger: !!(c?.danger && c.danger.safetyCount > 0), selfFalling: r.selfFalling === true, inWater: !!bot.isInWater }; // 注: ホバーはリゼの既定移動のため feeder では抑制に含めない (含めると常時抑制で到達不能になる。核側の別名受理は維持)
     noteLoadPosture(r.loadpostureState, sample, now);
     const s = sampleLoadPosture(r.loadpostureState, now);
     if (s.active) r.lastLoadPosture = { atMs: now, ratio: s.ratio, band: s.band };
@@ -4665,7 +4665,7 @@ function notePortalsteadyTick(bot, dim, r, c) {
     let dimId = null; try { dimId = dim?.id || bot.dimension?.id || null; } catch {}
     if (!dimId) return;
     const prevDim = r.portalsteadyState.confirmedDim;
-    const fired = notePortalsteady(r.portalsteadyState, { dimId, nowMs: Date.now(), danger: !!(c?.danger && c.danger.count > 0), falling: r.selfFalling === true, inWater: !!c?.x?.inWater, hasWorkTarget: !!r.work });
+    const fired = notePortalsteady(r.portalsteadyState, { dimId, nowMs: Date.now(), danger: !!(c?.danger && c.danger.safetyCount > 0), falling: r.selfFalling === true, inWater: !!c?.x?.inWater, hasWorkTarget: !!r.work });
     if (fired) r.lastPortalSteady = { at: Date.now(), from: prevDim, to: dimId };
   } catch {}
 }
@@ -4691,7 +4691,7 @@ function catchsightSuppressInput(bot, owner, ctx, gz, r, now) {
     const pcActive = !!(r.partnercheckState && partnerCheckOffset(r.partnercheckState, now).active);
     const llActive = !!(r.lookleadSample?.active && now - (r.lookleadSampleAt || 0) < 200);
     return {
-      danger: (ctx?.danger?.count ?? 0) > 0,
+      danger: (ctx?.danger?.safetyCount ?? 0) > 0,
       inCombat: gz?.gaze === "danger" || gz?.gaze === "danger_then_owner",
       hurtRecent: now - (r.lastDangerAt || 0) < 2000,
       working: !!r.work, digging: false, attacking: false, placing: false,
@@ -4718,7 +4718,7 @@ function noteShiverTick(bot, r, c) {
     const now = Date.now(); const p = bot.location;
     let stepDist = 0; if (r.shiverPrevPos) stepDist = Math.hypot(p.x - r.shiverPrevPos.x, p.z - r.shiverPrevPos.z); r.shiverPrevPos = { x: p.x, z: p.z };
     let inWater = false; try { inWater = !!bot.isInWater; } catch {}
-    const out = noteShiverSample(r.shiverState, { cold: c?.x?.biome === "snow" || c?.x?.selfFreezing === true, busy: !!r.work || !!r.mission || !!r.longtask || !!r.buildPlan, moving: stepDist > 0.05, suppressed: !!((c?.danger?.count ?? 0) > 0) || r.selfFalling === true || inWater, nowMs: now });
+    const out = noteShiverSample(r.shiverState, { cold: c?.x?.biome === "snow" || c?.x?.selfFreezing === true, busy: !!r.work || !!r.mission || !!r.longtask || !!r.buildPlan, moving: stepDist > 0.05, suppressed: !!((c?.danger?.safetyCount ?? 0) > 0) || r.selfFalling === true || inWater, nowMs: now });
     if (out?.fired) r.lastShiver = { at: now, fired: true };
   } catch {}
 }
@@ -4731,7 +4731,7 @@ function noteWarmhandsTick(bot, r, c) {
     const now = Date.now(); const p = bot.location;
     let stepDist = 0; if (r.warmhandsPrevPos) stepDist = Math.hypot(p.x - r.warmhandsPrevPos.x, p.z - r.warmhandsPrevPos.z); r.warmhandsPrevPos = { x: p.x, z: p.z };
     let inWater = false; try { inWater = !!bot.isInWater; } catch {}
-    const out = noteWarmhands(r.warmhandsState, { nearHeat: c?.x?.nearHeat === true, idle: r.idleSinceMs != null, stepDist, working: !!r.work || !!r.mission || !!r.longtask || !!r.buildPlan, danger: !!((c?.danger?.count ?? 0) > 0), falling: r.selfFalling === true, inWater }, now);
+    const out = noteWarmhands(r.warmhandsState, { nearHeat: c?.x?.nearHeat === true, idle: r.idleSinceMs != null, stepDist, working: !!r.work || !!r.mission || !!r.longtask || !!r.buildPlan, danger: !!((c?.danger?.safetyCount ?? 0) > 0), falling: r.selfFalling === true, inWater }, now);
     if (out?.fired) r.lastWarmhands = { at: now, fired: true, armPitchDeg: -30 };
   } catch {}
 }
@@ -4745,7 +4745,7 @@ function noteVillagergreetTick(bot, r, c) {
     let relYaw = null;
     if (cand) { try { const gr = gazeRotation(bot.location, { x: cand.loc.x, y: cand.loc.y + 1.4, z: cand.loc.z }); const cur = bot.getRotation(); relYaw = ((gr.y - (cur?.y || 0) + 540) % 360) - 180; } catch {} }
     let inWater = false; try { inWater = !!bot.isInWater; } catch {}
-    const out = noteVillagergreet(r.villagergreetState, { villagerId: cand ? cand.id : null, villagerDist: cand ? cand.d : null, villagerRelYawDeg: relYaw, scanOk: r.villagerScanOk === true, danger: !!((c?.danger?.count ?? 0) > 0), working: !!r.work || !!r.mission || !!r.longtask || !!r.buildPlan, falling: r.selfFalling === true, inWater }, Date.now());
+    const out = noteVillagergreet(r.villagergreetState, { villagerId: cand ? cand.id : null, villagerDist: cand ? cand.d : null, villagerRelYawDeg: relYaw, scanOk: r.villagerScanOk === true, danger: !!((c?.danger?.safetyCount ?? 0) > 0), working: !!r.work || !!r.mission || !!r.longtask || !!r.buildPlan, falling: r.selfFalling === true, inWater }, Date.now());
     if (out?.fired) r.lastVillagerGreet = { at: Date.now(), villagerId: cand?.id || null };
   } catch {}
 }
@@ -4763,7 +4763,7 @@ function noteOrespotTick(bot, r, c) {
       if (r.work && r.work.loc.x === t.x && r.work.loc.y === t.y && r.work.loc.z === t.z) isWork = true;
     }
     let inWater = false; try { inWater = !!bot.isInWater; } catch {}
-    const suppressed = !!((c?.danger?.count ?? 0) > 0) || r.selfFalling === true || inWater;
+    const suppressed = !!((c?.danger?.safetyCount ?? 0) > 0) || r.selfFalling === true || inWater;
     const out = noteOreSpot(r.orespotState, { cellKey, relYawDeg: relYaw, relPitchDeg: relPitch, isCurrentWorkTarget: isWork, scanOk: !!r.perc, suppressed }, Date.now());
     if (out) r.lastOreSpot = { at: Date.now(), cellKey: out.cellKey };
   } catch {}
@@ -4775,7 +4775,7 @@ function noteSleepwatchTick(bot, r, c) {
     if (!bot || !r) return;
     if (!r.sleepwatchState) r.sleepwatchState = createSleepwatchState();
     let inWater = false; try { inWater = !!bot.isInWater; } catch {}
-    const suppressed = !!((c?.danger?.count ?? 0) > 0) || r.selfFalling === true || inWater || !!r.work;
+    const suppressed = !!((c?.danger?.safetyCount ?? 0) > 0) || r.selfFalling === true || inWater || !!r.work;
     const d = c?.self?.distOwner;
     const out = noteSleepwatch(r.sleepwatchState, { nowMs: Date.now(), ownerSleeping: c?.x?.ownerInBed === true, ownerDist: typeof d === "number" && Number.isFinite(d) && d < 900 ? d : null, sameDimension: c?.owner?.dimensionSame === true, suppressed, overlayActive: false });
     r.sleepwatchState = out.state;
@@ -4788,7 +4788,7 @@ function noteWakegreetTick(bot, r, c) {
     if (!bot || !r) return;
     if (!r.wakegreetState) r.wakegreetState = createWakegreetState();
     let inWater = false; try { inWater = !!bot.isInWater; } catch {}
-    const suppressed = !!((c?.danger?.count ?? 0) > 0) || r.selfFalling === true || inWater || !!r.work;
+    const suppressed = !!((c?.danger?.safetyCount ?? 0) > 0) || r.selfFalling === true || inWater || !!r.work;
     const d = c?.self?.distOwner;
     const out = noteWakegreet(r.wakegreetState, { nowMs: Date.now(), ownerSleeping: c?.x?.ownerInBed === true ? true : (c?.x?.ownerInBed === false ? false : null), ownerDist: typeof d === "number" && Number.isFinite(d) && d < 900 ? d : null, sameDimension: c?.owner?.dimensionSame === true, suppressed });
     r.wakegreetState = out.state;
@@ -4801,7 +4801,7 @@ function noteMountglanceTick(bot, r, c) {
     if (!bot || !r) return;
     if (!r.mountglanceState) r.mountglanceState = createMountglanceState();
     let inWater = false; try { inWater = !!bot.isInWater; } catch {}
-    const suppressed = !!((c?.danger?.count ?? 0) > 0) || r.selfFalling === true || inWater || !!r.work;
+    const suppressed = !!((c?.danger?.safetyCount ?? 0) > 0) || r.selfFalling === true || inWater || !!r.work;
     const d = c?.self?.distOwner;
     const out = noteMountglance(r.mountglanceState, { nowMs: Date.now(), ownerRiding: c?.x?.ownerRiding === true, ownerDist: typeof d === "number" && Number.isFinite(d) && d < 900 ? d : null, sameDimension: c?.owner?.dimensionSame === true, suppressed });
     r.mountglanceState = out.state;
@@ -4814,7 +4814,7 @@ function noteHomesightTick(bot, r, c) {
     if (!bot || !r) return;
     if (!r.homesightState) r.homesightState = createHomesightState();
     let inWater = false; try { inWater = !!bot.isInWater; } catch {}
-    const suppressed = !!((c?.danger?.count ?? 0) > 0) || r.selfFalling === true || inWater;
+    const suppressed = !!((c?.danger?.safetyCount ?? 0) > 0) || r.selfFalling === true || inWater;
     const out = noteHomesight(r.homesightState, { distHome: c?.home?.dist ?? null, homeRegistered: c?.home?.registered === true, dimensionSame: c?.home?.dimensionSame === true, suppressed }, Date.now());
     if (out?.fired) r.lastHomesight = { at: Date.now(), dist: c?.home?.dist ?? null };
   } catch {}
@@ -4823,20 +4823,20 @@ function applyGaze(bot, owner, ctx, scan) {
   try { const bv = typeof bot.isValid === "function" ? bot.isValid() : bot.isValid; if (bot.isValid !== undefined && !bv) return; if (owner) { const ov = typeof owner.isValid === "function" ? owner.isValid() : owner.isValid; if (owner.isValid !== undefined && !ov) return; } } catch { return; }
   // POLISH-ANIM-OWNERRETURN-01 (cycle1923): 主人の距離遷移だけを発火源にする feeder (表示層のみ・実機確認待ち)
   try { const r0 = rt(bot); if (!r0.ownerreturnState) r0.ownerreturnState = createOwnerReturnState(); const d = ctx?.self?.distOwner; const same = !!owner && !!ctx?.owner?.dimensionSame; let relYaw = 0; try { const gr = gazeRotation(bot.location, { x: owner.location.x, y: owner.location.y + 1.4, z: owner.location.z }); const cur = bot.getRotation(); relYaw = ((gr.y - (cur?.y || 0) + 540) % 360) - 180; } catch {} const rec = noteOwnerReturn(r0.ownerreturnState, { dist: same && Number.isFinite(d) && d < 900 ? d : null, busy: !!r0.work || r0.selfFalling === true, targetYawDeg: relYaw }, Date.now()); if (rec) r0.lastOwnerReturn = r0.ownerreturnState.lastRecord; } catch {}
-  try { const r0 = rt(bot); if (!r0.doubletakeState) r0.doubletakeState = createDoubletakeState(); const d = ctx?.self?.distOwner; const same = !!owner && !!ctx?.owner?.dimensionSame; const dres = noteDoubletake(r0.doubletakeState, { ownerPresent: !!owner, dist: same && Number.isFinite(d) ? d : null, sameDimension: same }, Date.now(), !!((ctx?.danger?.count ?? 0) > 0) || r0.selfFalling === true || !!r0.work); if (dres === "fired") r0.lastDoubletake = { at: Date.now() }; } catch {} // POLISH-ANIM-DOUBLETAKE-01 (cycle0403) feeder: 既存観測 ctx.self.distOwner のみ (新規走査なし)。0-C6(c) (cycle1256): r0/d/same を自ブロック内で宣言 (従来は直前 try のスコープ外参照で常時 ReferenceError→空catch 握りつぶしだった)
-  try { const r0 = rt(bot); if (!r0.darkentryState) r0.darkentryState = darkEntryInit(); const band = lightBandOf(ctx?.x?.lightLevel); if (band !== null) { const de = noteDarkEntry(r0.darkentryState, { band, nowMs: Date.now(), inCombat: (ctx?.danger?.count ?? 0) > 0, falling: r0.selfFalling === true, inWater: !!bot.isInWater }); r0.darkentryState = de.state; if (de.fired) r0.lastDarkEntry = { at: Date.now(), band }; } } catch {} // POLISH-ANIM-DARKENTRY-01 (cycle0423) feeder: 既存の合成 lightLevel のみ (新規走査なし)
+  try { const r0 = rt(bot); if (!r0.doubletakeState) r0.doubletakeState = createDoubletakeState(); const d = ctx?.self?.distOwner; const same = !!owner && !!ctx?.owner?.dimensionSame; const dres = noteDoubletake(r0.doubletakeState, { ownerPresent: !!owner, dist: same && Number.isFinite(d) ? d : null, sameDimension: same }, Date.now(), !!((ctx?.danger?.safetyCount ?? 0) > 0) || r0.selfFalling === true || !!r0.work); if (dres === "fired") r0.lastDoubletake = { at: Date.now() }; } catch {} // POLISH-ANIM-DOUBLETAKE-01 (cycle0403) feeder: 既存観測 ctx.self.distOwner のみ (新規走査なし)。0-C6(c) (cycle1256): r0/d/same を自ブロック内で宣言 (従来は直前 try のスコープ外参照で常時 ReferenceError→空catch 握りつぶしだった)
+  try { const r0 = rt(bot); if (!r0.darkentryState) r0.darkentryState = darkEntryInit(); const band = lightBandOf(ctx?.x?.lightLevel); if (band !== null) { const de = noteDarkEntry(r0.darkentryState, { band, nowMs: Date.now(), inCombat: (ctx?.danger?.safetyCount ?? 0) > 0, falling: r0.selfFalling === true, inWater: !!bot.isInWater }); r0.darkentryState = de.state; if (de.fired) r0.lastDarkEntry = { at: Date.now(), band }; } } catch {} // POLISH-ANIM-DARKENTRY-01 (cycle0423) feeder: 既存の合成 lightLevel のみ (新規走査なし)
   // POLISH-ANIM-MUSICNOD-01 feeder (cycle2006): 音楽ブロック近傍滞在を代理条件とする (再生事実は正式版APIで取れない)。
   // 0-D4 分離 (cycle1514): 演出側は scanCachePeek の読み取り専用に限定し、scanBlockNear を一切呼ばない。
   // これにより演出の検索が mScanMap の failedCells (資源探索の失敗カウンタ) へ書き込む経路が消える。
   // キャッシュが stale/unknown のときは near=undefined (不明) とし、演出のために走査を起こさない。
-  try { const r0 = rt(bot); if (!r0.musicnodState) r0.musicnodState = createMusicnodState(); if (Date.now() - (r0.musicnodCheckAt || 0) >= 2000) { r0.musicnodCheckAt = Date.now(); let near; let src = null; try { const pj = scanCachePeek(r0, "minecraft:jukebox"); const pn = pj.state === "hit" ? null : scanCachePeek(r0, "minecraft:noteblock"); if (pj.state === "hit") { near = true; src = "jukebox"; } else if (pn && pn.state === "hit") { near = true; src = "note_block"; } else if (pj.state === "absent" && pn && pn.state === "absent") near = false; else near = undefined; /* 0-D4 (cycle1256): 音符ブロックの実IDは minecraft:noteblock (アンダースコアなし)。記録ラベル src は不変 */ } catch { near = undefined; } const rec = noteMusicnod(r0.musicnodState, { nearMusic: near, source: src, inCombat: (ctx?.danger?.count ?? 0) > 0, falling: r0.selfFalling === true, inWater: !!bot.isInWater, working: !!r0.work, ownerFar: typeof ctx?.self?.distOwner === "number" && ctx.self.distOwner > 16 }, Date.now()); if (rec?.entered) r0.lastMusicNod = { at: Date.now(), source: src, fired: true }; } } catch {}
+  try { const r0 = rt(bot); if (!r0.musicnodState) r0.musicnodState = createMusicnodState(); if (Date.now() - (r0.musicnodCheckAt || 0) >= 2000) { r0.musicnodCheckAt = Date.now(); let near; let src = null; try { const pj = scanCachePeek(r0, "minecraft:jukebox"); const pn = pj.state === "hit" ? null : scanCachePeek(r0, "minecraft:noteblock"); if (pj.state === "hit") { near = true; src = "jukebox"; } else if (pn && pn.state === "hit") { near = true; src = "note_block"; } else if (pj.state === "absent" && pn && pn.state === "absent") near = false; else near = undefined; /* 0-D4 (cycle1256): 音符ブロックの実IDは minecraft:noteblock (アンダースコアなし)。記録ラベル src は不変 */ } catch { near = undefined; } const rec = noteMusicnod(r0.musicnodState, { nearMusic: near, source: src, inCombat: (ctx?.danger?.safetyCount ?? 0) > 0, falling: r0.selfFalling === true, inWater: !!bot.isInWater, working: !!r0.work, ownerFar: typeof ctx?.self?.distOwner === "number" && ctx.self.distOwner > 16 }, Date.now()); if (rec?.entered) r0.lastMusicNod = { at: Date.now(), source: src, fired: true }; } } catch {}
   // POLISH-ANIM-STAIRSLOOK-01 feeder (cycle1514): 足元フロア高の ±1 変化だけを段差として供給する (新規走査なし)。
   // 飛行中の高度変化と混同しないよう selfFalling/水中/戦闘/作業中は純粋核側の抑制に委ね、ここでは落下中を渡す。
-  try { const r0 = rt(bot); if (!r0.stairlookState) r0.stairlookState = createStairLookState(); const fy = Math.floor(bot.location?.y ?? NaN); if (Number.isFinite(fy)) { if (typeof r0.stairPrevFloorY === "number" && fy !== r0.stairPrevFloorY) { const d = fy - r0.stairPrevFloorY; let flying = false; try { flying = bot.isFlying === true; } catch {} if ((d === 1 || d === -1) && !flying) { const rec = noteStairLook(r0.stairlookState, { stepDir: d, combat: (ctx?.danger?.count ?? 0) > 0, falling: r0.selfFalling === true, inWater: !!bot.isInWater, working: !!r0.work }, Date.now()); if (rec?.fired) r0.lastStairLook = { at: Date.now(), dir: d }; } } r0.stairPrevFloorY = fy; } } catch {}
+  try { const r0 = rt(bot); if (!r0.stairlookState) r0.stairlookState = createStairLookState(); const fy = Math.floor(bot.location?.y ?? NaN); if (Number.isFinite(fy)) { if (typeof r0.stairPrevFloorY === "number" && fy !== r0.stairPrevFloorY) { const d = fy - r0.stairPrevFloorY; let flying = false; try { flying = bot.isFlying === true; } catch {} if ((d === 1 || d === -1) && !flying) { const rec = noteStairLook(r0.stairlookState, { stepDir: d, combat: (ctx?.danger?.safetyCount ?? 0) > 0, falling: r0.selfFalling === true, inWater: !!bot.isInWater, working: !!r0.work }, Date.now()); if (rec?.fired) r0.lastStairLook = { at: Date.now(), dir: d }; } } r0.stairPrevFloorY = fy; } } catch {}
   // POLISH-ANIM-TORCHPASS-01 feeder 第1段 (cycle1532): 候補は scanCachePeek の読み取り専用のみ (0-D4 分離の作法。新規走査なし)。
   // 発火は r.lastTorchPass への記録のみで視線へは重畳しない。頻度を実機ログで見てから第2段 (重畳) を判断する。
   // flying/hurt は渡さない (ホバー既定で flying を渡すと恒常抑制になり永遠に発火しない。A04 監査)。
-  try { const r0 = rt(bot); if (!r0.torchpassState) r0.torchpassState = createTorchPassState(); if (!r0.lookSweepState) r0.lookSweepState = createLookSweepState(); if (!r0.gazeReplayCall && Date.now() - (r0.torchpassCheckAt || 0) >= 1000) { r0.torchpassCheckAt = Date.now(); const TP_IDS = [["minecraft:torch", "torch"], ["minecraft:wall_torch", "torch"], ["minecraft:soul_torch", "torch"], ["minecraft:soul_wall_torch", "torch"], ["minecraft:lantern", "lantern"], ["minecraft:soul_lantern", "lantern"], ["minecraft:glowstone", "glowstone"], ["minecraft:lit_redstone_lamp", "lamp_lit"]]; let best = null; for (const [tid, cat] of TP_IDS) { const pk = scanCachePeek(r0, tid); if (pk.state === "hit" && pk.loc) { const dd = dist(bot.location, pk.loc); if (Number.isFinite(dd) && (!best || dd < best.dist)) best = { loc: pk.loc, cat, dist: dd }; } } const sample = { lightLevel: ctx?.x?.lightLevel, combat: (ctx?.danger?.count ?? 0) > 0, working: !!r0.work, falling: r0.selfFalling === true, inWater: !!bot.isInWater }; if (best) { sample.category = best.cat; sample.clusterKey = `tp:${best.loc.x},${best.loc.y},${best.loc.z}`; sample.dist = best.dist; try { const gr = gazeRotation(bot.location, { x: best.loc.x + 0.5, y: best.loc.y + 0.5, z: best.loc.z + 0.5 }); const cur = bot.getRotation(); sample.bearingDeg = ((gr.y - (cur?.y || 0) + 540) % 360) - 180; } catch {} } const rec = noteTorchPass(r0.torchpassState, sample, Date.now()); if (rec?.fired) r0.lastTorchPass = { at: Date.now(), category: best?.cat || null, clusterKey: best ? `tp:${best.loc.x},${best.loc.y},${best.loc.z}` : null }; } } catch {}
+  try { const r0 = rt(bot); if (!r0.torchpassState) r0.torchpassState = createTorchPassState(); if (!r0.lookSweepState) r0.lookSweepState = createLookSweepState(); if (!r0.gazeReplayCall && Date.now() - (r0.torchpassCheckAt || 0) >= 1000) { r0.torchpassCheckAt = Date.now(); const TP_IDS = [["minecraft:torch", "torch"], ["minecraft:wall_torch", "torch"], ["minecraft:soul_torch", "torch"], ["minecraft:soul_wall_torch", "torch"], ["minecraft:lantern", "lantern"], ["minecraft:soul_lantern", "lantern"], ["minecraft:glowstone", "glowstone"], ["minecraft:lit_redstone_lamp", "lamp_lit"]]; let best = null; for (const [tid, cat] of TP_IDS) { const pk = scanCachePeek(r0, tid); if (pk.state === "hit" && pk.loc) { const dd = dist(bot.location, pk.loc); if (Number.isFinite(dd) && (!best || dd < best.dist)) best = { loc: pk.loc, cat, dist: dd }; } } const sample = { lightLevel: ctx?.x?.lightLevel, combat: (ctx?.danger?.safetyCount ?? 0) > 0, working: !!r0.work, falling: r0.selfFalling === true, inWater: !!bot.isInWater }; if (best) { sample.category = best.cat; sample.clusterKey = `tp:${best.loc.x},${best.loc.y},${best.loc.z}`; sample.dist = best.dist; try { const gr = gazeRotation(bot.location, { x: best.loc.x + 0.5, y: best.loc.y + 0.5, z: best.loc.z + 0.5 }); const cur = bot.getRotation(); sample.bearingDeg = ((gr.y - (cur?.y || 0) + 540) % 360) - 180; } catch {} } const rec = noteTorchPass(r0.torchpassState, sample, Date.now()); if (rec?.fired) r0.lastTorchPass = { at: Date.now(), category: best?.cat || null, clusterKey: best ? `tp:${best.loc.x},${best.loc.y},${best.loc.z}` : null }; } } catch {}
   // POLISH-ANIM-EATGLANCE-01 feeder: 実時間の isEating() を供給する。再演 (gazeReplayCall) を除外しないこと
   // — 除外すると CONFIRM_COUNT=2 に届かず永久に発火しない (torchpass の間引き式を流用しない)。
   try { const r0 = rt(bot); if (!r0.eatglanceState) r0.eatglanceState = createEatGlanceState();
@@ -4844,10 +4844,10 @@ function applyGaze(bot, owner, ctx, scan) {
     const src = r0.eatglanceSrc;
     const kind = eating && src && (Date.now() - src.at) < (src.eatMs || 1600) + 500 ? src.kind : null;
     const out = noteOwnEating(r0.eatglanceState, { eating, kind, nowMs: Date.now(),
-      suppressed: !!((ctx?.danger?.count ?? 0) > 0) || r0.selfFalling === true || !!bot.isInWater || !!r0.work,
+      suppressed: !!((ctx?.danger?.safetyCount ?? 0) > 0) || r0.selfFalling === true || !!bot.isInWater || !!r0.work,
       overlayActive: false });
     if (out?.fired) r0.lastEatGlance = { at: Date.now(), kind: out.kind, item: src?.item || null }; } catch {}
-  try { const r0 = rt(bot); if (!r0.lookSweepState) { r0.lookSweepState = createLookSweepState(); r0.lookSweepState.lastFoundAt = r0.mTargetSince || Date.now(); } const st = r0.lookSweepState; if (r0.mission && Number.isFinite(r0.mTargetSince)) st.lastFoundAt = Math.max(st.lastFoundAt || 0, r0.mTargetSince); const suppressed = ((ctx?.danger?.count ?? 0) > 0) || r0.selfFalling === true; if (!st.active && !suppressed && sweepDue(st, Date.now())) { let by; try { by = bot.getRotation?.()?.y; } catch {} startLookSweep(st, Date.now(), by); } if (st.active && !suppressed) { const adv = advanceLookSweep(st, st.baseYawDeg, Date.now()); if (adv.dirs.length) r0.lookSweepNow = adv.dirs; } } catch {} // FOV第2単位 feeder (cyc2492): 発動は進捗監視 mTargetSince と共有 (専用タイマーなし)、前進は核の100msガードで一巡1.2秒
+  try { const r0 = rt(bot); if (!r0.lookSweepState) { r0.lookSweepState = createLookSweepState(); r0.lookSweepState.lastFoundAt = r0.mTargetSince || Date.now(); } const st = r0.lookSweepState; if (r0.mission && Number.isFinite(r0.mTargetSince)) st.lastFoundAt = Math.max(st.lastFoundAt || 0, r0.mTargetSince); const suppressed = ((ctx?.danger?.safetyCount ?? 0) > 0) || r0.selfFalling === true; if (!st.active && !suppressed && sweepDue(st, Date.now())) { let by; try { by = bot.getRotation?.()?.y; } catch {} startLookSweep(st, Date.now(), by); } if (st.active && !suppressed) { const adv = advanceLookSweep(st, st.baseYawDeg, Date.now()); if (adv.dirs.length) r0.lookSweepNow = adv.dirs; } } catch {} // FOV第2単位 feeder (cyc2492): 発動は進捗監視 mTargetSince と共有 (専用タイマーなし)、前進は核の100msガードで一巡1.2秒
   let gz = null; try { gz = decideGaze(ctx); } catch {}
   if (!gz) return;
   const r = rt(bot);
@@ -4863,7 +4863,7 @@ function applyGaze(bot, owner, ctx, scan) {
     const tp = { x: look.x, y: look.y + (cellTarget ? 0.5 : 1.4), z: look.z };
     let rot = gazeRotation(bot.location, tp);
     // POLISH-ANIM-WORKGLANCE-01 (cycle1728, v0.5.19): owner break/place event edge -> brief glance (display only, real-machine check pending)
-    try { if (!r.workglanceState) r.workglanceState = createWorkglanceState(); const ort = owner ? ownerRt.get(owner.id) : null; const evs = []; if (ort?.breakLoc && (ort.breakAt||0) > (r.workglanceSeenAt||0)) evs.push({ kind: "break", loc: ort.breakLoc, at: ort.breakAt }); if (ort?.placeLoc && (ort.placeAt||0) > (r.workglanceSeenAt||0)) evs.push({ kind: "place", loc: ort.placeLoc, at: ort.placeAt }); evs.sort((a,b)=>a.at-b.at); for (const ev of evs) { r.workglanceSeenAt = ev.at; const fired = noteWorkglance(r.workglanceState, { nowMs: Date.now(), selfPos: bot.location, eventPos: ev.loc, eventKind: ev.kind, selfYawDeg: rot ? rot.y : null, working: !!r.work, danger: !!((ctx?.danger?.count ?? 0) > 0), falling: r.selfFalling === true, inWater: !!bot.isInWater, sameDimension: (()=>{ try { return bot.dimension.id === owner.dimension.id; } catch { return false; } })() }); if (fired) r.lastWorkglance = { at: Date.now(), kind: ev.kind }; } } catch {}
+    try { if (!r.workglanceState) r.workglanceState = createWorkglanceState(); const ort = owner ? ownerRt.get(owner.id) : null; const evs = []; if (ort?.breakLoc && (ort.breakAt||0) > (r.workglanceSeenAt||0)) evs.push({ kind: "break", loc: ort.breakLoc, at: ort.breakAt }); if (ort?.placeLoc && (ort.placeAt||0) > (r.workglanceSeenAt||0)) evs.push({ kind: "place", loc: ort.placeLoc, at: ort.placeAt }); evs.sort((a,b)=>a.at-b.at); for (const ev of evs) { r.workglanceSeenAt = ev.at; const fired = noteWorkglance(r.workglanceState, { nowMs: Date.now(), selfPos: bot.location, eventPos: ev.loc, eventKind: ev.kind, selfYawDeg: rot ? rot.y : null, working: !!r.work, danger: !!((ctx?.danger?.safetyCount ?? 0) > 0), falling: r.selfFalling === true, inWater: !!bot.isInWater, sameDimension: (()=>{ try { return bot.dimension.id === owner.dimension.id; } catch { return false; } })() }); if (fired) r.lastWorkglance = { at: Date.now(), kind: ev.kind }; } } catch {}
     // POLISH-ANIM-CATCHSIGHT-01 (cycle2200): feeder — キューを全件 drain し辺を1回だけ消費する (遅れ発火防止)
     try { if (!r.catchsightState) r.catchsightState = createCatchsightState(); const pend = Array.isArray(r.catchsightPending) ? r.catchsightPending : []; r.catchsightPending = []; const now = Date.now(); const sup = catchsightSuppressInput(bot, owner, ctx, gz, r, now); for (const ev of pend) { if (!ev?.loc || now - (ev.at || 0) > 1500) continue; let sameDim = false; try { sameDim = !!owner && bot.dimension.id === owner.dimension.id; } catch {} if (!sameDim) continue; const gr = gazeRotation(bot.location, { x: ev.loc.x, y: ev.loc.y, z: ev.loc.z }); const relYaw = gr && rot ? ((gr.y - rot.y + 540) % 360) - 180 : null; const relPitch = gr && rot ? gr.x - rot.x : null; const d3 = dist(bot.location, ev.loc); const fired = noteCatchsight(r.catchsightState, { ownerTossedItem: true, itemDistance: d3, itemRelYawDeg: relYaw, itemRelPitchDeg: relPitch, ...sup, nowMs: now }, now); if (fired) r.lastCatchSight = { at: now, dist: d3, relYawDeg: relYaw }; } } catch {}
     // POLISH-ANIM-INSPECT-01 (cycle1003): 検分中はピッチへ見下ろしオフセットを重畳する (消費点はここ1箇所)
@@ -4871,28 +4871,28 @@ function applyGaze(bot, owner, ctx, scan) {
     if (rot && isNodActive(r.nodAnimAt, Date.now())) rot = { ...rot, x: applyNodPitch(rot.x, Date.now() - r.nodAnimAt) };
     if (rot && isRecallcheckActive(r.recallcheckAnimAt, Date.now())) rot = { ...rot, x: applyRecallcheckPitch(rot.x, Date.now() - r.recallcheckAnimAt) }; // POLISH-ANIM-RECALLCHECK-01 (cycle1238): 再召喚で荷物が戻った直後の手元確認 (表示層のみ・実機確認待ち)
     // POLISH-ANIM-SETTLE-01 feeder (cycle2058): lastAction の BREAK 成功 (seq変化) の辺でのみ発火記録 (表示層のみ・実機確認待ち)
-    try { const la = r.lastAction; if (la && la.act === "BREAK" && la.ok && la.seq !== r.settleSeenSeq) { r.settleSeenSeq = la.seq; if (shouldSettle({ broke: true, suppressed: ((ctx?.danger?.count ?? 0) > 0) || r.selfFalling === true || !!bot.isInWater, lastFiredMs: r.settleLastAt ?? null, nowMs: Date.now() })) { r.settleAnimAt = la.at || Date.now(); r.settleLastAt = r.settleAnimAt; r.lastSettle = { at: r.settleAnimAt, item: la.item || null }; } } } catch {}
+    try { const la = r.lastAction; if (la && la.act === "BREAK" && la.ok && la.seq !== r.settleSeenSeq) { r.settleSeenSeq = la.seq; if (shouldSettle({ broke: true, suppressed: ((ctx?.danger?.safetyCount ?? 0) > 0) || r.selfFalling === true || !!bot.isInWater, lastFiredMs: r.settleLastAt ?? null, nowMs: Date.now() })) { r.settleAnimAt = la.at || Date.now(); r.settleLastAt = r.settleAnimAt; r.lastSettle = { at: r.settleAnimAt, item: la.item || null }; } } } catch {}
     if (rot && isSettleActive(r.settleAnimAt, Date.now())) rot = { ...rot, x: applySettlePitch(rot.x, Date.now() - r.settleAnimAt) }; // POLISH-ANIM-SETTLE-01 (cycle2058): 重畳 (表示層のみ・実機確認待ち)
     // POLISH-ANIM-PLACESETTLE-01 feeder (cycle2248): lastAction の PLACE 成功 (seq変化) の辺でのみ発火記録 (表示層のみ・実機確認待ち)
-    try { const la = r.lastAction; if (la && la.act === "PLACE" && la.ok && la.seq !== r.placesettleSeenSeq) { r.placesettleSeenSeq = la.seq; if (shouldPlacesettle({ placed: true, suppressed: ((ctx?.danger?.count ?? 0) > 0) || r.selfFalling === true || !!bot.isInWater, lastFiredMs: r.placesettleLastAt ?? null, nowMs: Date.now() })) { r.placesettleAnimAt = la.at || Date.now(); r.placesettleLastAt = r.placesettleAnimAt; r.lastPlacesettle = { at: r.placesettleAnimAt, item: la.item || null }; } } } catch {}
+    try { const la = r.lastAction; if (la && la.act === "PLACE" && la.ok && la.seq !== r.placesettleSeenSeq) { r.placesettleSeenSeq = la.seq; if (shouldPlacesettle({ placed: true, suppressed: ((ctx?.danger?.safetyCount ?? 0) > 0) || r.selfFalling === true || !!bot.isInWater, lastFiredMs: r.placesettleLastAt ?? null, nowMs: Date.now() })) { r.placesettleAnimAt = la.at || Date.now(); r.placesettleLastAt = r.placesettleAnimAt; r.lastPlacesettle = { at: r.placesettleAnimAt, item: la.item || null }; } } } catch {}
     if (rot && isPlacesettleActive(r.placesettleAnimAt, Date.now())) rot = { ...rot, x: applyPlacesettlePitch(rot.x, Date.now() - r.placesettleAnimAt) }; // POLISH-ANIM-PLACESETTLE-01 (cycle2248): 重畳 (表示層のみ・実機確認待ち)
     // POLISH-ANIM-YIELD-01 feeder (cycle0153): 主人との対向接近を既存観測だけで組み立てる (新規走査は側方2セル×2段のみ)。lateralOffset は実座標へ流さず記録のみ、ヨー/ピッチだけ重畳 (表示層のみ・実機確認待ち)
     try { if (!r.combatendState) r.combatendState = createCombatEndState(); const nowC = Date.now(); const hurtNowC = !!(r.lastSelfHurtAt && r.lastSelfHurtAt !== r.combatendHurtSeen); if (hurtNowC) r.combatendHurtSeen = r.lastSelfHurtAt; let surfC = false; try { surfC = !!(r.surfacebreathState && sampleSurfacebreath(r.surfacebreathState, nowC).active); } catch {} const evC = noteCombatEnd(r.combatendState, { hostileCount: scan ? (scan.hostiles || []).length : undefined, hurtNow: hurtNowC, working: !!r.work, falling: r.selfFalling === true, inWaterSurfaced: surfC }, nowC); if (evC && evC.reason !== "not_confirmed" && evC.reason !== "still_in_combat") r.lastCombatEnd = { at: nowC, fired: !!evC.fired, reason: evC.reason }; } catch {} // POLISH-ANIM-COMBATEND-01 (cycle0224): feeder は既存走査 scan.hostiles のみ (新規走査なし、発火を戦闘判定へ逆流させない)
-    try { if (!r.yieldState) r.yieldState = createYieldState(); const nowY = Date.now(); const dxY = owner.location.x - bot.location.x, dzY = owner.location.z - bot.location.z; const dHY = Math.hypot(dxY, dzY); const approachingY = Number.isFinite(r.yieldLastDist) ? dHY < r.yieldLastDist - 0.005 : false; r.yieldLastDist = dHY; let facingY = 0; try { const oy = owner.getRotation?.().y; const by = rot?.y; if (Number.isFinite(oy) && Number.isFinite(by)) facingY = Math.abs(((oy - by + 540) % 360) - 180); } catch {} let roomYL = false, roomYR = false; try { if (dHY > 0.01) { const ux = dxY / dHY, uz = dzY / dHY; const roomAt = (sx, sz) => { const fx = Math.floor(bot.location.x + sx), fy = Math.floor(bot.location.y), fz = Math.floor(bot.location.z + sz); const free = (b) => !b || (!solidOfTypeId(b.typeId) && !b.isLiquid); return free(bot.dimension.getBlock({ x: fx, y: fy, z: fz })) && free(bot.dimension.getBlock({ x: fx, y: fy + 1, z: fz })); }; roomYL = roomAt(-uz, ux); roomYR = roomAt(uz, -ux); } } catch {} const yEv = noteYield(r.yieldState, { ownerDist: dHY, facingDiffDeg: facingY, approaching: approachingY, roomLeft: roomYL, roomRight: roomYR, working: !!r.work, danger: ((ctx?.danger?.count ?? 0) > 0), falling: r.selfFalling === true, inWater: !!bot.isInWater }, nowY); if (yEv?.fired) r.lastYield = { at: nowY, side: yEv.side, reason: yEv.reason }; } catch {}
+    try { if (!r.yieldState) r.yieldState = createYieldState(); const nowY = Date.now(); const dxY = owner.location.x - bot.location.x, dzY = owner.location.z - bot.location.z; const dHY = Math.hypot(dxY, dzY); const approachingY = Number.isFinite(r.yieldLastDist) ? dHY < r.yieldLastDist - 0.005 : false; r.yieldLastDist = dHY; let facingY = 0; try { const oy = owner.getRotation?.().y; const by = rot?.y; if (Number.isFinite(oy) && Number.isFinite(by)) facingY = Math.abs(((oy - by + 540) % 360) - 180); } catch {} let roomYL = false, roomYR = false; try { if (dHY > 0.01) { const ux = dxY / dHY, uz = dzY / dHY; const roomAt = (sx, sz) => { const fx = Math.floor(bot.location.x + sx), fy = Math.floor(bot.location.y), fz = Math.floor(bot.location.z + sz); const free = (b) => !b || (!solidOfTypeId(b.typeId) && !b.isLiquid); return free(bot.dimension.getBlock({ x: fx, y: fy, z: fz })) && free(bot.dimension.getBlock({ x: fx, y: fy + 1, z: fz })); }; roomYL = roomAt(-uz, ux); roomYR = roomAt(uz, -ux); } } catch {} const yEv = noteYield(r.yieldState, { ownerDist: dHY, facingDiffDeg: facingY, approaching: approachingY, roomLeft: roomYL, roomRight: roomYR, working: !!r.work, danger: ((ctx?.danger?.safetyCount ?? 0) > 0), falling: r.selfFalling === true, inWater: !!bot.isInWater }, nowY); if (yEv?.fired) r.lastYield = { at: nowY, side: yEv.side, reason: yEv.reason }; } catch {}
     // POLISH-ANIM-CRAFTSETTLE-01 feeder (cycle0141): lastAction の CRAFT/SMELT 成功 (seq変化) の辺でのみ発火記録 (表示層のみ・実機確認待ち)
-    try { const la = r.lastAction; if (la && (la.act === "CRAFT" || la.act === "SMELT") && la.ok && la.seq !== r.craftsettleSeenSeq) { r.craftsettleSeenSeq = la.seq; if (shouldCraftsettle({ crafted: true, suppressed: ((ctx?.danger?.count ?? 0) > 0) || r.selfFalling === true || !!bot.isInWater, lastFiredMs: r.craftsettleLastAt ?? null, nowMs: Date.now() })) { r.craftsettleAnimAt = la.at || Date.now(); r.craftsettleLastAt = r.craftsettleAnimAt; r.lastCraftsettle = { at: r.craftsettleAnimAt, item: la.item || null, act: la.act }; } } } catch {}
+    try { const la = r.lastAction; if (la && (la.act === "CRAFT" || la.act === "SMELT") && la.ok && la.seq !== r.craftsettleSeenSeq) { r.craftsettleSeenSeq = la.seq; if (shouldCraftsettle({ crafted: true, suppressed: ((ctx?.danger?.safetyCount ?? 0) > 0) || r.selfFalling === true || !!bot.isInWater, lastFiredMs: r.craftsettleLastAt ?? null, nowMs: Date.now() })) { r.craftsettleAnimAt = la.at || Date.now(); r.craftsettleLastAt = r.craftsettleAnimAt; r.lastCraftsettle = { at: r.craftsettleAnimAt, item: la.item || null, act: la.act }; } } } catch {}
     if (rot && isCraftsettleActive(r.craftsettleAnimAt, Date.now())) rot = { ...rot, x: applyCraftsettlePitch(rot.x, Date.now() - r.craftsettleAnimAt) }; // POLISH-ANIM-CRAFTSETTLE-01 (cycle0141): 重畳 (表示層のみ・実機確認待ち)
     if (rot && isDeliverBowActive(r.deliverBowAt, Date.now())) rot = { ...rot, x: applyDeliverBowPitch(rot.x, Date.now() - r.deliverBowAt) }; // POLISH-ANIM-DELIVERBOW-01 (cycle0446): 手渡し成功直後の会釈 (表示層のみ・実機確認待ち)
     // POLISH-ANIM-STORESETTLE-01 feeder (cycle0505): lastAction の STORE 成功 (seq変化) の辺でのみ発火記録 (表示層のみ・実機確認待ち)
-    try { const la = r.lastAction; if (la && la.act === "STORE" && la.ok && la.seq !== r.storesettleSeenSeq) { r.storesettleSeenSeq = la.seq; if (shouldStoresettle({ stored: true, suppressed: ((ctx?.danger?.count ?? 0) > 0) || r.selfFalling === true || !!bot.isInWater, lastFiredMs: r.storesettleLastAt ?? null, nowMs: Date.now() })) { r.storesettleAnimAt = la.at || Date.now(); r.storesettleLastAt = r.storesettleAnimAt; r.lastStoresettle = { at: r.storesettleAnimAt, item: la.item || null }; } } } catch {}
+    try { const la = r.lastAction; if (la && la.act === "STORE" && la.ok && la.seq !== r.storesettleSeenSeq) { r.storesettleSeenSeq = la.seq; if (shouldStoresettle({ stored: true, suppressed: ((ctx?.danger?.safetyCount ?? 0) > 0) || r.selfFalling === true || !!bot.isInWater, lastFiredMs: r.storesettleLastAt ?? null, nowMs: Date.now() })) { r.storesettleAnimAt = la.at || Date.now(); r.storesettleLastAt = r.storesettleAnimAt; r.lastStoresettle = { at: r.storesettleAnimAt, item: la.item || null }; } } } catch {}
     if (rot && isStoresettleActive(r.storesettleAnimAt, Date.now())) rot = { ...rot, x: applyStoresettlePitch(rot.x, Date.now() - r.storesettleAnimAt) }; // POLISH-ANIM-STORESETTLE-01 (cycle0505): 重畳 (表示層のみ・実機確認待ち)
     // POLISH-ANIM-NOSPACE-01 feeder (cycle0537): TAKE の INVENTORY_FULL (r.lastTake の at 変化) の辺でのみ発火 (表示層のみ・実機確認待ち)
-    try { const lt = r.lastTake; if (lt && lt.act === "TAKE" && !lt.ok && lt.reason === "INVENTORY_FULL" && lt.at !== r.nospaceSeenAt) { r.nospaceSeenAt = lt.at; if (shouldNospace({ full: true, suppressed: ((ctx?.danger?.count ?? 0) > 0) || r.selfFalling === true || !!bot.isInWater, lastFiredMs: r.nospaceLastAt ?? null, nowMs: Date.now() })) { r.nospaceAnimAt = lt.at || Date.now(); r.nospaceLastAt = r.nospaceAnimAt; r.lastNospace = { at: r.nospaceAnimAt, item: lt.item || null }; } } } catch {}
+    try { const lt = r.lastTake; if (lt && lt.act === "TAKE" && !lt.ok && lt.reason === "INVENTORY_FULL" && lt.at !== r.nospaceSeenAt) { r.nospaceSeenAt = lt.at; if (shouldNospace({ full: true, suppressed: ((ctx?.danger?.safetyCount ?? 0) > 0) || r.selfFalling === true || !!bot.isInWater, lastFiredMs: r.nospaceLastAt ?? null, nowMs: Date.now() })) { r.nospaceAnimAt = lt.at || Date.now(); r.nospaceLastAt = r.nospaceAnimAt; r.lastNospace = { at: r.nospaceAnimAt, item: lt.item || null }; } } } catch {}
     if (rot && isNospaceActive(r.nospaceAnimAt, Date.now())) rot = { ...rot, y: applyNospaceYaw(rot.y, Date.now() - r.nospaceAnimAt) }; // POLISH-ANIM-NOSPACE-01 (cycle0537): ヨー重畳は最下位 (表示層のみ・実機確認待ち)
     // POLISH-ANIM-LOWCEILDUCK-01 feeder+重畳 (cycle0553): 頭上セル (足元+2) の固体観測は200ms間引きの1セルだけ (新規走査はこの1セルのみ)。沈みは r.lastLowCeilDuck 記録のみ (表示層のみ・実機確認待ち)
-    try { if (!r.lowceilduckState) r.lowceilduckState = createLowCeilDuckState(); if (Date.now() - (r.lowceilCheckAt || 0) >= 200) { r.lowceilCheckAt = Date.now(); let low = null; try { const cb = bot.dimension.getBlock({ x: Math.floor(bot.location.x), y: Math.floor(bot.location.y) + 2, z: Math.floor(bot.location.z) }); low = cb ? solidOfTypeId(cb.typeId) : null; } catch { low = null; } r.lowceilduckState = noteLowCeilDuck(r.lowceilduckState, { lowCeil: low, suppressed: ((ctx?.danger?.count ?? 0) > 0) || r.selfFalling === true || !!bot.isInWater, nowMs: Date.now() }); } if (rot) { const lcd = sampleLowCeilDuck(r.lowceilduckState, Date.now()); if (lcd.active) { rot = { ...rot, x: rot.x + lcd.pitchDeg }; r.lastLowCeilDuck = { at: Date.now(), sink: lcd.sink, blend: lcd.blend }; } } } catch {}
+    try { if (!r.lowceilduckState) r.lowceilduckState = createLowCeilDuckState(); if (Date.now() - (r.lowceilCheckAt || 0) >= 200) { r.lowceilCheckAt = Date.now(); let low = null; try { const cb = bot.dimension.getBlock({ x: Math.floor(bot.location.x), y: Math.floor(bot.location.y) + 2, z: Math.floor(bot.location.z) }); low = cb ? solidOfTypeId(cb.typeId) : null; } catch { low = null; } r.lowceilduckState = noteLowCeilDuck(r.lowceilduckState, { lowCeil: low, suppressed: ((ctx?.danger?.safetyCount ?? 0) > 0) || r.selfFalling === true || !!bot.isInWater, nowMs: Date.now() }); } if (rot) { const lcd = sampleLowCeilDuck(r.lowceilduckState, Date.now()); if (lcd.active) { rot = { ...rot, x: rot.x + lcd.pitchDeg }; r.lastLowCeilDuck = { at: Date.now(), sink: lcd.sink, blend: lcd.blend }; } } } catch {}
     // POLISH-ANIM-STOW-01 feeder (cycle0522): 作業セッション (BREAK/PLACE/CRAFT/SMELT成功の連なり) の終了の辺でのみ発火 (表示層のみ・実機確認待ち。腕は記録のみ)
-    try { if (!r.stowState) r.stowState = createStowState(); const la = r.lastAction; if (la && la.ok && la.seq !== r.stowSeenSeq) { r.stowSeenSeq = la.seq; r.stowState = noteStowWork(r.stowState, { nowMs: la.at || Date.now(), kind: la.act, success: true }); } const supS = ((ctx?.danger?.count ?? 0) > 0) || r.selfFalling === true || !!bot.isInWater; const ovS = isSettleActive(r.settleAnimAt, Date.now()) || isPlacesettleActive(r.placesettleAnimAt, Date.now()) || isCraftsettleActive(r.craftsettleAnimAt, Date.now()) || isStoresettleActive(r.storesettleAnimAt, Date.now()); const tk = noteStowTick(r.stowState, { nowMs: Date.now(), workActive: !!(r.work || r.buildPlan || r.mission), suppressed: supS, overlayActive: ovS, toolTypeId: null }); r.stowState = tk.state; if (tk.fired) { r.stowAnimAt = Date.now(); r.lastStow = { atMs: r.stowAnimAt, toolTypeId: tk.toolTypeId, armPitchDeg: STOW_MAX_ARM_DEG }; } } catch {}
+    try { if (!r.stowState) r.stowState = createStowState(); const la = r.lastAction; if (la && la.ok && la.seq !== r.stowSeenSeq) { r.stowSeenSeq = la.seq; r.stowState = noteStowWork(r.stowState, { nowMs: la.at || Date.now(), kind: la.act, success: true }); } const supS = ((ctx?.danger?.safetyCount ?? 0) > 0) || r.selfFalling === true || !!bot.isInWater; const ovS = isSettleActive(r.settleAnimAt, Date.now()) || isPlacesettleActive(r.placesettleAnimAt, Date.now()) || isCraftsettleActive(r.craftsettleAnimAt, Date.now()) || isStoresettleActive(r.storesettleAnimAt, Date.now()); const tk = noteStowTick(r.stowState, { nowMs: Date.now(), workActive: !!(r.work || r.buildPlan || r.mission), suppressed: supS, overlayActive: ovS, toolTypeId: null }); r.stowState = tk.state; if (tk.fired) { r.stowAnimAt = Date.now(); r.lastStow = { atMs: r.stowAnimAt, toolTypeId: tk.toolTypeId, armPitchDeg: STOW_MAX_ARM_DEG }; } } catch {}
     if (rot && isStowActive(r.stowAnimAt, Date.now())) rot = { ...rot, x: applyStowPitch(rot.x, Date.now() - r.stowAnimAt) }; // POLISH-ANIM-STOW-01 (cycle0522): 重畳は最下位 (表示層のみ・実機確認待ち)
     if (rot && isLevelupNodActive(r.levelupnodAnimAt, Date.now()) && !isFlinchActive(r.flinchAnimAt, Date.now()) && !isNodActive(r.nodAnimAt, Date.now())) rot = { ...rot, x: applyLevelupNodPitch(rot.x, Date.now() - r.levelupnodAnimAt) }; // POLISH-ANIM-LEVELUPNOD-01 (cyc2122): 最下位重畳 (表示層のみ・実機確認待ち)
     if (rot && r.snowtreadState) { try { const so = snowtreadCurrentOffset(r.snowtreadState); if (so.active) rot = { ...rot, x: applySnowtreadPitch(rot.x, r.snowtreadState.phase) }; } catch {} } // POLISH-ANIM-SNOWTREAD-01 (cycle2333): 重畳 (表示層のみ・実機確認待ち)
@@ -5062,7 +5062,7 @@ system.runInterval(() => {
       // Phase4 cb_trace act配線 (v0.4.65): 仲裁後の実効行動だけを記録する (分岐・実行は不変、読み手は表示専用)。
       // 器は act を畳まないため plan 前例の seen キーで同一エピソードを1件に抑え、成功時のみ前進させる
       try {
-        const aev = mapInterruptAct({ act: eff.act, p: eff.p, goal: null, x: { hp: ctx.self?.hpPct ?? null, dg: ctx.danger?.count ?? null, scan: ctx.x?.obs?.scan ?? null, inv: ctx.x?.obs?.inv ?? null } });
+        const aev = mapInterruptAct({ act: eff.act, p: eff.p, goal: null, x: { hp: ctx.self?.hpPct ?? null, dg: ctx.danger?.safetyCount ?? null, scan: ctx.x?.obs?.scan ?? null, inv: ctx.x?.obs?.inv ?? null } });
         if (aev) { if (r.traceActSeen !== aev.a && r.trace?.record(aev)) r.traceActSeen = aev.a; }
         else if (!shouldRecordAct(eff.p)) r.traceActSeen = null;
       } catch {}
@@ -5096,7 +5096,7 @@ system.runInterval(() => {
     syncNavGoal(bot, r);
     applyGaze(bot, p, ctx, scan);
     try { r.gazeArgs = { owner: p, ctx, scan, at: Date.now() }; } catch {} // 0-E1: 視線レイヤー (2tick) が再適用するための最新引数の保持 (走査は増やさない)
-    if (ctx.x?.firstToday && ctx.danger.count === 0) { if (sayFromCategory(p, bot, world.getTimeOfDay() < 12000 ? "greet_morning" : "greet_night")) r.greetedDay = world.getDay(); }
+    if (ctx.x?.firstToday && ctx.danger.safetyCount === 0) { if (sayFromCategory(p, bot, world.getTimeOfDay() < 12000 ? "greet_morning" : "greet_night")) r.greetedDay = world.getDay(); }
   }
 }, 10);
 

@@ -82,7 +82,7 @@ export const RULES = [
 {id:'far_from_owner_low_hp',p:907,when:c=>c.self.distOwner>32&&c.self.hpPct<=0.35&&c.danger.safetyCount>0,act:'go_owner',say:'一人じゃ危ない、戻るよ…',note:'主人遠方・低HP・敵ありで合流'},
 {id:'far_from_home_work_danger',p:909,when:c=>c.mode==='work'&&c.self.distHome>40&&c.danger.safetyCount>=2&&c.owner.dimensionSame,act:'go_owner',say:'拠点から離れすぎた…戻ろう',note:'作業モードで拠点遠方・敵複数なら合流優先'},
 {id:'owner_hunger_critical_combat',p:911,when:c=>c.owner.present&&c.owner.hunger<=2&&c.owner.hpPct<=0.5&&c.danger.safetyCount>0,act:'warn_owner_low',say:'空腹で回復できないよ…！',note:'主人極度空腹・HP低下・戦闘中を警告'},
-{id:'dawn_after_night_low',p:913,when:c=>c.env.isDawn&&c.self.hpPct<=0.3&&c.home.registered&&c.danger.count===0,act:'rest_at_home',say:'夜が明けた…拠点で休むね',note:'夜明け・低HP・敵なし・拠点ありで帰還休息'},
+{id:'dawn_after_night_low',p:913,when:c=>c.env.isDawn&&c.self.hpPct<=0.3&&c.home.registered&&c.danger.safetyCount===0,act:'rest_at_home',say:'夜が明けた…拠点で休むね',note:'夜明け・低HP・敵なし・拠点ありで帰還休息'},
 {id:'dusk_enemy_owner_low',p:915,when:c=>c.env.isDusk&&c.danger.safetyCount>0&&c.owner.hpPct<=0.4&&c.flags.warnOk,act:'warn_hostile',say:'日が暮れる前に片付けるか逃げるかだよ！',note:'夕方・敵あり・主人低HPを警告'},
 {id:'thunder_owner_outside_low',p:917,when:c=>c.env.isThundering&&!c.owner.underground&&c.owner.hpPct<=0.4&&c.danger.safetyCount>0,act:'warn_hostile',say:'雷雨の中の戦いは危ないよ…',note:'雷雨・地上・主人低HP・敵ありを警告'},
 {id:'owner_targeted_single_healthy',p:919,when:c=>c.danger.visualOwnerTargeted&&c.danger.safetyCount===1&&c.danger.safetyNearestDist<10&&c.self.hpPct>0.6&&c.inv.hasWeapon,act:'zap',say:'1体だけなら任せて！',note:'単体に主人を狙われ自HP余裕・武器ありで反撃'},

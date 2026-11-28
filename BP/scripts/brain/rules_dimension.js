@@ -21,7 +21,7 @@ export const RULES = [
 {id:'dim_boss_drop_dragon',p:879,when:c=>c.x?.dragonFight&&!c.x?.bossNear&&c.drops.valuableDist>=0&&c.drops.valuableDist<=24,act:'pickup_valuable',say:'ドラゴンの落とし物です。最優先で回収します',note:'ドラゴン撃破直後、ボスドロップを最優先回収'},
 {id:'dim_boss_drop_wither',p:879,when:c=>c.x?.witherFight&&!c.x?.bossNear&&c.drops.valuableDist>=0&&c.drops.valuableDist<=20,act:'pickup_valuable',say:'ネザースター級の反応です。回収します',note:'ウィザー撃破直後、ボスドロップを最優先回収'},
 {id:'dim_boss_drop_gvc',p:878,when:c=>c.x?.gvcBoss&&!c.x?.bossNear&&c.drops.valuableDist>=0&&c.drops.valuableDist<=20&&!c.inv.full,act:'pickup_valuable',say:'大型目標の残骸から、貴重品を回収します',note:'GVCボス撃破直後の貴重品回収'},
-{id:'dim_boss_drop_hp_zero',p:878,when:c=>c.x?.bossHpPct===0&&c.drops.valuableDist>=0&&c.drops.valuableDist<=16&&c.danger.count===0,act:'pickup_valuable',say:'目標、沈黙しました。落とし物を回収します',note:'ボスHP0確定後のドロップ回収'},
+{id:'dim_boss_drop_hp_zero',p:878,when:c=>c.x?.bossHpPct===0&&c.drops.valuableDist>=0&&c.drops.valuableDist<=16&&c.danger.safetyCount===0,act:'pickup_valuable',say:'目標、沈黙しました。落とし物を回収します',note:'ボスHP0確定後のドロップ回収'},
 {id:'dim_boss_drop_full_inv',p:877,when:c=>c.x?.bossHpPct===0&&c.drops.valuableDist>=0&&c.inv.full,act:'say_only',say:'回収したいのですが、私の荷物が満杯です',note:'ボスドロップがあるのに満杯。回収できない旨を伝える'},
 // === ボス戦: 自分の生存 ===
 {id:'dim_boss_self_critical',p:879,when:c=>c.x?.bossNear&&c.self.hpPct<=0.2&&c.danger.safetyCount>0,act:'flee',say:'私が先に壊れます。距離を取ります',note:'ボス戦で自分が瀕死なら離脱'},
@@ -68,14 +68,14 @@ export const RULES = [
 {id:'dim_nether_lava_owner_low',p:877,when:c=>c.x?.dimension==='nether'&&c.danger.lavaNear&&c.owner.hpPct<=0.4,act:'follow_close',say:'溶岩のそばでその体力は危険です。付きます',note:'ネザー溶岩付近＋主人低HPで密着'},
 {id:'dim_nether_on_fire',p:872,when:c=>c.x?.dimension==='nether'&&c.owner.onFire&&c.danger.safetyCount>0,act:'guard',say:'燃えながら戦う場所ではありません。守ります',note:'ネザーで主人炎上＋敵ありで護衛'},
 {id:'dim_nether_ranged_swarm',p:867,when:c=>c.x?.dimension==='nether'&&c.danger.safetyRangedDist<14&&c.danger.safetyCount>=2,act:'follow_high',say:'ガスト圏内です。高めに避難します',note:'ネザーで遠距離敵＋複数敵なら高め追従'},
-{id:'dim_nether_follow_default',p:860,when:c=>c.x?.dimension==='nether'&&c.mode==='follow'&&c.danger.count===0,act:'follow_close',say:'ネザーでは密着が基本です',note:'ネザーの平時は密着追従'},
-{id:'dim_nether_valuable',p:864,when:c=>c.x?.dimension==='nether'&&c.drops.valuableDist>=0&&c.drops.valuableDist<=10&&!c.inv.full&&c.danger.count===0,act:'pickup_valuable',say:'ネザーの貴重品です。回収します',note:'ネザー平時の貴重品回収'},
+{id:'dim_nether_follow_default',p:860,when:c=>c.x?.dimension==='nether'&&c.mode==='follow'&&c.danger.safetyCount===0,act:'follow_close',say:'ネザーでは密着が基本です',note:'ネザーの平時は密着追従'},
+{id:'dim_nether_valuable',p:864,when:c=>c.x?.dimension==='nether'&&c.drops.valuableDist>=0&&c.drops.valuableDist<=10&&!c.inv.full&&c.danger.safetyCount===0,act:'pickup_valuable',say:'ネザーの貴重品です。回収します',note:'ネザー平時の貴重品回収'},
 {id:'dim_nether_owner_sprinting',p:862,when:c=>c.x?.dimension==='nether'&&c.owner.sprinting&&c.self.distOwner>10,act:'follow_close',say:'ネザーで走ると危ないですよ。……付いて行きますが',note:'ネザーで主人がダッシュしたら密着'},
-{id:'dim_nether_night_shift',p:860,when:c=>c.x?.dimension==='nether'&&c.owner.idleSec>30&&c.danger.count===0,act:'say_only',say:'ネザーに夜はありません。私の夜勤は永続ですね',note:'ネザーで主人アイドル時の小言'},
+{id:'dim_nether_night_shift',p:860,when:c=>c.x?.dimension==='nether'&&c.owner.idleSec>30&&c.danger.safetyCount===0,act:'say_only',say:'ネザーに夜はありません。私の夜勤は永続ですね',note:'ネザーで主人アイドル時の小言'},
 // === ネザー要塞 ===
 {id:'dim_fortress_warn',p:871,when:c=>c.x?.fortress&&c.danger.safetyCount>=2&&c.flags.warnOk,act:'warn_hostile',say:'要塞内、敵性反応が複数です',note:'要塞で敵複数を警告'},
 {id:'dim_fortress_ranged',p:866,when:c=>c.x?.fortress&&c.danger.safetyRangedDist<14,act:'guard',say:'ブレイズの射程です。前に出ます',note:'要塞で遠距離敵接近なら護衛'},
-{id:'dim_fortress_valuable',p:865,when:c=>c.x?.fortress&&c.drops.valuableDist>=0&&c.drops.valuableDist<=12&&c.danger.count===0&&!c.inv.full,act:'pickup_valuable',say:'要塞の戦利品です。回収します',note:'要塞平時の貴重品回収'},
+{id:'dim_fortress_valuable',p:865,when:c=>c.x?.fortress&&c.drops.valuableDist>=0&&c.drops.valuableDist<=12&&c.danger.safetyCount===0&&!c.inv.full,act:'pickup_valuable',say:'要塞の戦利品です。回収します',note:'要塞平時の貴重品回収'},
 {id:'dim_fortress_owner_low',p:870,when:c=>c.x?.fortress&&c.owner.hpPct<=0.35,act:'follow_close',say:'要塞でその体力は見過ごせません。付きます',note:'要塞で主人低HPなら密着'},
 {id:'dim_fortress_lava',p:873,when:c=>c.x?.fortress&&c.danger.lavaNear&&c.flags.warnOk,act:'warn_hostile',say:'要塞の床は抜けます。溶岩に注意',note:'要塞＋溶岩接近を警告'},
 // === エンド一般 ===
@@ -88,10 +88,10 @@ export const RULES = [
 {id:'dim_portal_danger',p:870,when:c=>c.x?.portalNear&&c.danger.safetyCount>0&&c.flags.warnOk,act:'warn_hostile',say:'ポータル前で敵です。先に片付けてください',note:'ポータル付近に敵がいたら警告'},
 {id:'dim_portal_owner_far',p:864,when:c=>c.x?.portalNear&&c.owner.present&&c.self.distOwner>14,act:'go_owner',say:'ポータルをくぐる前に、合流させてください',note:'ポータル付近で主人が遠いなら寄る'},
 {id:'dim_portal_full_inv',p:863,when:c=>c.x?.portalNear&&c.inv.full,act:'say_only',say:'荷物が満杯です。次元を越える前に整理を',note:'ポータル前で満杯なら整理を促す'},
-{id:'dim_portal_nether_side',p:861,when:c=>c.x?.portalNear&&c.x?.dimension==='nether'&&c.danger.count===0,act:'follow_close',say:'ポータル際が一番安全です。付きます',note:'ネザー側ポータル付近の平時は密着'},
+{id:'dim_portal_nether_side',p:861,when:c=>c.x?.portalNear&&c.x?.dimension==='nether'&&c.danger.safetyCount===0,act:'follow_close',say:'ポータル際が一番安全です。付きます',note:'ネザー側ポータル付近の平時は密着'},
 // === 古代都市・要塞遺跡（stronghold） ===
 {id:'dim_stronghold_warn',p:868,when:c=>c.x?.stronghold&&c.danger.safetyCount>0&&c.flags.warnOk,act:'warn_hostile',say:'要塞遺跡です。静かに、しかし確実に敵がいます',note:'ストロングホールドで敵を警告'},
 {id:'dim_stronghold_portal_near',p:866,when:c=>c.x?.stronghold&&c.x?.portalNear,act:'follow_close',say:'エンドポータルが近いです。はぐれません',note:'ストロングホールドでポータル接近なら密着'},
-{id:'dim_stronghold_valuable',p:864,when:c=>c.x?.stronghold&&c.drops.valuableDist>=0&&c.drops.valuableDist<=10&&c.danger.count===0&&!c.inv.full,act:'pickup_valuable',say:'遺跡の貴重品です。回収します',note:'ストロングホールド平時の貴重品回収'},
+{id:'dim_stronghold_valuable',p:864,when:c=>c.x?.stronghold&&c.drops.valuableDist>=0&&c.drops.valuableDist<=10&&c.danger.safetyCount===0&&!c.inv.full,act:'pickup_valuable',say:'遺跡の貴重品です。回収します',note:'ストロングホールド平時の貴重品回収'},
 {id:'dim_stronghold_owner_sneaking',p:862,when:c=>c.x?.stronghold&&c.owner.sneaking,act:'follow_close',say:'静かに付いて行きます。音は立てません',note:'ストロングホールドで主人スニーク中は密着'},
 ];

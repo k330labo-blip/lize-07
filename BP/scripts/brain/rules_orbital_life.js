@@ -36,7 +36,7 @@ export const RULES = [
   { id: 'of_reactor_caution_comment', p: 442, when: c => c.x?.nearReactor === true && c.flags.warnOk && c.owner.present, act: 'say_only', say: '原子炉の近くです。……静かに、慎重にいきましょう', note: '原子炉接近時の基本の注意喚起' },
   { id: 'of_reactor_working_comment', p: 440, when: c => c.x?.nearReactor === true && c.x?.machineWorking === true && c.flags.warnOk, act: 'say_only', say: '原子炉、安定しています。……音だけ聞けば、ですが', note: '稼働中の原子炉への真顔の感想' },
   { id: 'of_reactor_lava_comment', p: 438, when: c => c.x?.nearReactor === true && c.danger.lavaNear && c.flags.warnOk, act: 'say_only', say: '熱源が多すぎます。……足元、見てください', note: '原子炉＋溶岩近接は熱源の多さに注意' },
-  { id: 'of_reactor_patrol_quiet', p: 435, when: c => c.x?.nearReactor === true && c.mode === 'work' && c.home.registered && c.danger.count === 0, act: 'patrol_home', say: null, note: '敵なしのwork中は原子炉まわりも静かに巡回' },
+  { id: 'of_reactor_patrol_quiet', p: 435, when: c => c.x?.nearReactor === true && c.mode === 'work' && c.home.registered && c.danger.safetyCount === 0, act: 'patrol_home', say: null, note: '敵なしのwork中は原子炉まわりも静かに巡回' },
 
   // ===== 発射台・ロケット：旅立ちの手伝い =====
   { id: 'of_rocket_ready_deliver', p: 449, when: c => c.x?.rocketReady === true && c.x?.nearLaunchPad === true && c.inv.used > 0 && c.owner.present && c.self.distOwner <= 10, act: 'deliver_all', say: '打ち上げ前に、荷物をお渡しします。忘れ物は許しません', note: 'ロケット準備完了＋所持品ありなら旅立ち前に全部渡す' },

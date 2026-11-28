@@ -9,7 +9,7 @@ export const RULES = [
   { id: 'night_stay_anchor_tight', p: 455, when: c => c.env.isNight && c.mode === 'stay' && c.danger.safetyCount > 0 && c.owner.present, act: 'stay_anchor', say: 'ここで見張ってるね', note: '夜のstay＋敵接近は位置を崩さず見張り' },
   { id: 'night_work_return_when_far', p: 450, when: c => c.env.isNight && c.mode === 'work' && c.home.registered && c.home.dist > 24, act: 'patrol_home', say: null, note: '夜のworkで拠点から離れすぎたら巡回範囲へ戻る' },
   { id: 'night_underground_low_follow', p: 448, when: c => c.env.isNight && c.owner.underground && c.mode === 'follow' && c.self.distOwner > 3, act: 'follow_close', say: null, note: '夜＋地下は天井が低いので低め密着' },
-  { id: 'night_owner_idle_hover_high', p: 440, when: c => c.env.isNight && c.owner.idleSec >= 30 && c.owner.present && c.danger.count === 0, act: 'follow_high', say: '休憩中だね、上で待ってる', note: '夜＋主人アイドル＋敵なしなら高めで待機' },
+  { id: 'night_owner_idle_hover_high', p: 440, when: c => c.env.isNight && c.owner.idleSec >= 30 && c.owner.present && c.danger.safetyCount === 0, act: 'follow_high', say: '休憩中だね、上で待ってる', note: '夜＋主人アイドル＋敵なしなら高めで待機' },
   { id: 'night_sprinting_owner_follow', p: 435, when: c => c.env.isNight && c.owner.sprinting && c.self.distOwner > 8 && c.owner.dimensionSame, act: 'follow', say: '置いていかないでー', note: '夜に主人がダッシュしたら通常追従で追いつく' },
   { id: 'night_sneaking_owner_close_quiet', p: 430, when: c => c.env.isNight && c.owner.sneaking && c.self.distOwner > 3, act: 'follow_close', say: null, note: '夜＋主人スニーク中は静かに密着（セリフなし）' },
   { id: 'night_rain_follow_high', p: 425, when: c => c.env.isNight && c.env.isRaining && c.mode === 'follow' && c.self.distOwner > 6, act: 'follow_high', say: null, note: '夜＋雨は視界が悪いので高めから追従' },
@@ -31,7 +31,7 @@ export const RULES = [
   { id: 'dusk_free_follow_close', p: 405, when: c => c.env.isDusk && c.mode === 'free' && c.owner.present && c.self.distOwner > 10, act: 'follow_close', say: null, note: '夕方のfreeは主人側へ寄る' },
   { id: 'dusk_no_torch_say', p: 398, when: c => c.env.isDusk && !c.inv.hasTorch && c.flags.warnOk && c.owner.present, act: 'say_only', say: '松明ないみたい、夜は暗いよ？', note: '夕方＋松明なしの気が利く一言' },
   { id: 'dusk_owner_underground_say', p: 396, when: c => c.env.isDusk && c.owner.underground && c.flags.warnOk && c.owner.present, act: 'say_only', say: '地下だと夜が分かりにくいけど、もう夕方だよ', note: '夕方＋地下の主人へ時刻を知らせる' },
-  { id: 'dusk_stay_anchor_prepare', p: 408, when: c => c.env.isDusk && c.mode === 'stay' && c.owner.present && c.danger.count === 0, act: 'stay_anchor', say: '夜に備えてここで待つね', note: '夕方のstayは持ち場を固める' },
+  { id: 'dusk_stay_anchor_prepare', p: 408, when: c => c.env.isDusk && c.mode === 'stay' && c.owner.present && c.danger.safetyCount === 0, act: 'stay_anchor', say: '夜に備えてここで待つね', note: '夕方のstayは持ち場を固める' },
 
   // ===== 雨・雷雨 =====
   { id: 'thunder_rise_avoid_owner_outside', p: 480, when: c => c.env.isThundering && !c.owner.underground && c.owner.present && c.self.distOwner < 12, act: 'rise_avoid', say: '雷こわい…少し上がるね', note: '雷雨＋屋外では高めに退避ホバリング' },
@@ -40,7 +40,7 @@ export const RULES = [
   { id: 'thunder_stay_anchor', p: 450, when: c => c.env.isThundering && c.mode === 'stay' && c.owner.present, act: 'stay_anchor', say: null, note: '雷雨のstayは持ち場維持' },
   { id: 'thunder_work_patrol_home', p: 455, when: c => c.env.isThundering && c.mode === 'work' && c.home.registered, act: 'patrol_home', say: '雷だから拠点の周りだけ見るね', note: '雷雨のworkは拠点巡回に縮小' },
   { id: 'rain_follow_close', p: 420, when: c => c.env.isRaining && !c.env.isThundering && c.mode === 'follow' && c.self.distOwner > 6, act: 'follow_close', say: null, note: '雨のfollowは視界不良のため密着' },
-  { id: 'rain_owner_idle_hover', p: 390, when: c => c.env.isRaining && c.owner.idleSec >= 20 && c.owner.present && c.danger.count === 0, act: 'idle_hover', say: '雨だねえ、のんびり待つよ', note: '雨＋主人アイドルならふわり待機' },
+  { id: 'rain_owner_idle_hover', p: 390, when: c => c.env.isRaining && c.owner.idleSec >= 20 && c.owner.present && c.danger.safetyCount === 0, act: 'idle_hover', say: '雨だねえ、のんびり待つよ', note: '雨＋主人アイドルならふわり待機' },
   { id: 'rain_free_return_near_owner', p: 415, when: c => c.env.isRaining && c.mode === 'free' && c.self.distOwner > 12 && c.owner.present, act: 'follow', say: null, note: '雨のfreeは主人から離れすぎない' },
   { id: 'rain_underground_follow_close', p: 418, when: c => c.env.isRaining && c.owner.underground && c.mode === 'follow' && c.self.distOwner > 4, act: 'follow_close', say: null, note: '雨でも地下は関係なく低め密着' },
   { id: 'rain_drops_say', p: 385, when: c => c.env.isRaining && c.drops.count >= 3 && c.flags.warnOk && c.owner.present, act: 'say_only', say: '落ちてる物、雨で流される前に拾おうか', note: '雨＋ドロップ多数の声かけ' },
@@ -54,7 +54,7 @@ export const RULES = [
   { id: 'underground_lava_rise', p: 492, when: c => c.owner.underground && c.danger.lavaNear, act: 'rise_avoid', say: '下、溶岩だよ！', note: '地下＋溶岩近接は即上昇' },
   { id: 'underground_stay_anchor', p: 440, when: c => c.owner.underground && c.mode === 'stay' && c.owner.present, act: 'stay_anchor', say: null, note: '地下のstayは通路を塞がない位置で待機' },
   { id: 'underground_work_return_home_far', p: 435, when: c => c.owner.underground && c.mode === 'work' && c.home.registered && c.home.dist > 20, act: 'return_home', say: null, note: '地下workで拠点から離れすぎたら帰還' },
-  { id: 'underground_owner_idle_hover', p: 400, when: c => c.owner.underground && c.owner.idleSec >= 45 && c.danger.count === 0, act: 'idle_hover', say: null, note: '地下＋主人長時間アイドル＋安全ならふわり待機' },
+  { id: 'underground_owner_idle_hover', p: 400, when: c => c.owner.underground && c.owner.idleSec >= 45 && c.danger.safetyCount === 0, act: 'idle_hover', say: null, note: '地下＋主人長時間アイドル＋安全ならふわり待機' },
   { id: 'surface_day_follow_normal', p: 340, when: c => !c.owner.underground && !c.env.isNight && c.mode === 'follow' && c.self.distOwner > 8 && c.owner.present, act: 'follow', say: null, note: '昼の地上は通常距離の追従' },
   { id: 'surface_day_free_far_follow', p: 335, when: c => !c.owner.underground && !c.env.isNight && c.mode === 'free' && c.self.distOwner > 20 && c.owner.present, act: 'follow', say: null, note: '昼のfreeで離れすぎたら通常追従で戻る' },
   { id: 'surface_owner_sprinting_follow', p: 360, when: c => !c.owner.underground && c.owner.sprinting && c.self.distOwner > 10 && c.owner.dimensionSame, act: 'follow', say: 'はやいよー、待ってー', note: '地上＋主人ダッシュで距離が開いたら追従' },
@@ -77,12 +77,12 @@ export const RULES = [
   { id: 'stay_night_anchor', p: 445, when: c => c.mode === 'stay' && c.env.isNight && c.owner.present, act: 'stay_anchor', say: null, note: '夜のstayは持ち場固定を強める' },
   { id: 'stay_owner_far_say_only', p: 365, when: c => c.mode === 'stay' && c.self.distOwner > 20 && c.flags.warnOk && c.owner.present, act: 'say_only', say: 'ここで待ってるよー', note: 'stayで主人が遠くても移動せず声だけ' },
   { id: 'stay_stuck_rise', p: 488, when: c => c.mode === 'stay' && c.self.stuck && c.self.stuckSec >= 5, act: 'rise_avoid', say: null, note: 'stay中にハマったら上昇だけして位置を保つ' },
-  { id: 'stay_home_near_patrol_small', p: 375, when: c => c.mode === 'stay' && c.home.registered && c.home.dist < 6 && c.danger.count === 0, act: 'patrol_home', say: null, note: 'stay＋拠点近接＋安全なら小さく見回り' },
+  { id: 'stay_home_near_patrol_small', p: 375, when: c => c.mode === 'stay' && c.home.registered && c.home.dist < 6 && c.danger.safetyCount === 0, act: 'patrol_home', say: null, note: 'stay＋拠点近接＋安全なら小さく見回り' },
   { id: 'stay_owner_on_fire_say', p: 470, when: c => c.mode === 'stay' && c.owner.onFire && c.flags.warnOk, act: 'say_only', say: '燃えてるよ！水、水！', note: 'stay中でも主人の炎上は知らせる' },
   { id: 'stay_inv_full_say', p: 368, when: c => c.mode === 'stay' && c.inv.full && c.flags.warnOk, act: 'say_only', say: '荷物いっぱいになっちゃった', note: 'stay中の満載通知' },
 
   // ===== work モード =====
-  { id: 'work_patrol_home_default', p: 345, when: c => c.mode === 'work' && c.home.registered && c.home.dist > 12 && c.danger.count === 0, act: 'patrol_home', say: null, note: 'workの基本は拠点巡回範囲へ戻る' },
+  { id: 'work_patrol_home_default', p: 345, when: c => c.mode === 'work' && c.home.registered && c.home.dist > 12 && c.danger.safetyCount === 0, act: 'patrol_home', say: null, note: 'workの基本は拠点巡回範囲へ戻る' },
   { id: 'work_chest_missing_say', p: 455, when: c => c.mode === 'work' && c.home.registered && c.home.chestMissing && c.flags.warnOk, act: 'say_only', say: 'あれ、拠点のチェストがない…？', note: 'work＋チェスト消失の異常通知' },
   { id: 'work_chest_full_return', p: 450, when: c => c.mode === 'work' && c.home.chestFull && c.inv.used > 0 && c.home.registered, act: 'return_home', say: 'チェストいっぱいみたい、戻るね', note: 'work＋チェスト満杯なら拠点へ戻って報告態勢' },
   { id: 'work_night_patrol_close', p: 425, when: c => c.mode === 'work' && c.env.isNight && c.home.registered && c.home.dist > 8, act: 'patrol_home', say: null, note: '夜のwork巡回は拠点寄りに狭める' },
@@ -94,7 +94,7 @@ export const RULES = [
   // ===== follow / free / アイドル・その他 =====
   { id: 'follow_owner_on_fire_close', p: 478, when: c => c.owner.onFire && c.mode === 'follow' && c.self.distOwner > 4 && c.owner.present, act: 'follow_close', say: '大丈夫！？近くにいるよ', note: '主人炎上時はモード問わず寄る（follow帯）' },
   { id: 'follow_owner_in_water_high', p: 415, when: c => c.owner.inWater && c.mode === 'follow' && c.self.distOwner > 6 && !c.owner.underground, act: 'follow_high', say: null, note: '主人水泳中は水面上で追従' },
-  { id: 'follow_owner_idle_long_hover', p: 355, when: c => c.mode === 'follow' && c.owner.idleSec >= 60 && c.danger.count === 0 && c.owner.present, act: 'idle_hover', say: 'ゆっくりでいいよー', note: '主人1分アイドル＋安全ならふわり待機' },
+  { id: 'follow_owner_idle_long_hover', p: 355, when: c => c.mode === 'follow' && c.owner.idleSec >= 60 && c.danger.safetyCount === 0 && c.owner.present, act: 'idle_hover', say: 'ゆっくりでいいよー', note: '主人1分アイドル＋安全ならふわり待機' },
   { id: 'follow_owner_idle_short_close', p: 350, when: c => c.mode === 'follow' && c.owner.idleSec >= 20 && c.owner.idleSec < 60 && c.self.distOwner > 5, act: 'follow_close', say: null, note: '主人短めアイドルならそっと近づく' },
   { id: 'free_day_idle_patrol_home', p: 330, when: c => c.mode === 'free' && !c.env.isNight && c.home.registered && c.owner.idleSec >= 30, act: 'patrol_home', say: null, note: '昼のfree＋主人アイドルなら拠点を軽く見回る' },
   { id: 'free_no_home_follow', p: 338, when: c => c.mode === 'free' && !c.home.registered && c.self.distOwner > 9 && c.owner.present, act: 'follow', say: null, note: '拠点なしfreeは追従が既定' },
@@ -102,6 +102,6 @@ export const RULES = [
   { id: 'self_low_hp_return_home', p: 494, when: c => c.self.hpPct < 0.25 && c.home.registered && c.mode !== 'stay', act: 'return_home', say: 'ちょっと休んでくるね…', note: '自機低HPは拠点へ退避' },
   { id: 'self_low_hp_no_home_close', p: 488, when: c => c.self.hpPct < 0.25 && !c.home.registered && c.owner.present, act: 'follow_close', say: 'いたい…近くにいさせて', note: '自機低HP＋拠点なしは主人に寄る' },
   { id: 'self_stuck_any_rise', p: 496, when: c => c.self.stuck && c.self.stuckSec >= 6 && c.mode !== 'stay', act: 'rise_avoid', say: 'うごけない…上に抜ける！', note: '長時間ハマりは最優先で上昇脱出' },
-  { id: 'day_clear_idle_hover_near_owner', p: 320, when: c => !c.env.isNight && !c.env.isRaining && c.owner.idleSec >= 90 && c.self.distOwner < 10 && c.danger.count === 0, act: 'idle_hover', say: 'いい天気だねえ', note: '晴れた昼＋主人長時間アイドルでまったり待機' },
+  { id: 'day_clear_idle_hover_near_owner', p: 320, when: c => !c.env.isNight && !c.env.isRaining && c.owner.idleSec >= 90 && c.self.distOwner < 10 && c.danger.safetyCount === 0, act: 'idle_hover', say: 'いい天気だねえ', note: '晴れた昼＋主人長時間アイドルでまったり待機' },
   { id: 'owner_targeted_follow_close_day', p: 462, when: c => c.danger.visualOwnerTargeted && !c.env.isNight && c.self.distOwner > 5 && c.owner.present, act: 'follow_close', say: '狙われてるよ、近くにいるね', note: '昼でも主人が狙われたら密着' },
 ];

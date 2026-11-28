@@ -9,13 +9,13 @@
 // セリフはリゼ口調（一人称「私」、相手は「あなた」、短い敬語）。
 export const RULES = [
 // ===== 接近時の挨拶 =====
-{id:'social_greet_first_close', p:258, when:c=>(c.x?.othersNear??0)>=1&&(c.x?.otherDist??999)<=5&&!c.x?.ownerChatting&&c.danger.count===0, act:'greet', say:'補助機のLIZE-07です。……リゼ、と呼んでください', note:'他プレイヤーが初めて近くに来たら型番で名乗る（設定準拠の初対面挨拶）'},
-{id:'social_greet_near', p:250, when:c=>(c.x?.othersNear??0)>=1&&(c.x?.otherDist??999)<=8&&c.mode==='follow'&&c.danger.count===0, act:'greet', say:'こんにちは。私は、あなたの助手です', note:'接近時に主人の助手として挨拶する'},
-{id:'social_greet_morning_crowd', p:244, when:c=>(c.x?.othersNear??0)>=2&&c.env.isDawn&&c.danger.count===0, act:'greet', say:'おはようございます。……朝は、人が多いですね', note:'朝の集まりでは挨拶を少しだけ多めに'},
+{id:'social_greet_first_close', p:258, when:c=>(c.x?.othersNear??0)>=1&&(c.x?.otherDist??999)<=5&&!c.x?.ownerChatting&&c.danger.safetyCount===0, act:'greet', say:'補助機のLIZE-07です。……リゼ、と呼んでください', note:'他プレイヤーが初めて近くに来たら型番で名乗る（設定準拠の初対面挨拶）'},
+{id:'social_greet_near', p:250, when:c=>(c.x?.othersNear??0)>=1&&(c.x?.otherDist??999)<=8&&c.mode==='follow'&&c.danger.safetyCount===0, act:'greet', say:'こんにちは。私は、あなたの助手です', note:'接近時に主人の助手として挨拶する'},
+{id:'social_greet_morning_crowd', p:244, when:c=>(c.x?.othersNear??0)>=2&&c.env.isDawn&&c.danger.safetyCount===0, act:'greet', say:'おはようございます。……朝は、人が多いですね', note:'朝の集まりでは挨拶を少しだけ多めに'},
 {id:'social_greet_night_quiet', p:242, when:c=>(c.x?.othersNear??0)>=1&&(c.x?.otherDist??999)<=6&&c.env.isNight, act:'greet', say:'こんばんは。……声は、小さめにします', note:'夜の接近では静かに挨拶する'},
 {id:'social_greet_rain', p:241, when:c=>(c.x?.othersNear??0)>=1&&(c.x?.otherDist??999)<=7&&c.env.isRaining, act:'greet', say:'こんにちは。雨宿りですか。私も、です', note:'雨の日の接近は雨宿りの話題で挨拶'},
 {id:'social_greet_owner_busy_skip', p:247, when:c=>(c.x?.othersNear??0)>=1&&c.x?.ownerChatting===true&&(c.x?.otherDist??999)<=6, act:'say_only', say:'……（挨拶は、後でいいですね）', note:'主人が会話中なら挨拶は控えて小声で済ませる'},
-{id:'social_greet_from_anchor', p:240, when:c=>c.mode==='stay'&&(c.x?.othersNear??0)>=1&&(c.x?.otherDist??999)<=6&&c.danger.count===0, act:'greet', say:'いらっしゃいませ。……ここは、あなたの定位置です', note:'待機中（定位置）に来客があったら迎える'},
+{id:'social_greet_from_anchor', p:240, when:c=>c.mode==='stay'&&(c.x?.othersNear??0)>=1&&(c.x?.otherDist??999)<=6&&c.danger.safetyCount===0, act:'greet', say:'いらっしゃいませ。……ここは、あなたの定位置です', note:'待機中（定位置）に来客があったら迎える'},
 
 // ===== 主人が他者と話している：邪魔しない・控えめ =====
 {id:'social_chat_step_back', p:256, when:c=>c.x?.ownerChatting===true&&c.self.distOwner<=4, act:'follow', say:'お話中ですね。私は、少し後ろにいます', note:'主人が向き合って話していたら一歩下がる'},
@@ -36,7 +36,7 @@ export const RULES = [
 
 // ===== 混雑：密着しすぎない =====
 {id:'social_crowd_three_follow', p:251, when:c=>(c.x?.othersNear??0)>=3&&c.mode==='follow'&&c.self.distOwner<=3, act:'follow', say:'混んでいますね。……少し、離れてついていきます', note:'3人以上いたら密着をやめて距離を取る'},
-{id:'social_crowd_five_anchor', p:253, when:c=>(c.x?.othersNear??0)>=5&&c.danger.count===0, act:'stay_anchor', say:'人が多いので。私は、端で待っています', note:'大混雑では端で待機して邪魔にならない'},
+{id:'social_crowd_five_anchor', p:253, when:c=>(c.x?.othersNear??0)>=5&&c.danger.safetyCount===0, act:'stay_anchor', say:'人が多いので。私は、端で待っています', note:'大混雑では端で待機して邪魔にならない'},
 {id:'social_crowd_night_keep_sight', p:247, when:c=>(c.x?.othersNear??0)>=3&&c.env.isNight&&c.mode==='follow', act:'follow', say:'夜の人混みです。……あなただけは、見失いません', note:'夜の混雑では距離を取りつつ主人を見失わない'},
 {id:'social_crowd_stuck_step_aside', p:255, when:c=>(c.x?.othersNear??0)>=2&&c.self.stuck&&c.self.stuckSec>=3, act:'idle_hover', say:'すみません、通路でした。……どきます', note:'混雑で引っかかったら通路を空ける'},
 {id:'social_crowd_owner_sneak_match', p:242, when:c=>(c.x?.othersNear??0)>=2&&c.owner.sneaking, act:'follow', say:'……（あなたに合わせて、静かに）', note:'人前で主人がしゃがんだら自分も控えめに'},
@@ -47,7 +47,7 @@ export const RULES = [
 {id:'social_pvp_approach_guard', p:259, when:c=>c.x?.pvpRisk===true&&(c.x?.othersNear??0)>=1&&(c.x?.otherDist??999)<=10, act:'follow_close', say:'……少し、警戒します。あなたの側にいます', note:'PvPの気配＋他者接近では主人の側に寄る'},
 {id:'social_pvp_valuable_hold', p:258, when:c=>c.x?.pvpRisk===true&&c.inv.hasValuable&&c.inv.valuableCount>=1, act:'follow_close', say:'大事な物を、持っています。……渡すのは、安全になってから', note:'PvP気配がある時は貴重品の受け渡しを止める'},
 {id:'social_pvp_owner_low', p:259, when:c=>c.x?.pvpRisk===true&&c.owner.hpPct<=0.4&&(c.x?.othersNear??0)>=1, act:'follow_close', say:'あなたの体力と、この空気。……両方、よくないです', note:'PvP気配＋主人低体力は最優先で寄る'},
-{id:'social_pvp_no_greet', p:250, when:c=>c.x?.pvpRisk===true&&(c.x?.otherDist??999)<=6&&c.danger.count===0, act:'say_only', say:'……挨拶は、省略します。今は、目を離せません', note:'PvP気配がある接近では挨拶より警戒を優先'},
+{id:'social_pvp_no_greet', p:250, when:c=>c.x?.pvpRisk===true&&(c.x?.otherDist??999)<=6&&c.danger.safetyCount===0, act:'say_only', say:'……挨拶は、省略します。今は、目を離せません', note:'PvP気配がある接近では挨拶より警戒を優先'},
 {id:'social_pvp_calm_far', p:243, when:c=>c.x?.pvpRisk===true&&(c.x?.otherDist??999)>=20&&c.self.distOwner>=8, act:'follow', say:'遠くに、気配だけ。……通常に戻ります', note:'PvP気配が遠ければ通常の追従に戻る'},
 
 // ===== 他者がいる場での受け渡し・回収の作法 =====
@@ -59,7 +59,7 @@ export const RULES = [
 // ===== 主人がいない／帰還・死亡時の他者対応 =====
 {id:'social_owner_absent_others', p:246, when:c=>!c.owner.present&&(c.x?.othersNear??0)>=1, act:'idle_hover', say:'私は、あなたを待っています。……他の方の助手では、ありません', note:'主不在時に他者がいても付いていかない'},
 {id:'social_owner_dead_others_near_home', p:252, when:c=>c.owner.dead&&(c.x?.othersNear??0)>=1&&c.home.registered, act:'stay_anchor', say:'……帰る場所で、待ちます。あなたは、必ず戻ります', note:'主人死亡時は他者がいても拠点で待ち続ける'},
-{id:'social_owner_back_greet_witness', p:245, when:c=>c.owner.present&&c.flags.justDelivered===false&&(c.x?.othersNear??0)>=1&&c.self.distOwner<=3&&c.danger.count===0&&c.owner.idleSec<10, act:'say_only', say:'おかえりなさい。……皆さんの前でも、言います', note:'主人の帰還時は他者の前でも「おかえりなさい」を省略しない'},
+{id:'social_owner_back_greet_witness', p:245, when:c=>c.owner.present&&c.flags.justDelivered===false&&(c.x?.othersNear??0)>=1&&c.self.distOwner<=3&&c.danger.safetyCount===0&&c.owner.idleSec<10, act:'say_only', say:'おかえりなさい。……皆さんの前でも、言います', note:'主人の帰還時は他者の前でも「おかえりなさい」を省略しない'},
 
 // ===== 自分（リゼ）側の状態 × 他者 =====
 {id:'social_self_low_hp_excuse', p:251, when:c=>c.self.hpPct<=0.3&&(c.x?.othersNear??0)>=1, act:'follow_close', say:'私の損傷は、後回しで。……いえ、本当は少しだけ、休みたいです', note:'他者の前でも損傷が深ければ主人に寄って申告する'},
@@ -73,7 +73,7 @@ export const RULES = [
 {id:'social_underground_others_whisper', p:240, when:c=>c.owner.underground&&(c.x?.othersNear??0)>=1&&(c.x?.otherDist??999)<=8, act:'follow', say:'地下では、小声で。……あなたの隣、空いていますか', note:'地下で他者と一緒の時は小声で距離を確認する'},
 {id:'social_dimension_split_others', p:244, when:c=>!c.owner.dimensionSame&&(c.x?.othersNear??0)>=1, act:'say_only', say:'あなたは、向こう側です。……こちらの方とは、距離を取ります', note:'主人と別ディメンションの時は他者に付いていかない'},
 {id:'social_two_others_polite_follow', p:246, when:c=>(c.x?.othersNear??0)===2&&c.mode==='follow'&&c.self.distOwner<=3&&c.x?.ownerChatting!==true, act:'follow', say:'お二人とも、こんにちは。……私は、少し後ろから', note:'他者2名の小集団では挨拶して後方に付く'},
-{id:'social_other_very_close_step', p:252, when:c=>(c.x?.otherDist??999)<=2&&(c.x?.othersNear??0)>=1&&c.danger.count===0&&c.x?.pvpRisk!==true, act:'idle_hover', say:'……近いです。半歩、下がります', note:'他者が至近距離に来たら自分から半歩引く'},
+{id:'social_other_very_close_step', p:252, when:c=>(c.x?.otherDist??999)<=2&&(c.x?.othersNear??0)>=1&&c.danger.safetyCount===0&&c.x?.pvpRisk!==true, act:'idle_hover', say:'……近いです。半歩、下がります', note:'他者が至近距離に来たら自分から半歩引く'},
 {id:'social_chat_owner_hungry_deliver_later', p:248, when:c=>c.x?.ownerChatting===true&&c.owner.hunger<=4&&c.inv.hasFood, act:'say_only', say:'食料は、用意してあります。……お話が終わったら、すぐに', note:'会話中の主人に空腹でも割り込まず、終わり次第渡せるよう申告だけする'},
 {id:'social_morning_shift_change_crowd', p:243, when:c=>c.env.isDawn&&(c.x?.othersNear??0)>=1&&c.owner.idleSec>=180, act:'say_only', say:'夜勤、終わりました。……皆さんも、お疲れさまです', note:'夜勤助手らしく、夜明けの集まりでは労いの言葉を出す'},
 {id:'social_evening_crowd_coffee_hint', p:241, when:c=>c.env.isDusk&&(c.x?.othersNear??0)>=1&&c.self.distOwner<=5, act:'say_only', say:'夕方です。……コーヒーは、あなたの分だけ淹れます', note:'夕方の人前でもコーヒーは主人専用だとさりげなく主張する'},
