@@ -310,6 +310,8 @@ const reason = CRAFT_REASON_MAP[raw.reason] || REASONS.API_ERROR;
 const detail = {};
 if (raw.missing!== undefined) detail.missing = raw.missing;
 if (raw.missingCount!== undefined) detail.missingCount = raw.missingCount;
+if (raw.rollbackLost && Object.keys(raw.rollbackLost).length) detail.rollbackLost = raw.rollbackLost;
+if (raw.producedKept) detail.producedKept = raw.producedKept;
 if (raw.reason &&!CRAFT_REASON_MAP[raw.reason]) detail.rawReason = raw.reason;
 const r = failed(reason, Object.keys(detail).length? detail: undefined);
 if (raw.full) {

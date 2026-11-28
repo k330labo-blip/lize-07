@@ -298,7 +298,7 @@ function tickSuspendedResume(bot, r) {
 // 戻り値: null=対象外 / "waiting"=期限内 (初回は suspendWaitSince を打刻し強制保存) / "expired"=期限超過 (終了掃除は呼び出し側)
 // 再開はしない (停滞カウンタ掃除なしの再開は即再suspendループになるため、終了のみが出口)。
 function tickPlainSuspendExpiry(bot, r) {
-  const m = r && r.mission; if (!m || m.status !== "suspended" || !PLAIN_SUSPEND_REASONS.has(m.suspendReason)) return null;
+  const m = r && r.mission; if (!m || m.status !== "suspended") return null; if (!PLAIN_SUSPEND_REASONS.has(m.suspendReason) && (m.suspendReason === "cannot_recover" || m.suspendReason === "inv_unreadable" || typeof m.suspendReason !== "string" || !m.suspendReason)) return null; // SUSPEND-REASON-UNKNOWN 形(i): 未知理由 (旧版DP・破損等) にも期限出口を持たせる。再開系2理由は tickSuspendedResume の担当なので対象外のまま
   if (m.order?.legsOnly && (r.longtask || (r.buildPlan && r.buildPlan.stage === "gather"))) return null; // legsOnly は担い手 (長期タスク leg / 建築 gather 相) が実在する間だけ対象外。担い手喪失時は通常の期限出口へ落とす (SUSPEND-LEGSONLY-ORPHAN-01)
   if (!m.suspendWaitSince || !Number.isFinite(m.suspendWaitSince) || m.suspendWaitSince <= 0 || m.suspendWaitSince > Date.now()) { m.suspendWaitSince = Date.now(); persistMission(bot, r, true); }
   if (Date.now() - m.suspendWaitSince > PLAIN_SUSPEND_WAIT_MS) return "expired";
@@ -3470,6 +3470,14 @@ function tickLongTask(bot, owner, r, ctx) {
         let rest = res.bucketPending, dropFailed = false;
         while (rest > 0) { const chunk = Math.min(16, rest); try { bot.dimension.spawnItem(new ItemStack("minecraft:bucket", chunk), bot.location); rest -= chunk; try { if (shouldToss({ spawned: true, suppressed: !!((r.lastCtx?.danger?.count ?? 0) > 0) || !!r.work, lastFiredMs: r.tossAnimLastAt ?? null, nowMs: Date.now() })) { r.tossAnimAt = Date.now(); r.tossAnimLastAt = r.tossAnimAt; r.lastToss = { at: r.tossAnimAt, armPitchDeg: -35 }; } } catch {} } catch { dropFailed = true; break; } } // POLISH-ANIM-TOSS-01 (cycle1400): 出現成功の辺でのみ投げ出し表現を開始 (表示層のみ)
         if (dropFailed || rest > 0) noteFail(bot, "smelt:bucket_lost", new Error("empty bucket drop failed"));
+      }
+      if (res.rollbackLost && Object.keys(res.rollbackLost).length) { // CRAFT-TX-LOST-NOREADER-01: 戻し切れなかった材料の申告を受け、失われた品目と個数を明示する (bucketPending と同型の受け皿)
+        noteFail(bot, "craft:rollback_lost", new Error(JSON.stringify(res.rollbackLost)));
+        try { say(owner, bot, `材料の一部を戻しきれませんでした。失われた分: ${Object.entries(res.rollbackLost).map(([id, n]) => `${nameOfItem(id)}×${n}`).join("、")}`, true); } catch {}
+      }
+      if (res.producedKept > 0) { // CRAFT-TX-FULLREMOVE-01: 満杯経路で成果物の除去に失敗し、材料復元をせず成果物が手持ちに残ったことの申告
+        noteFail(bot, "craft:produced_kept", new Error(`${res.produced || leg.item} x${res.producedKept}`));
+        try { say(owner, bot, `持ち物がいっぱいで、作った${nameOfItem(res.produced || leg.item)}が${res.producedKept}個手持ちに残っています。材料は戻していません`, true); } catch {}
       }
       if (res.ok) { say(owner, bot, `工程${lt.legIdx + 1}/${lt.legs.length}：${nameOfItem(res.produced || leg.item)}ができました`, true); lt.legIdx++; saveLongTask(bot, r); continue; }
       if (res.missing) { // 材料不足は、不足分の工程を組み立て直して差し込む (自己修正)

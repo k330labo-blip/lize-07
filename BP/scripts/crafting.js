@@ -136,8 +136,14 @@ export function executeCraftLeg(cont, leg) {
   const leftover = addTo(cont, outId, need);
   if (leftover > 0) {
     // 入った分の成果物を取り除いてから材料を戻す（総量を leg 実行前の状態へ復元する）
+    // CRAFT-TX-FULLREMOVE-01: 除去の成否を読む。失敗したら1回再試行し、それでも失敗したら
+    // 材料を復元せず（復元すると成果物と材料が両方残る複製になる）producedKept で正直に申告する。
     const added = need - leftover;
-    if (added > 0) consumeFrom(cont, outId, added);
+    if (added > 0) {
+      let removed = consumeFrom(cont, outId, added);
+      if (!removed) removed = consumeFrom(cont, outId, added);
+      if (!removed) return { ok: false, reason: "持ち物がいっぱいです", full: true, producedKept: added, removalFailed: true };
+    }
     const lost = restoreUsed(cont, usedAll);
     return { ok: false, reason: "持ち物がいっぱいです", full: true, ...(Object.keys(lost).length ? { rollbackLost: lost } : {}) };
   }
@@ -193,7 +199,12 @@ export function executeSmeltLeg(cont, leg) {
   const leftover = addTo(cont, outId, need);
   if (leftover > 0) {
     const added = need - leftover;
-    if (added > 0) consumeFrom(cont, outId, added);
+    // CRAFT-TX-FULLREMOVE-01 (精錬側も同型): 除去の成否を読み、再試行しても失敗したら材料を復元せず producedKept で申告する
+    if (added > 0) {
+      let removed = consumeFrom(cont, outId, added);
+      if (!removed) removed = consumeFrom(cont, outId, added);
+      if (!removed) { const bp = settleContainerReturn(cont, usedAll); return { ok: false, reason: "持ち物がいっぱいです", full: true, producedKept: added, removalFailed: true, ...(bp > 0 ? { bucketPending: bp } : {}) }; }
+    }
     const lost = restoreUsed(cont, usedAll);
     const bp = settleContainerReturn(cont, lost);
     return { ok: false, reason: "持ち物がいっぱいです", full: true, ...(Object.keys(lost).length ? { rollbackLost: lost } : {}), ...(bp > 0 ? { bucketPending: bp } : {}) };
