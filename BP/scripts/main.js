@@ -5115,7 +5115,7 @@ function openMenu(p, bot) {
     }
     if (res.selection === 7) { wdps(`cb_savedinv:${p.id}`, JSON.stringify(serializeInv(bot))); const ec = equipCoreOf(bot, r); if (ec) { try { wdps(`cb_saved_equip:${p.id}`, ec.serialize()); } catch {} } try { flushFailAgg(bot, r); } catch {} try { flushExp(bot, r); } catch {} try { bodies.release(r); } catch {} /* 6-ML: 消滅前 flush 相乗り */ try { bot.remove(); } catch {} bots.delete(bot.id); } // S3b: 消滅前に failAgg を flush (実体がある selection 7 が実効箇所。メインループの不在検出箇所は entity が無く flush 不能)
     if (res.selection === 8) {
-      if (r.mission && r.mission.status === "active") {
+      if (r.mission && (r.mission.status === "active" || r.mission.status === "suspended")) {
         const cf = new ActionFormData();
         cf.title("指示の受け直し");
         cf.body("今の指示の途中です。やめて、新しい指示を受けますか");
@@ -5575,7 +5575,7 @@ function startOrderFromParser(p, bot, r, o) {
         say(p, bot, "設置場所つきの建築は、まだできません。場所なしで頼んでください", true); return;
       }
       if (!bp) {
-        if (r.mission && r.mission.status === "active") { say(p, bot, "今の指示の途中です。やめるなら「やめて」と言ってください", true); return; }
+        if (r.mission && (r.mission.status === "active" || r.mission.status === "suspended")) { say(p, bot, "今の指示の途中です。やめるなら「やめて」と言ってください", true); return; }
         const itemId = placementItemIdOf(o.target);
         // PLACE-ANCHOR-01 (0-N6, cyc2451): 基準物が辞書で解決できなかった設置は、
         // 発話者基準へ無言で倒さず明示して止める (0-C7 の原則)。
@@ -5618,7 +5618,7 @@ function startOrderFromParser(p, bot, r, o) {
         let allOk = true;
         for (let gi = 0; gi < o.gearSet.length; gi++) { const gid = o.gearSet[gi]; let ok = false; try { const pl = planLongTask({ target: "minecraft:" + gid, amount: Math.max(1, Math.floor(gearCounts?.[gi] ?? 1)) * gearSetsN }, countInv(bot), invDurabilityOf(bot)); ok = !!(pl && pl.feasible); } catch {} if (!ok) { allOk = false; break; } }
         if (!allOk) { if (Array.isArray(o.gearPartNames) && o.gearPartNames.length) say(p, bot, `${o.gearMaterial || ""}の${o.gearPartNames.join("と")}は、今の調達経路では作りきれません`, true); else say(p, bot, `${o.gearMaterial || ""}の一式は、今の調達経路では作りきれません。部位ごとに頼んでください`, true); return; }
-        if (r.mission && r.mission.status === "active") { say(p, bot, "今の指示の途中です。やめるなら「やめて」と言ってください", true); return; }
+        if (r.mission && (r.mission.status === "active" || r.mission.status === "suspended")) { say(p, bot, "今の指示の途中です。やめるなら「やめて」と言ってください", true); return; }
         r.pendingGearSet = gearSeq.slice(1).map((gid) => "minecraft:" + gid);
         savePendingGearSet(bot, r); // 0-F R-2 (cyc2379): 設定と同時に DP へ保存する
         mo0.amount = 1; mo0.target = "minecraft:" + gearSeq[0];
@@ -5631,17 +5631,17 @@ function startOrderFromParser(p, bot, r, o) {
         for (const t of [mo0.target, String(mo0.target).includes(":") ? null : "minecraft:" + mo0.target]) { if (!t || craftable) continue; try { const pl = planLongTask({ ...mo0, target: t }, countInv(bot), invDurabilityOf(bot)); if (pl && pl.feasible) { craftable = true; mo0.target = t; } } catch {} }
       }
       if (!craftable) { say(p, bot, "その建物は、まだ図面がありません。……小屋なら建てられます", true); return; }
-      if (r.mission && r.mission.status === "active") { say(p, bot, "今の指示の途中です。やめるなら「やめて」と言ってください", true); return; }
+      if (r.mission && (r.mission.status === "active" || r.mission.status === "suspended")) { say(p, bot, "今の指示の途中です。やめるなら「やめて」と言ってください", true); return; }
       startMission(bot, p, r, mo0);
       return;
     }
-    if (r.mission && r.mission.status === "active") { say(p, bot, "今の指示の途中です。やめるなら「やめて」と言ってください", true); return; }
+    if (r.mission && (r.mission.status === "active" || r.mission.status === "suspended")) { say(p, bot, "今の指示の途中です。やめるなら「やめて」と言ってください", true); return; }
     startBuild(bot, p, r, bp.name, buildOrderOf(bp.blocks), p.location, true, o.constraints?.window || null); // WINDOW-END-BUILDPLAN-SCOPE-01 (cyc2429)
     return;
   }
   const mo = parserOrderToMission(o);
   if (!mo.target) { say(p, bot, "対象が分かりませんでした。素材の名前を入れて、もう一度どうぞ", true); return; }
-  if (r.mission && r.mission.status === "active") { say(p, bot, "今の指示の途中です。やめるなら「やめて」と言ってください", true); return; }
+  if (r.mission && (r.mission.status === "active" || r.mission.status === "suspended")) { say(p, bot, "今の指示の途中です。やめるなら「やめて」と言ってください", true); return; } // SUSPENDED-ORDER-REPLACE-SILENT-01 (cyc2471)
   // forbids G5-b (cycle0855): 混在注文の negations もセッション禁止へ記録する (単独 forbid・clarify 除外と統一する裁定)。
   // 肯定対象自身は parserOrderToMission と同じく除外する (自己禁止の防止)。記録は mission が実際に始まる直前でのみ行う。
   if ((o.negations || []).length) { try { recordSessionForbids(bot, r, { negations: (o.negations || []).filter((n) => { const nid = n?.target?.item || n?.target?.block || n?.target?.entity; return nid && nid !== mo.target; }) }); } catch {} }
