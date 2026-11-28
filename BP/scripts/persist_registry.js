@@ -45,6 +45,7 @@ export const PERSIST_KEYS = Object.freeze([
   { key: "cb_pending_condition", scope: B, scoped: null, kind: "single", format: "json", version: 1, versionConst: "inline v (cyc2498 2b)", owner: "pending_condition_math.js", dependsOn: [], note: "条件保留" },
   { key: "cb_pending_gear", scope: B, scoped: null, kind: "single", format: "json", version: 1, versionConst: "envelope v (cyc2498 2b)", dependsOn: ["cb_longtask"], note: "GEARSET-CHAIN-LTDEAD-01: 復元時に cb_longtask を直接読み直す" },
   { key: "cb_pending_tool", scope: B, scoped: null, kind: "single", format: "json", version: 1, versionConst: "inline v (cyc2498 2b)", dependsOn: ["cb_longtask"], note: "TOOLCHAIN-RESTORE-LTGATE-01: 復元時に cb_longtask を直接読み直す" },
+  { key: "cb_sustain", scope: B, scoped: null, kind: "single", format: "json", version: 1, versionConst: "SUSTAIN_VERSION (sustain_math.js)", owner: "sustain_math.js", dependsOn: [], note: "持続採掘の共通枠 (SUSTAIN-FRAME-01 単位1, cyc2521)。単一キー＋kind フィールド形、新規保存状態は dim 必須" },
   { key: "cb_stats", scope: B, scoped: null, kind: "single", format: "json", version: 1, versionConst: "inline v (cyc2497 2a)", owner: "main.js", dependsOn: [], note: "統計 (2a で帯域内 v:1 導入。未来版・非オブジェクトは {} へ倒す)" },
   { key: "cb_trust", scope: B, scoped: null, kind: "single", format: "number", version: "n/a-scalar", versionConst: null, owner: "main.js", dependsOn: [], note: "信頼 (素の数値。2a 裁定で版なし確定)" },
   // --- 個体 DP・版つき (所有モジュールの版定数が正、移設のみ) ---
