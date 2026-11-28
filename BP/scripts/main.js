@@ -3928,7 +3928,8 @@ function tickPendingCondition(bot, owner, r, ctx) {
   try {
     const pend = r.pendingConditionOrder; if (!pend) return false;
     const now = Date.now();
-    if (conditionExpired(pend.at, now)) { clearPendingCondition(bot, r); try { say(owner, bot, "条件の指示は、時間が経ったので取り下げました", true); } catch {} return false; }
+    // PENDING-LATCH-TTL-01: 繁忙中に成立がラッチ済みなら、期限の起点を成立時刻 metAt へ切り替える (metAt は first-wins で再打刻されないため延長は成立から6時間の1回限りで有界。未成立の保留は従来どおり受理から6時間で取り下げる)
+    if (conditionExpired((typeof pend.metAt === "number" && Number.isFinite(pend.metAt) && pend.metAt > 0) ? pend.metAt : pend.at, now)) { clearPendingCondition(bot, r); try { say(owner, bot, "条件の指示は、時間が経ったので取り下げました", true); } catch {} return false; }
     // PENDING-FIRE-BUSY-NOLATCH-01 (cyc2410): 繁忙ガードで評価ごと捨てず、繁忙中も3秒スロットル配下で評価だけは行う。
     // 成立したら metAt をラッチして永続化し (first-wins・通知はラッチ時に1回だけ)、開始は繁忙が解けてから行う。
     if (now - (r.pendingConditionCheckAt || 0) < 3000) return false;
