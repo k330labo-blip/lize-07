@@ -173,7 +173,7 @@ export function gateCancel(text) {
   try {
     const t = s(text);
     if (!CANCEL_RE.test(t)) return { fire: false, kind: "none" };
-    const nc0 = classifyNonCommand(t); if (nc0) return { fire: false, kind: nonCommandKind(nc0) };
+    const nc0 = classifyNonCommand(t); if (nc0 && !(nc0 === "meta_request" && postClauseExplainHead(t, CANCEL_HEAD_RE, CANCEL_RE))) return { fire: false, kind: nonCommandKind(nc0) };
     if (isHypothetical(t)) return { fire: false, kind: "hypothetical" };
     // 部分スコープ: 「Aは続けて、Bだけやめて」は全体中止ではない
     if (/だけ(やめて|中止|止めて|キャンセル)/.test(t) || /(続けて|継続して).{0,16}(やめて|中止|止めて)/.test(t)) return { fire: false, kind: "partial" };
@@ -206,7 +206,7 @@ export function gateFactory(text) {
   try {
     const t = s(text);
     if (!FACTORY_RE.test(t)) return { fire: false, kind: "none" };
-    const nc1 = classifyNonCommand(t); if (nc1) return { fire: false, kind: nonCommandKind(nc1) };
+    const nc1 = classifyNonCommand(t); if (nc1 && !(nc1 === "meta_request" && postClauseExplainHead(t, FACTORY_HEAD_RE, FACTORY_RE))) return { fire: false, kind: nonCommandKind(nc1) };
     if (isHypothetical(t)) return { fire: false, kind: "hypothetical" };
     // cyc2221 A15 R-1 (0-C1): 工場対象＋「やめて」は工場への否定であり開始ではない
     // (「自動化するのやめて」「鉄の自動化はやめて」「ラインを組むのはやめて」)。
@@ -242,7 +242,7 @@ export function gateWarehouseSort(text) {
   try {
     const t = s(text);
     if (!WAREHOUSE_RE.test(t)) return { fire: false, kind: "none" };
-    const nc2 = classifyNonCommand(t); if (nc2) return { fire: false, kind: nonCommandKind(nc2) };
+    const nc2 = classifyNonCommand(t); if (nc2 && !(nc2 === "meta_request" && postClauseExplainHead(t, WAREHOUSE_HEAD_RE, WAREHOUSE_RE))) return { fire: false, kind: nonCommandKind(nc2) };
     if (isHypothetical(t)) return { fire: false, kind: "hypothetical" };
     if (/(整理|仕分け).{0,16}(やめて|止めて|するな|るな)/.test(t)) return { fire: false, kind: "negation" };
     if (isNegatedDirective(t)) return { fire: false, kind: "negation" };
