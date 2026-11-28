@@ -413,7 +413,11 @@ export function createNav(probe, opts = {}) {
 }
 
 function goalKeyOf(goal, arriveRadius) {
-  return Math.floor(goal.x) + "," + Math.floor(goal.z) + "," + arriveRadius;
+  // NAV-GOALKEY-YBLIND-01 (cyc2514): Y もキーに含める。含めないと同一セル内の
+  // 縦目標変更 (はしご・水柱での昇降追随) を navSetGoal が無視し、到達判定が
+  // 古い goal.y で立つ/立たないの両方向に壊れる。粒度は fly.js の goalKeyOf と
+  // 同じ floor 単位 (生値だと動く目標で毎 sync キーが変わり継承が壊れる)。
+  return Math.floor(goal.x) + "," + Math.floor(goal.y) + "," + Math.floor(goal.z) + "," + arriveRadius;
 }
 
 export function navSetGoal(nav, goal, opts = {}) {
