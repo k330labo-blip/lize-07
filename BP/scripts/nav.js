@@ -421,8 +421,9 @@ export function navSetGoal(nav, goal, opts = {}) {
   if (key !== nav.goalKey) {
     // cycle0202 a09: 近い目標移動では stuckSec/repaths を引き継ぐ（fly と同型の
     // 到達不能バグ: 動く目標ではカウンタが sync のたびに消え救済が発動しない）。
+    const loose = (opts.arriveRadius ?? 0) >= 1;
     const near = !!(nav.goal && (opts.arriveRadius ?? 0) === nav.arriveRadius
-      && dist2d(nav.goal, goal) <= 2 && Math.abs(goal.y - nav.goal.y) <= 2);
+      && dist2d(nav.goal, goal) <= (loose ? 6 : 2) && Math.abs(goal.y - nav.goal.y) <= (loose ? 4 : 2));
     nav.goal = { x: goal.x, y: goal.y, z: goal.z };
     nav.goalKey = key;
     nav.arriveRadius = opts.arriveRadius ?? 0;
