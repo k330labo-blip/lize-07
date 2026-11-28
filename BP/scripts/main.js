@@ -1588,6 +1588,7 @@ function noteMove(bot, r, engine) {
     } catch {}
   } catch {}
 }
+function moveActIsWork(r) { return typeof r.moveAct === "string" && (r.moveAct.startsWith("pickup_") || r.moveAct.startsWith("deliver") || r.moveAct === "deposit" || r.moveAct === "chest_alert"); } // FOLLOW-RESCUE-BLIND-01 (a2): clearPathAhead の workAct 式を共有化
 function movementWatchdog(bot, r, pos) {
   if (!r.target) return;
   const now = Date.now();
@@ -1597,14 +1598,14 @@ function movementWatchdog(bot, r, pos) {
   while (r.watchHist.length && now - r.watchHist[0].t > 6000) r.watchHist.shift();
   if (r.watchHist.length < 8) return;
   const t = r.target;
-  // v0.4.59 (外部レビュー指摘4): 水平だけ見ると「真上だが高さが離れている」を到着扱いして救済が働かない
-  if (Math.hypot(t.x - pos.x, t.z - pos.z) <= 3 && (typeof t.y !== "number" || Math.abs(t.y - pos.y) <= 2)) return;
   const first = r.watchHist[0];
   const net = Math.hypot(pos.x - first.x, (pos.y||0) - (first.y||0), pos.z - first.z); // queue0-A bug1: 3D
   let path = 0;
   for (let i = 1; i < r.watchHist.length; i++) path += Math.hypot(r.watchHist[i].x - r.watchHist[i - 1].x, (r.watchHist[i].y||0) - (r.watchHist[i - 1].y||0), r.watchHist[i].z - r.watchHist[i - 1].z); // queue0-A bug1: 3D
   const oscillating = path > 3 && net < 1.0;   // 行ったり来たりしている
   const frozen = path < 0.3 && r.stuckSec >= 3; // 全く動いていない
+  // FOLLOW-RESCUE-BLIND-01 (a2): 近傍早期リターンは frozen/oscillating 算出の後ろへ移し、免除は clearPathAhead ゲート同集合 (掘進救済が届く対象) に限る。掘進が届かない追随等では近傍でも凍結・振動を評価する
+  if (Math.hypot(t.x - pos.x, t.z - pos.z) <= 3 && (typeof t.y !== "number" || Math.abs(t.y - pos.y) <= 2) && ((r.mission && r.mission.status === "active") || r.longtask || (r.buildPlan && r.buildPlan.stage === "build") || moveActIsWork(r))) return;
   if (!oscillating && !frozen) return;
   if (now - (r.lastHopAt || 0) < 8000) return; // BASICS-03残部: クールダウンは読むだけのゲート。消費は成功時のみ
   const dx = t.x - pos.x, dz = t.z - pos.z, hd = Math.hypot(dx, dz) || 1;
@@ -1844,7 +1845,7 @@ function selfRescue(bot, r) {
 // 指示の実行中、進む先が自然のブロックで塞がっていて進めないなら、それを掘って進む
 function clearPathAhead(bot, r, blocked) {
   if (!blocked || !r.target) return;
-  const workAct = typeof r.moveAct === "string" && (r.moveAct.startsWith("pickup_") || r.moveAct.startsWith("deliver") || r.moveAct === "deposit" || r.moveAct === "chest_alert"); // S1 (cycle2036): syncFlyGoal の interact 判定と許可集合を一致させる (回収/納品/入庫でも掘進救済が届くように)
+  const workAct = moveActIsWork(r); // S1 (cycle2036): syncFlyGoal の interact 判定と許可集合を一致させる (回収/納品/入庫でも掘進救済が届くように)。式は movementWatchdog と共有 (FOLLOW-RESCUE-BLIND-01 (a2))
   if (!((r.mission && r.mission.status === "active") || r.longtask || (r.buildPlan && r.buildPlan.stage === "build") || workAct)) { r.clearDig = null; return; } // 追従中はプレイヤーの周りを掘らない // BLD-06 (cycle1133): 建築中も掘進できるよう build 段階を許可 (掘否は canBreakForPath+dig_gate が担う)
   const p = bot.location, t = r.target;
   const dx = t.x - p.x, dz = t.z - p.z, dy = t.y - p.y, hd = Math.hypot(dx, dz);
