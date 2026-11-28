@@ -164,9 +164,9 @@ function postClauseExplainHead(t, headRe, entryRe) {
   if (!EXPLAIN_VOCAB_RE.test(tail)) return null;
   return head;
 }
-const CANCEL_HEAD_RE = /(やめて|中止して|止めて|キャンセルして)(ほしい|ください)?$/;
-const FACTORY_HEAD_RE = /(自動化して|ラインを組んで|ライン化して)$/;
-const WAREHOUSE_HEAD_RE = /(整理して|仕分けして)$/;
+const CANCEL_HEAD_RE = /(やめて|中止して|止めて|キャンセルして)(ほしい|ください|ね)?$/;
+const FACTORY_HEAD_RE = /(自動化して|ラインを組んで|ライン化して)(ください|ね)?$/;
+const WAREHOUSE_HEAD_RE = /(整理をして|整理して|仕分けして)(ください|ね)?$/;
 
 // 中止ゲート: {fire, kind} kind: none|cancel|question|hypothetical|negation|partial|conditional
 export function gateCancel(text) {
