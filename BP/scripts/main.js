@@ -3914,6 +3914,8 @@ function applyDirective(bot, owner, r, ctx, scan, d) {
 // 固定中のミッション目標がまだ実在するか（ブロックは同種か／エンティティ・アイテムは有効か）
 function missionTargetValid(bot, r) {
   if (!r.mTargetLoc) return false;
+  try { if (scanBanned(r, r.mTargetLoc, r.mTargetType, Date.now())) return false; } catch {} // LOG-SCAN-BETA-01 (cyc2469): 固定目標も ban を照合し、workBan 中の固定空転を塞ぐ
+  try { if (r.mTargetEntity && isEntityBanned(r.mBanKey, r.mBanUntil, Date.now(), r.mTargetEntity?.id)) return false; } catch {}
   if (r.mTargetKind === "fill_medium" && !r.mTargetEntity) { let b = null; try { b = bot.dimension.getBlock(r.mTargetLoc); } catch {} return !!b && b.typeId === r.mTargetType; } // R-C4-4 S3: block媒体はセル再読で固定を解く。entity媒体は下の汎用entity検査へ落とす
   if (r.mTargetKind === "block") { let b = null; try { b = bot.dimension.getBlock(r.mTargetLoc); } catch {} return !!b && b.typeId === r.mTargetType; }
   if (r.mTargetEntity) { try { const valid = typeof r.mTargetEntity.isValid === "function" ? !!r.mTargetEntity.isValid() : !!r.mTargetEntity.isValid; if (!valid) return false; if (r.mTargetKind === "item") { // PICKUP-ITEMVALID-01 (cyc2365 A04): アイテム実体の typeId は常時 "minecraft:item" で依頼IDと一致しないため、種別照合はスタックの typeId で行う (従来は常時 false で固定が死に毎tick再走査＋見切り不発だった)
@@ -5675,6 +5677,11 @@ function handleChatMessage(p, rawIn) {
       system.run(() => { say(p, bot, `進捗です。${nameOfItem(s.target)}${cs ? ` ${cs.have}/${cs.need}` : ""}。段階は ${s.stepsDone}/${s.stepsTotal} まで進んでいます`, true); try { conv.hear(raw, "mission_status"); } catch {} });
       return;
     }
+  }
+  // PENDING-CANCEL-SUSPENDED-GAP-01: suspended は① (active 限定) と①.4 (!mission) の両方から落ち、中止が届かなかった。単発の suspended に限り cancelMission (保留も畳む) へ届ける
+  if (!r.longtask && r.mission && r.mission.status === "suspended" && gateCancel(raw).fire) {
+    system.run(() => { cancelMission(bot, p, r); try { conv.hear(raw, "mission_cancel"); } catch {} });
+    return;
   }
   // ①.4 E-02: 仕事が無く条件保留だけがある状態でも、中止発話で保留を取り下げられる出口
   if (!r.mission && r.pendingConditionOrder && gateCancel(raw).fire) {
