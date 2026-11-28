@@ -394,6 +394,15 @@ function n5GapOk(text, hit, idx) { try { const gap = text.slice(hit.end, idx); i
 // cyc1743 0-C5 R-1/R-3: 項の繰り返し (3項以上)・第2項以降のスタック/半スタック・小数スタックを許可し、値解釈は核 amount_parse へ委ねる
 const QTY_TERM_SRC = String.raw`(?:(?:半|はん)スタック|(?:\d+(?:\.\d+)?|[一二三四五六七八九十]+|ゼロ|零)\s*(?:億|万)?\s*(?:スタック|個|本|枚|つ|体|匹|組|セット|箱))`; // O5-KURE-GIVE-01 (cyc2517): 位取り (億/万) を数量句にも通す (amount_math の位取りと対)
 const QTY_PHRASE_RE = new RegExp(`(${QTY_TERM_SRC}(?:\\s*と\\s*${QTY_TERM_SRC})*(?:ずつ\\s*(?:\\d+|[一二三四五六七八九十]+)\\s*回|を\\s*(?:\\d+|[一二三四五六七八九十]+)\\s*回)?)`);
+const NEG_SIGN_SRC = String.raw`[-−－]`;
+function negativeAmountNear(after, beforeNeg, itemId) {
+  const size = stackSizeOfItem(itemId ?? null).size;
+  const read = (m) => { if (!m) return null; const n = parseNumberToken(m[1]); if (n == null) return null; if (n === 0) return 0; const v = m[2] === "スタック" ? n * size : n; return -v; };
+  let m = after.match(new RegExp(`^[のがをもは]?(?:だけ)?\\s*(?:あと\\s*[、,]?\\s*(?:もう\\s*)?)?\\s*${NEG_SIGN_SRC}\\s*(\\d+|[一二三四五六七八九十]+)\\s*(個|本|枚|つ|体|匹|組|セット|箱|スタック)`));
+  if (m) return read(m);
+  m = beforeNeg.match(new RegExp(`${NEG_SIGN_SRC}\\s*(\\d+|[一二三四五六七八九十]+)\\s*(個|本|枚|つ|体|匹|組|セット|箱|スタック)\\s*の\\s*$`));
+  return read(m);
+}
 function amountNear(text, hit) {
   let itemId = null;
   try { const t = targetOf(hit); itemId = t?.item ?? t?.block ?? null; } catch { itemId = null; }
@@ -405,6 +414,8 @@ function amountNear(text, hit) {
     return null;
   };
   const after = text.slice(hit.end, hit.end + 18);
+  const negV = negativeAmountNear(after, text.slice(Math.max(0, hit.start - 18), hit.start), itemId);
+  if (negV != null) { hit.amountDetail = { ok: true, reason: "negative", startable: false, total: negV, amount: negV, perRun: negV, repeats: null, relative: false, corrected: false }; return negV; }
   const am = after.match(new RegExp(`^[のがをもは]?(?:だけ)?\\s*(あと\\s*[、,]?\\s*(?:もう\\s*)?)?\\s*${QTY_PHRASE_RE.source}`)); // cyc2157 R1G2-c: 核 startRe と対称に「あと」の後ろの読点・「もう」を許す (従来は数量ごと脱落)
   if (am) { const v = parsePhrase((am[1] || "") + am[2]); if (v != null) return v; }
   // 0-C5 R-4 (v0.5.86): 反復前置（「丸石を2回、3個ずつ」）。裸数字フォールバックが
@@ -1569,7 +1580,10 @@ export function parseOrder(input) {
     try {
       const cl = clauses[main.clause] || "";
       const qm = cl.match(new RegExp(`${QTY_PHRASE_RE.source}\\s*(?:置いて|置く|おいて|おく)`));
-      if (qm) {
+      if (qm && qm.index > 0 && /[-−－]/.test(cl[qm.index - 1])) {
+        const nn = parseNumberToken((qm[1].match(/(\d+|[一二三四五六七八九十]+)/) || [])[1] ?? "");
+        if (nn != null && nn > 0) { main.amount = -nn; main.amountDetail = { ok: true, reason: "negative", startable: false, total: -nn }; }
+      } else if (qm) {
         const r = amount_parse(qm[0].replace(/(?:置いて|置く|おいて|おく)\\s*$/, "").trim(), { itemId: main.target?.item ?? main.target?.block ?? null });
         if (r && r.ok) { main.amount = r.total; main.amountDetail = r; }
       }
@@ -1607,8 +1621,10 @@ export function parseOrder(input) {
       const mainId = main.target?.item ?? main.target?.block ?? main.target?.entity ?? null;
       const otherInClause = candidates.some((c) => c.clause === corrClause && (c.target?.item ?? c.target?.block ?? c.target?.entity ?? null) !== mainId);
       if (!otherInClause) {
-        const parsed = amount_parse(text.slice(corrIdx + corrLen, corrIdx + corrLen + 18), { itemId: main.target?.item ?? main.target?.block ?? null });
-        if (parsed && parsed.ok) { main.amount = parsed.total; amountMeta = { ...parsed, corrected: true }; }
+        const negCorr = text.slice(corrIdx + corrLen, corrIdx + corrLen + 18).match(new RegExp(`^\\s*${NEG_SIGN_SRC}\\s*(\\d+|[一二三四五六七八九十]+)\\s*(個|本|枚|つ|体|匹|組|セット|箱|スタック)`));
+        if (negCorr) { const nn = parseNumberToken(negCorr[1]); if (nn != null && nn > 0) { main.amount = -(negCorr[2] === "スタック" ? nn * stackSizeOfItem(main.target?.item ?? main.target?.block ?? null).size : nn); amountMeta = { perRun: main.amount, repeats: null, relative: false, corrected: true }; } }
+        else { const parsed = amount_parse(text.slice(corrIdx + corrLen, corrIdx + corrLen + 18), { itemId: main.target?.item ?? main.target?.block ?? null });
+        if (parsed && parsed.ok) { main.amount = parsed.total; amountMeta = { ...parsed, corrected: true }; } }
       }
     }
   } catch { /* 訂正の反映失敗は従来数量のまま */ }
@@ -1656,8 +1672,10 @@ export function parseOrder(input) {
   } catch { /* 「あと」横断パスの失敗は従来数量のまま */ }
 
   // 0-C5 (cycle1256): 0個の指示は開始処理へ渡さない (聞き返しへ倒す)。
-  if (main.amount === 0) {
-    return { kind: "clarify", target: main.target, amount: 0, constraints, sideTasks: [], negations, unresolved: [...unresolved, { slot: "amount", reason: "zero_amount" }], caps, returnTo, raw };
+  // CLARIFY-NEG-01 (cyc2530, megabench DRAFT_CLARIFY_NEG): 負数も同格の異常数量として同じ分岐へ接続する。reason は 0 と負数で出し分ける。
+  if (main.amount != null && main.amount <= 0) {
+    const negAmt = main.amount < 0;
+    return { kind: "clarify", target: main.target, amount: main.amount, constraints, sideTasks: [], negations, unresolved: [...unresolved, { slot: "amount", reason: negAmt ? "negative_amount" : "zero_amount" }], caps, returnTo, raw };
   }
   // 0-C4 R-C4-3 (cyc2373): gather の主目標が生き物 (entity) になった注文は型不整合。
   // gather の対象はアイテム/ブロックであるべきで、entity が主目標の形は調達元が無く
