@@ -16,7 +16,7 @@
 // 座標 pos は {x, y, z}、次元 dim は文字列（例 "minecraft:overworld"）。
 // どちらも省略時は "minecraft:overworld" 扱い。
 
-export const WMEM_VERSION = 1;
+export const WMEM_VERSION = 2; // 0-P (cyc2483): 観測状態 os/oa を持つ保存形式 v2
 
 // Phase1残件: source の保存形は2文字コード。正名・別名も受け口で吸収する（未知値は欠落化）
 export const WMEM_SOURCE = Object.freeze({ direct_scan: "ds", direct_inspect: "di", home_measured: "hm", event: "ev", self_placed: "sp", self_action: "sa", owner_told: "ot", owner_action: "oa", inferred: "in", hearsay: "hs", system: "sy" });
@@ -26,6 +26,45 @@ export const normSource = (v) => { if (!v) return undefined; if (SOURCE_BY_CODE[
 export const sourceName = (code) => SOURCE_BY_CODE[code] ?? null;
 const SRC_RANK = { sy: 0, hs: 1, in: 2, ds: 3, di: 3, ot: 4, oa: 5, sa: 6, sp: 6, ev: 7, hm: 8 };
 const resolveSource = (next, prev) => { const n = normSource(next), o = normSource(prev); if (!n) return o; if (!o) return n; return (SRC_RANK[n] ?? 0) >= (SRC_RANK[o] ?? 0) ? n : o; };
+// 0-P (v2): 観測状態の保存コード。observability.js の OBS と対応するが、永続層は
+// 32KB 上限のため2文字コードで持つ。unknown/inferred_region/confirmed_absent は
+// pos キーのマップへ保存しない (unknown=レコード無し、推測は座標を持たせない、
+// 不在は除去で表す)。X-ray防止: ゲート未通過の走査由来記録を確定情報にしない。
+export const WMEM_OBS = Object.freeze({ observed: "ob", remembered: "rm", stale: "st", unknown: "un", inferred_region: "ir", confirmed_absent: "ca" });
+const OBS_BY_CODE = Object.fromEntries(Object.entries(WMEM_OBS).map(([k, v]) => [v, k]));
+const OBS_STORABLE = new Set(["ob", "rm", "st"]);
+export const normObsState = (v) => { if (!v) return undefined; if (OBS_BY_CODE[v]) return OBS_STORABLE.has(v) ? v : undefined; const c = WMEM_OBS[v]; return c && OBS_STORABLE.has(c) ? c : undefined; };
+export const obsStateName = (code) => OBS_BY_CODE[code] ?? null;
+export const WMEM_STALE_AFTER_MS = 30 * 60 * 1000;
+// v1 からの移行で「正当な直接根拠」とみなす source (実開封・実測・自設置・自行動・所有者明示・実体験イベント)
+const TRUSTED_SOURCE = new Set(["di", "hm", "sp", "sa", "ot", "oa", "ev"]);
+// レコードの現在状態を導出する (保存値は書き換えない)。seen はゲート通過で
+// 今見ている場合にだけ呼び出し側が渡す。保存だけでは observed と主張しない。
+export function obsStateOf(rec, opts = {}) {
+  if (!rec || typeof rec !== "object") return "unknown";
+  if (rec.lg === 1) return "stale";
+  const os = OBS_BY_CODE[rec.os] ? rec.os : null;
+  if (!os || os === "st") return "stale";
+  const oa = Number.isFinite(rec.oa) ? rec.oa : NaN;
+  if (!Number.isFinite(oa) || oa <= 0) return "stale";
+  const at = Number.isFinite(opts.now) ? opts.now : 0;
+  const staleAfter = Number.isFinite(opts.staleAfterMs) ? opts.staleAfterMs : WMEM_STALE_AFTER_MS;
+  if (at > 0 && at - oa >= staleAfter) return "stale";
+  return opts.seen === true ? "observed" : "remembered";
+}
+// 記録時の os/oa/lg を決める。観測を伴う記録 (observe:true が既定) は基礎値を
+// observed にし lg を外す。メタ更新だけの記録は前回値を保持する。
+function obsFields(opts, prev, at) {
+  if (opts?.observe === false) {
+    return {
+      ...(prev?.os && OBS_STORABLE.has(prev.os) ? { os: prev.os } : {}),
+      ...(Number.isFinite(prev?.oa) ? { oa: prev.oa } : {}),
+      ...(prev?.lg === 1 ? { lg: 1 } : {}),
+    };
+  }
+  const want = normObsState(opts?.obsState) || "ob";
+  return { os: want, oa: at };
+}
 
 const DEFAULTS = {
   maxBytes: 32768,          // シリアライズ後 JSON の上限 (UTF-8 バイト)
@@ -71,11 +110,11 @@ function emptyData() {
     v: WMEM_VERSION,
     // visited: { "o:3,-2": { t: 最終訪問ms, n: 訪問回数, f: 親密度0..100 } }
     visited: {},
-    // containers: { "o:10,64,20": { t: 最終確認ms, full: 0|1, k: 種類(任意) } }
+    // containers: { "o:10,64,20": { t: 最終確認ms, full: 0|1, k: 種類(任意), os: 観測状態コード, oa: 最終観測ms, lg?: 1=移行未検証 } }
     containers: {},
     // danger: [ { d: 次元コード, x, y, z, k: 種類, w: 重み, t: 最終記録ms } ]
     danger: [],
-    // beds / workstations: { "o:10,64,20": { t: 最終確認ms, k: 種類(設備のみ) } }
+    // beds / workstations: { "o:10,64,20": { t: 最終確認ms, k: 種類(設備のみ), os, oa, lg? } } (danger の各スポットも os/oa を持つ)
     beds: {},
     workstations: {},
   };
@@ -129,6 +168,27 @@ export function createWorldMemory(adapter, options = {}) {
       // source 旧表記を2文字コードへ受動正規化（冪等・未知値は欠落化）
       for (const m of [data.containers, data.beds, data.workstations]) for (const k of Object.keys(m)) { if (m[k]?.s !== undefined) { const n = normSource(m[k].s); if (n) m[k].s = n; else delete m[k].s; } }
       for (const sp of data.danger) { if (sp?.s !== undefined) { const n = normSource(sp.s); if (n) sp.s = n; else delete sp.s; } }
+      // 0-P (v2移行): 観測根拠のない旧レコードを確定情報として移行しない。
+      // parsed.v < 2 のときだけ発動する (v2 の ds は「ゲート通過した直接観測」の
+      // 新意味であり、再移行で降格させない)。座標は捨てず stale+lg で残し、
+      // 再観測されるまで確定読み手からは外れる。X-ray防止のための移行。
+      const legacy = !(Number.isFinite(parsed.v) && parsed.v >= 2);
+      let migrated = false;
+      const migrateRec = (rec) => {
+        if (!rec || typeof rec !== "object") return;
+        const oaFb = Number.isFinite(rec.t) && rec.t > 0 ? rec.t : 0;
+        if (legacy) {
+          if (TRUSTED_SOURCE.has(rec.s)) { rec.os = "rm"; rec.oa = oaFb; delete rec.lg; }
+          else { rec.os = "st"; rec.oa = oaFb; rec.lg = 1; }
+          migrated = true;
+        } else {
+          if (!OBS_STORABLE.has(rec.os)) { rec.os = TRUSTED_SOURCE.has(rec.s) ? "rm" : "st"; if (!TRUSTED_SOURCE.has(rec.s)) rec.lg = 1; migrated = true; }
+          if (!Number.isFinite(rec.oa)) { rec.oa = oaFb; migrated = true; }
+        }
+      };
+      for (const m of [data.containers, data.beds, data.workstations]) for (const k of Object.keys(m)) migrateRec(m[k]);
+      for (const sp of data.danger) migrateRec(sp);
+      if (migrated) dirty = true;
     } catch { /* 壊れた保存データは空から始める */ }
   })();
 
@@ -269,6 +329,15 @@ export function createWorldMemory(adapter, options = {}) {
       });
   }
 
+  // 0-P: 読み出しコピーへ導出状態を併記する (保存形コード os とは別に、
+  // 正名 state と未検証印 unverified を読める形で渡す。追加のみ・既存キーは不変)
+  function withState(rec, opts = {}) {
+    if (!rec || typeof rec !== "object") return rec;
+    const st = obsStateOf(rec, { now: now(), seen: opts.seen === true, staleAfterMs: opts.staleAfterMs });
+    return { ...rec, state: st, unverified: rec.lg === 1 };
+  }
+  const isConfirmed = (rec) => !!rec && rec.lg !== 1 && obsStateOf(rec, { now: now() }) !== "stale";
+
   // ---------- コンテナ ----------
   function recordContainer(pos, dim = DEFAULT_DIM, opts = {}) {
     const key = posKey(dim, pos);
@@ -277,6 +346,8 @@ export function createWorldMemory(adapter, options = {}) {
     const snap = sanitizeContents(opts.contents);
     data.containers[key] = {
       t: at,
+      // 0-P: 観測状態。観測を伴う記録は observed として刻み、移行印 lg を外す
+      ...obsFields(opts, prev, at),
       // N1 (v0.4.18): contents 専用時刻 ct。スナップショット採用時のみ contents と対で刻み、
       // 未指定時は contents+ct を対で保持する (中身と無関係な t 更新で鮮度が延命しない)
       ...(snap !== undefined ? { ct: at } : (prev?.ct !== undefined ? { ct: prev.ct } : {})),
@@ -295,7 +366,9 @@ export function createWorldMemory(adapter, options = {}) {
 
   function markContainerFull(pos, dim = DEFAULT_DIM, full = true) {
     const key = posKey(dim, pos);
-    if (!data.containers[key]) data.containers[key] = { t: now(), full: 0 };
+    // 0-P: 満杯印だけでは観測したことにならない。新規作成時は未検証 (stale+lg)
+    // として刻み、確定情報として読まれないようにする。既存の os/oa/lg は不変。
+    if (!data.containers[key]) data.containers[key] = { t: now(), full: 0, os: "st", oa: 0, lg: 1 };
     data.containers[key].full = full ? 1 : 0;
     data.containers[key].t = now();
     dirty = true;
@@ -309,19 +382,23 @@ export function createWorldMemory(adapter, options = {}) {
 
   function getContainer(pos, dim = DEFAULT_DIM) {
     const rec = data.containers[posKey(dim, pos)];
-    return rec ? { ...rec } : null;
+    return rec ? withState({ ...rec }) : null;
   }
 
-  function knownContainers(dim = null) {
+  function knownContainers(dim = null, opts = {}) {
     return Object.entries(data.containers)
-      .map(([k, rec]) => ({ ...parsePosKey(k), ...rec }))
+      .map(([k, rec]) => withState({ ...parsePosKey(k), ...rec }))
       .filter((c) => !dim || c.dim === dim)
+      .filter((c) => opts.verifiedOnly !== true || isConfirmed(c))
       .sort((a, b) => b.t - a.t);
   }
 
   // 最も近い既知コンテナ。excludeFull=true で満杯を候補から外す
   function nearestContainer(pos, dim = DEFAULT_DIM, opts = {}) {
-    return nearest(data.containers, pos, dim, opts.excludeFull ? (rec) => !rec.full : null);
+    const fs = [];
+    if (opts.excludeFull) fs.push((rec) => !rec.full);
+    if (opts.excludeUnverified) fs.push((rec) => isConfirmed(rec));
+    return nearest(data.containers, pos, dim, fs.length ? (rec) => fs.every((f) => f(rec)) : null);
   }
 
   // ---------- 危険地点 ----------
@@ -334,13 +411,13 @@ export function createWorldMemory(adapter, options = {}) {
     for (const s of data.danger) {
       if (s.d === code && s.k === kind && Math.hypot(s.x - pos.x, s.y - pos.y, s.z - pos.z) <= 8) {
         s.w = Math.min(1, Math.max(decayedWeight(s, at), w) + 0.15);
-        s.t = at;
+        s.t = at; s.os = "ob"; s.oa = at; delete s.lg; // 0-P: 再体験は再観測と同義
         s.x = Math.floor(pos.x); s.y = Math.floor(pos.y); s.z = Math.floor(pos.z);
         dirty = true;
         return { ...s, dim: codeDim(s.d) };
       }
     }
-    const spot = { d: code, x: Math.floor(pos.x), y: Math.floor(pos.y), z: Math.floor(pos.z), k: kind, w, t: at, s: "ev", c: w };
+    const spot = { d: code, x: Math.floor(pos.x), y: Math.floor(pos.y), z: Math.floor(pos.z), k: kind, w, t: at, s: "ev", c: w, os: "ob", oa: at }; // 0-P: 実体験イベントは観測
     data.danger.push(spot);
     pruneDanger();
     dirty = true;
@@ -358,7 +435,7 @@ export function createWorldMemory(adapter, options = {}) {
       if (d > radius) continue;
       const weight = decayedWeight(s, at);
       if (weight < opt.dangerMinWeight) continue;
-      out.push({ dim: codeDim(s.d), x: s.x, y: s.y, z: s.z, kind: s.k, weight, dist: d, lastAt: s.t, ...(s.s ? { source: sourceName(s.s) || s.s } : {}), ...(s.c !== undefined ? { confidence: s.c } : {}) });
+      out.push({ dim: codeDim(s.d), x: s.x, y: s.y, z: s.z, kind: s.k, weight, dist: d, lastAt: s.t, ...(s.s ? { source: sourceName(s.s) || s.s } : {}), ...(s.c !== undefined ? { confidence: s.c } : {}), state: obsStateOf(s, { now: at }), unverified: s.lg === 1 }); // 0-P: 状態併記 (追加のみ)
     }
     return out.sort((a, b) => b.weight - a.weight);
   }
@@ -381,29 +458,35 @@ export function createWorldMemory(adapter, options = {}) {
   // ---------- ベッド / 設備 ----------
   function recordBed(pos, dim = DEFAULT_DIM, opts = {}) {
     const _k = posKey(dim, pos); const _prev = data.beds[_k];
-    data.beds[_k] = { t: now(), s: resolveSource(opts.source, _prev?.s) || "ds", c: opts.confidence !== undefined ? Math.max(0, Math.min(1, opts.confidence)) : (_prev?.c !== undefined ? _prev.c : 0.9) };
+    const _at = now();
+    data.beds[_k] = { t: _at, s: resolveSource(opts.source, _prev?.s) || "ds", c: opts.confidence !== undefined ? Math.max(0, Math.min(1, opts.confidence)) : (_prev?.c !== undefined ? _prev.c : 0.9), ...obsFields(opts, _prev, _at) };
     pruneMapByAge(data.beds, opt.maxBeds);
     dirty = true;
   }
-  function nearestBed(pos, dim = DEFAULT_DIM) { return nearest(data.beds, pos, dim, null); }
-  function knownBeds(dim = null) {
-    return Object.entries(data.beds).map(([k, rec]) => ({ ...parsePosKey(k), ...rec })).filter((b) => !dim || b.dim === dim);
+  function nearestBed(pos, dim = DEFAULT_DIM, opts = {}) { return nearest(data.beds, pos, dim, opts.excludeUnverified ? (rec) => isConfirmed(rec) : null); }
+  function knownBeds(dim = null, opts = {}) {
+    return Object.entries(data.beds).map(([k, rec]) => withState({ ...parsePosKey(k), ...rec })).filter((b) => !dim || b.dim === dim).filter((b) => opts.verifiedOnly !== true || isConfirmed(b));
   }
 
   // kind 例: "crafting_table" | "furnace" | "enchanting_table" | 軌道工廠の機械ID など
   function recordWorkstation(pos, dim = DEFAULT_DIM, kind = "unknown", opts = {}) {
     const _k = posKey(dim, pos); const _prev = data.workstations[_k];
-    data.workstations[_k] = { t: now(), k: kind, s: resolveSource(opts.source, _prev?.s) || "ds", c: opts.confidence !== undefined ? Math.max(0, Math.min(1, opts.confidence)) : (_prev?.c !== undefined ? _prev.c : 0.9) };
+    const _at = now();
+    data.workstations[_k] = { t: _at, k: kind, s: resolveSource(opts.source, _prev?.s) || "ds", c: opts.confidence !== undefined ? Math.max(0, Math.min(1, opts.confidence)) : (_prev?.c !== undefined ? _prev.c : 0.9), ...obsFields(opts, _prev, _at) };
     pruneMapByAge(data.workstations, opt.maxWorkstations);
     dirty = true;
   }
-  function nearestWorkstation(pos, dim = DEFAULT_DIM, kind = null) {
-    return nearest(data.workstations, pos, dim, kind ? (rec) => rec.k === kind : null);
+  function nearestWorkstation(pos, dim = DEFAULT_DIM, kind = null, opts = {}) {
+    const fs = [];
+    if (kind) fs.push((rec) => rec.k === kind);
+    if (opts.excludeUnverified) fs.push((rec) => isConfirmed(rec));
+    return nearest(data.workstations, pos, dim, fs.length ? (rec) => fs.every((f) => f(rec)) : null);
   }
-  function knownWorkstations(dim = null, kind = null) {
+  function knownWorkstations(dim = null, kind = null, opts = {}) {
     return Object.entries(data.workstations)
-      .map(([k, rec]) => ({ ...parsePosKey(k), ...rec }))
-      .filter((w) => (!dim || w.dim === dim) && (!kind || w.k === kind));
+      .map(([k, rec]) => withState({ ...parsePosKey(k), ...rec }))
+      .filter((w) => (!dim || w.dim === dim) && (!kind || w.k === kind))
+      .filter((w) => opts.verifiedOnly !== true || isConfirmed(w));
   }
   function forgetPlace(mapName, pos, dim = DEFAULT_DIM) {
     const map = data[mapName];
@@ -446,6 +529,7 @@ export function createWorldMemory(adapter, options = {}) {
     forgetBed: (pos, dim) => forgetPlace("beds", pos, dim),
     forgetWorkstation: (pos, dim) => forgetPlace("workstations", pos, dim),
     forgetContainer,
+    obsState: (rec, o) => obsStateOf(rec, { now: now(), ...(o || {}) }), // 0-P: 状態導出の公開
     // 保存 / 診断
     save, stats, serialize,
     get dirty() { return dirty; },

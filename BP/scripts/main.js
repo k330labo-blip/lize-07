@@ -36,6 +36,7 @@ import { isCropMature, CROP_MATURITY_MAX, isCropBlock, cropBreakGate } from "./c
 import { resolveWorkAccess, ACCESS } from "./work_access.js"; // 基礎 遮蔽除去 (v0.4.76): 作業アクセス解決の純粋核
 import { evaluateDig } from "./dig_gate.js"; // 要望バッチA (v0.4.88): 掘削の統一ゲート
 import { evaluatePlace, placeHoldRecord } from "./place_gate.js"; // PLACE-GATE段2 (cycle0522): 設置側ゲート (build配線のみ、station/torchは段3)
+import { canObserve } from "./observability.js"; // 0-P (cyc2483 S0/S1): 観測可能性ゲート (純粋核)。生走査を意味情報へ出す入口をここへ一本化する (X-ray防止)
 import { gazeRotation } from "./gaze_math.js"; // POLISH-ANIM-LOOK-01 (cycle0821): 視線ピッチ連動の純粋計算
 import { applyInspectPitch, isInspectActive, shouldInspect } from "./inspect_math.js"; // POLISH-ANIM-INSPECT-01 (cycle1003): 依頼品入手時の検分 (表示層のみ)
 import { applyNodPitch, isNodActive, shouldNod } from "./nod_math.js";
@@ -788,26 +789,35 @@ function buildContext(bot, owner) {
     const selD = { tree: -1, ore: -1, stone: -1, crop: -1 }; // forbids G6-c (cycle0628): 候補選出専用の距離 (統計 pc.* と分ける。禁止候補が距離だけ更新して非禁止候補を塞ぐ事故を防ぐ)
     const forbT = (tid) => { try { return isForbiddenWorkTarget(r.sessionForbids, tid, dropOfWorkTarget); } catch { return false; } };
     const wbanned = (loc, tid) => { try { return isWorkBanned(r.workBan, loc, tid, Date.now()); } catch { return false; } }; // cycle0832 F5: work層 ban 中セルは選出から外す (統計 pc.* は維持し次点が載る形)
+// 0-P X-ray防止 (知覚ライト): 生走査で読んだセルは、露出+視線のゲート (observability.canObserve) を
+    // 通った分だけを percTargets / world_memory / ctx 統計へ出す。不通過分は座標だけでなく距離・有無・
+    // 件数統計にも入れない (間接漏洩の防止)。provider は本走査で読んだセルをキャッシュし、露出・視線
+    // 判定の追加読みも同じキャッシュ経由にすることで getBlock の総読み回数を増やさない。
+    const percCache = new Map();
+    const percTypeAt = (x, y, z) => { const k = `${x},${y},${z}`; if (percCache.has(k)) return percCache.get(k); let t = null; try { const bb = dim.getBlock({ x, y, z }); t = bb ? bb.typeId : null; } catch { t = null; } percCache.set(k, t); return t; };
+    const percEye = { x: bot.location.x, y: bot.location.y + 1.6, z: bot.location.z };
     const bx = Math.floor(bot.location.x), by = Math.floor(bot.location.y), bz = Math.floor(bot.location.z);
     for (let dx = -3; dx <= 3; dx++) for (let dy = -2; dy <= 2; dy++) for (let dz = -3; dz <= 3; dz++) {
       let b = null; try { b = dim.getBlock({ x: bx + dx, y: by + dy, z: bz + dz }); } catch {}
-      if (!b) { pc.failedCells++; continue; } const tid = b.typeId; const dd = Math.hypot(dx, dy, dz);
-      if (tid.includes("_log") || tid.includes("_wood") || (tid.endsWith("_stem") && /(crimson|warped)/.test(tid))) { if (pc.tree < 0 || dd < pc.tree) pc.tree = dd; if (!forbT(tid) && !wbanned(b.location, tid) && (selD.tree < 0 || dd < selD.tree)) { selD.tree = dd; r.percTargets.tree = { x: b.location.x, y: b.location.y, z: b.location.z, typeId: tid }; } }
-      else if (tid.includes("_ore") || tid === "minecraft:ancient_debris") { if (VALUABLE_ORES.has(tid)) pc.oreValuable = true; if (pc.ore < 0 || dd < pc.ore) pc.ore = dd; if (!forbT(tid) && !wbanned(b.location, tid) && (selD.ore < 0 || dd < selD.ore)) { selD.ore = dd; r.percTargets.ore = { x: b.location.x, y: b.location.y, z: b.location.z, typeId: tid }; } }
-      else if (NATURAL_STONE.has(tid)) { if (pc.stone < 0 || dd < pc.stone) pc.stone = dd; if (!forbT(tid) && !wbanned(b.location, tid) && (selD.stone < 0 || dd < selD.stone)) { selD.stone = dd; r.percTargets.stone = { x: b.location.x, y: b.location.y, z: b.location.z, typeId: tid }; } }
-      else if (Object.prototype.hasOwnProperty.call(CROP_MATURITY_MAX, tid)) {
+      if (!b) { pc.failedCells++; percCache.set(`${bx + dx},${by + dy},${bz + dz}`, null); continue; } const tid = b.typeId; const dd = Math.hypot(dx, dy, dz); percCache.set(`${bx + dx},${by + dy},${bz + dz}`, tid);
+      // 0-P: このセルのゲート評価は遅延・1回だけ (複数分岐が同じセルを見ても DDA を繰り返さない)。例外時は見えなかった側 (false) へ倒す
+      let seenCache = null; const seen = () => { if (seenCache === null) { try { seenCache = canObserve(percTypeAt, percEye, { x: b.location.x, y: b.location.y, z: b.location.z }, { maxDist: 8 }); } catch { seenCache = false; } } return seenCache; };
+      if ((tid.includes("_log") || tid.includes("_wood") || (tid.endsWith("_stem") && /(crimson|warped)/.test(tid))) && seen()) { if (pc.tree < 0 || dd < pc.tree) pc.tree = dd; if (!forbT(tid) && !wbanned(b.location, tid) && (selD.tree < 0 || dd < selD.tree)) { selD.tree = dd; r.percTargets.tree = { x: b.location.x, y: b.location.y, z: b.location.z, typeId: tid }; } }
+      else if ((tid.includes("_ore") || tid === "minecraft:ancient_debris") && seen()) { if (VALUABLE_ORES.has(tid)) pc.oreValuable = true; if (pc.ore < 0 || dd < pc.ore) pc.ore = dd; if (!forbT(tid) && !wbanned(b.location, tid) && (selD.ore < 0 || dd < selD.ore)) { selD.ore = dd; r.percTargets.ore = { x: b.location.x, y: b.location.y, z: b.location.z, typeId: tid }; } }
+      else if (NATURAL_STONE.has(tid) && seen()) { if (pc.stone < 0 || dd < pc.stone) pc.stone = dd; if (!forbT(tid) && !wbanned(b.location, tid) && (selD.stone < 0 || dd < selD.stone)) { selD.stone = dd; r.percTargets.stone = { x: b.location.x, y: b.location.y, z: b.location.z, typeId: tid }; } }
+      else if (Object.prototype.hasOwnProperty.call(CROP_MATURITY_MAX, tid) && seen()) {
         let g = null; try { g = b.permutation?.getState("growth") ?? b.permutation?.getState("age"); } catch {}
         if (isCropMature(tid, g)) { if (pc.crop < 0 || dd < pc.crop) pc.crop = dd; if (!forbT(tid) && !wbanned(b.location, tid) && (selD.crop < 0 || dd < selD.crop)) { selD.crop = dd; r.percTargets.crop = { x: b.location.x, y: b.location.y, z: b.location.z, typeId: tid }; } }
         else if (pc.cropYoung < 0 || dd < pc.cropYoung) pc.cropYoung = dd; // cycle0832 F2: 未成熟株 (growth読取不能も存在は確定としてこちらへ) を成熟と分けて数える
       }
-      if (/flower/.test(tid) || tid === "minecraft:snow_layer" || tid === "minecraft:short_grass" || tid === "minecraft:tall_grass" || tid === "minecraft:fern" || tid === "minecraft:sugar_cane") pcOpps.push({ kind: "block", typeId: tid, pos: { x: b.location.x, y: b.location.y, z: b.location.z } }); // 基礎 N2 (v0.4.65): サトウキビも side 採取の機会に載せる (side_tasks の現行IDと対)
-      if (tid === "minecraft:crafting_table") { pc.nearCraft = true; try { if (wm?.recordWorkstation) wm.recordWorkstation(b.location, dim.id, tid); } catch {} }
-      if (tid === "minecraft:campfire" || tid === "minecraft:soul_campfire" || tid === "minecraft:lit_furnace" || tid === "minecraft:lit_blast_furnace" || tid === "minecraft:lit_smoker") pc.nearHeat = true; // cycle0740 WARMHANDS feeder: 点火中熱源のみ (分類1分岐・新規走査なし)
-      if (isSmeltStationId(tid)) { pc.nearFurnace = true; try { if (wm?.recordWorkstation) wm.recordWorkstation(b.location, dim.id, tid); } catch {} }
-      if (tid.startsWith("orbital_foundry:")) pc.nearMachine = true;
-      if (tid.endsWith(":bed") || tid.endsWith("_bed")) { pc.nearBed = true; try { if (wm?.recordBed) wm.recordBed(b.location, dim.id); } catch {} }
-      if (isContainerBlock(tid)) { try { if (wm?.recordContainer) wm.recordContainer(b.location, dim.id, { kind: tid, source: "scan", confidence: 0.9 }); } catch {} }
-      if (tid === "minecraft:sculk_shrieker") pc.shrieker = true;
+      if ((/flower/.test(tid) || tid === "minecraft:snow_layer" || tid === "minecraft:short_grass" || tid === "minecraft:tall_grass" || tid === "minecraft:fern" || tid === "minecraft:sugar_cane") && seen()) pcOpps.push({ kind: "block", typeId: tid, pos: { x: b.location.x, y: b.location.y, z: b.location.z } }); // 基礎 N2 (v0.4.65): サトウキビも side 採取の機会に載せる (side_tasks の現行IDと対)
+      if (tid === "minecraft:crafting_table" && seen()) { pc.nearCraft = true; try { if (wm?.recordWorkstation) wm.recordWorkstation(b.location, dim.id, tid, { source: "direct_scan", confidence: 0.9 }); } catch {} } // 0-P: 登録はゲート通過後のみ (通過前登録が台帳へ伝播する経路を断つ)
+      if ((tid === "minecraft:campfire" || tid === "minecraft:soul_campfire" || tid === "minecraft:lit_furnace" || tid === "minecraft:lit_blast_furnace" || tid === "minecraft:lit_smoker") && seen()) pc.nearHeat = true; // cycle0740 WARMHANDS feeder: 点火中熱源のみ (分類1分岐・新規走査なし)
+      if (isSmeltStationId(tid) && seen()) { pc.nearFurnace = true; try { if (wm?.recordWorkstation) wm.recordWorkstation(b.location, dim.id, tid, { source: "direct_scan", confidence: 0.9 }); } catch {} }
+      if (tid.startsWith("orbital_foundry:") && seen()) pc.nearMachine = true;
+      if ((tid.endsWith(":bed") || tid.endsWith("_bed")) && seen()) { pc.nearBed = true; try { if (wm?.recordBed) wm.recordBed(b.location, dim.id, { source: "direct_scan", confidence: 0.9 }); } catch {} }
+      if (isContainerBlock(tid) && seen()) { try { if (wm?.recordContainer) wm.recordContainer(b.location, dim.id, { kind: tid, source: "direct_scan", confidence: 0.9 }); } catch {} } // 0-P: 保存値の意味 (ds) は不変。登録はゲート通過後のみ
+      if (tid === "minecraft:sculk_shrieker" && seen()) pc.shrieker = true;
     }
     r.perc = pc;
     r.percFresh = true;
