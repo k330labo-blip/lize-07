@@ -398,7 +398,7 @@ const NEG_SIGN_SRC = String.raw`[-−－]`;
 function negativeAmountNear(after, beforeNeg, itemId) {
   const size = stackSizeOfItem(itemId ?? null).size;
   const read = (m) => { if (!m) return null; const n = parseNumberToken(m[1]); if (n == null) return null; if (n === 0) return 0; const v = m[2] === "スタック" ? n * size : n; return -v; };
-  let m = after.match(new RegExp(`^[のがをもは]?(?:だけ)?\\s*(?:あと\\s*[、,]?\\s*(?:もう\\s*)?)?\\s*${NEG_SIGN_SRC}\\s*(\\d+|[一二三四五六七八九十]+)\\s*(個|本|枚|つ|体|匹|組|セット|箱|スタック)`));
+  let m = after.match(new RegExp(`^(?:[ァ-ヶー・\u4e00-\u9fff]{0,6})?[のがをもは]?(?:だけ)?\\s*(?:あと\\s*[、,]?\\s*(?:もう\\s*)?)?\\s*${NEG_SIGN_SRC}\\s*(\\d+|[一二三四五六七八九十]+)\\s*(個|本|枚|つ|体|匹|組|セット|箱|スタック)`));
   if (m) return read(m);
   m = beforeNeg.match(new RegExp(`${NEG_SIGN_SRC}\\s*(\\d+|[一二三四五六七八九十]+)\\s*(個|本|枚|つ|体|匹|組|セット|箱|スタック)\\s*の\\s*$`));
   return read(m);
@@ -416,7 +416,7 @@ function amountNear(text, hit) {
   const after = text.slice(hit.end, hit.end + 18);
   const negV = negativeAmountNear(after, text.slice(Math.max(0, hit.start - 18), hit.start), itemId);
   if (negV != null) { hit.amountDetail = { ok: true, reason: "negative", startable: false, total: negV, amount: negV, perRun: negV, repeats: null, relative: false, corrected: false }; return negV; }
-  const am = after.match(new RegExp(`^[のがをもは]?(?:だけ)?\\s*(あと\\s*[、,]?\\s*(?:もう\\s*)?)?\\s*${QTY_PHRASE_RE.source}`)); // cyc2157 R1G2-c: 核 startRe と対称に「あと」の後ろの読点・「もう」を許す (従来は数量ごと脱落)
+  const am = after.match(new RegExp(`^(?:[ァ-ヶー・\u4e00-\u9fff]{0,6})?[のがをもは]?(?:だけ)?\\s*(あと\\s*[、,]?\\s*(?:もう\\s*)?)?\\s*${QTY_PHRASE_RE.source}`)); // cyc2157 R1G2-c: 核 startRe と対称に「あと」の後ろの読点・「もう」を許す (従来は数量ごと脱落)
   if (am) { const v = parsePhrase((am[1] || "") + am[2]); if (v != null) return v; }
   // 0-C5 R-4 (v0.5.86): 反復前置（「丸石を2回、3個ずつ」）。裸数字フォールバックが
   // 「2回」の 2 を数量として先に拾うため、その前に前置反復つきフレーズを核へ渡す。
