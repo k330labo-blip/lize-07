@@ -7,7 +7,8 @@
 // 角のみで接する8方向 (|dx|=|dy|=|dz|=1) は含めない (a02 実測: 角接触は隣木の
 // 誤認経路になる一方、斜め枝・斜め幹の利益は辺隣接だけで得られる)。
 // @minecraft/server を import しない。例外を投げない。
-const DIRS = Object.freeze((() => { const out = []; for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) { if (!dx && !dy && !dz) continue; if (Math.abs(dx) + Math.abs(dy) + Math.abs(dz) === 3) continue; out.push([dx, dy, dz]); } return out; })());
+// 0-P S4 (cyc2486): 面6方向のみ。辺・角近傍は破壊で露出しないため読まない (vein_math と同型)。斜め枝・2x2幹の斜め柱は面でつながる中間セルを掘る段階で候補化される (段階的追跡)。cyc1939 G1 の18近傍拡張は 0-P で supersede。
+const DIRS = Object.freeze([[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]]);
 export function treeNeighbors(pos, brokenTypeId, typeIdAt, allowedIds) {
   try {
     if (!pos || typeof typeIdAt !== "function" || typeof brokenTypeId !== "string") return [];
