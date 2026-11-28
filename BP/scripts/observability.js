@@ -188,6 +188,9 @@ return lineOfSight(provider, eye, cell);
 // エンティティ側 canObserveEntity で同一の正面視野条件を使う (片側だけ直る片側残りを防ぐ)。
 // bearing の正形は gaze_math.gazeRotation と同一: atan2(-dx, +dz) (cyc2486 A02 で確定)。
 // yawDeg が有限数でない場合は FOV を適用しない (向き不明を「見えない」へ倒さない)。
+// pitch の扱いの確定 (FOV第2単位 cyc2492, A13 完了条件6): FOV は水平 (yaw) のみを仕様とする。
+// 上下方向は距離と LOS と露出で判定し、真上・真下の対象も水平角が視野内なら観測できる。
+// 見回しの pitch 段は「顔を上下へ向ける見た目と将来の pitch 拡張」のためであり、現行ゲートは pitch を条件にしない。
 export function outOfView(eye, px, py, pz, opts = {}) {
 if (!eye || !Number.isFinite(opts.yawDeg)) return false;
 const fov = Number.isFinite(opts.fovDeg) ? opts.fovDeg : 120;
