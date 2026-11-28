@@ -14,7 +14,7 @@
 // tone の自動選択:
 //  - parts.tone があればそれを優先。
 //  - 無ければ bond（ctx.flags.bond、0〜100）が 70 以上で soft
-//    （敬語が一言だけほどける）。危険が近い（ctx.danger.nearestDist<=6）
+//    （敬語が一言だけほどける）。危険が近い（ctx.danger.safetyNearestDist<=6）
 //    ときは dry（短く真顔）。それ以外は normal。
 //
 // 履歴（重複回避）:
@@ -135,7 +135,7 @@ export function resolveTone(parts, ctx) {
   if (parts?.tone === "soft" || parts?.tone === "dry" || parts?.tone === "normal") {
     return parts.tone;
   }
-  const dangerDist = ctx?.danger?.nearestDist ?? ctx?.x?.dangerDist;
+  const dangerDist = ctx?.danger?.safetyNearestDist ?? ctx?.danger?.nearestDist ?? ctx?.x?.dangerDist;
   if (typeof dangerDist === "number" && dangerDist >= 0 && dangerDist <= 6) return "dry";
   if (bondOf(ctx) >= 70) return "soft";
   return "normal";
@@ -150,7 +150,7 @@ const FOLLOWUPS = [
   { kind: "ask", text: "続けますか、それとも休みますか？", when: (c) => (c?.flags?.workMinutes ?? 0) >= 30 },
   { kind: "ask", text: "先にコーヒー、淹れますか？", when: (c) => c?.env === "morning" || (c?.x?.timeOfDay ?? 99999) < 2000 },
   { kind: "ask", text: "夜が深いです。就寝の準備はしますか？", when: (c) => c?.env === "night" },
-  { kind: "ask", text: "拠点に戻りますか？", when: (c) => !!c?.home && (c?.danger?.nearestDist ?? 999) <= 12 },
+  { kind: "ask", text: "拠点に戻りますか？", when: (c) => !!c?.home && (c?.danger?.safetyNearestDist ?? 999) <= 12 },
   { kind: "ask", text: "……聞いていますか？", when: (c) => bondOf(c) >= 50 },
   // suggest: 提案
   { kind: "suggest", text: "ついでに、近くのドロップも拾っておきます。", when: (c) => (c?.drops?.nearestDist ?? -1) >= 0 },
@@ -265,7 +265,7 @@ const FALLBACK_ESCALATE = [
   "私が確実にできるのは、付いて行くことと、物を運ぶことです。そこから試しませんか。",
 ];
 const FALLBACK_SITUATIONAL = [
-  { text: "戦闘中です。話は、後で聞きます。", when: (c) => (c?.danger?.nearestDist ?? 999) <= 8 },
+  { text: "戦闘中です。話は、後で聞きます。", when: (c) => (c?.danger?.safetyNearestDist ?? 999) <= 8 },
   { text: "作業中です。要件だけ、先にどうぞ。", when: (c) => !!c?.mission || c?.mode === "work" },
   { text: "夜です。長話は明日にして、まずは安全を。", when: (c) => c?.env === "night" },
   { text: "……分かりません。でも、隣にはいます。", when: (c) => bondOf(c) >= 70 },
