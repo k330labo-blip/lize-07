@@ -39,6 +39,7 @@ import { evaluateDig } from "./dig_gate.js"; // 要望バッチA (v0.4.88): 掘�
 import { evaluatePlace, placeHoldRecord } from "./place_gate.js"; // PLACE-GATE段2 (cycle0522): 設置側ゲート (build配線のみ、station/torchは段3)
 import { canObserve, gateScanResults, canObserveEntity } from "./observability.js"; // 0-P (cyc2483 S0/S1): 観測可能性ゲート (純粋核)。生走査を意味情報へ出す入口をここへ一本化する (X-ray防止)
 import { arriveRadiusFor, mainStuckCounts } from "./nav_radius_math.js"; // NAV-RADIUS-BRAINACT-01 (cyc2499): act→nav到達半径の単一の正 (純粋核) + R4 main stuck 判定
+import { createTorchGuardState, noteTorchFailure, noteTorchSuccess, isTorchCooling } from "./torch_guard_math.js"; // TORCH-SPACING-01/RETRY (cyc2500): 自律松明の失敗冷却 (純粋核)
 import { gazeRotation } from "./gaze_math.js"; // POLISH-ANIM-LOOK-01 (cycle0821): 視線ピッチ連動の純粋計算
 import { applyInspectPitch, isInspectActive, shouldInspect } from "./inspect_math.js"; // POLISH-ANIM-INSPECT-01 (cycle1003): 依頼品入手時の検分 (表示層のみ)
 import { applyNodPitch, isNodActive, shouldNod } from "./nod_math.js";
@@ -861,6 +862,7 @@ function buildContext(bot, owner) {
       if (feetB && belowB) c.x.torchPlaceable = feetB.typeId === "minecraft:air" && belowB.typeId !== "minecraft:air" && !belowB.isLiquid;
     } catch {}
     try { if (r.torchDone && Date.now() - r.torchDone.at < 10 * 60 * 1000 && r.torchDone.dim === bot.dimension.id) { c.x.torchDoneAt = r.torchDone.at; c.x.torchDoneCell = r.torchDone.cell; } } catch {}
+    try { if (r.torchGuard && isTorchCooling(r.torchGuard, Date.now())) c.x.torchCooldownUntil = r.torchGuard.cooldownUntil; } catch {} // TORCH-RETRY (cyc2500): 冷却中だけ射影し planner torchViable が落とす
   }
   try { c.x.ownerFlying = !!owner.isFlying; c.x.ownerRiding = !!owner.getComponent("minecraft:riding"); } catch {}
   noteMountglanceTick(bot, r, c); // POLISH-ANIM-MOUNTGLANCE-01 (cycle0936): ownerRiding はこの行で初めて立つため、feeder は必ずここ (設定直後) で呼ぶ。前に置くと毎回 undefined で永遠に発火しない (SLEEPWATCH と同型の教訓)
@@ -1457,6 +1459,7 @@ function stepBridgeEscape(bot, r, ctx) {
 function placeTorch(bot, r, ctx) {
   // cycle2117 torchfix: silent return を廃止し全不成立を理由つきで記録する (同一理由は5秒間引きで連発を防ぐ)
   const fail = (reason, err) => {
+    try { if (reason === "API_ERROR") { if (!r.torchGuard) r.torchGuard = createTorchGuardState(); noteTorchFailure(r.torchGuard, reason, Date.now()); } } catch {} // TORCH-RETRY (cyc2500): 数えるのは API_ERROR/SET_FAILED のみ
     try { if (!(r.lastPlace && r.lastPlace.reason === reason && Date.now() - (r.lastPlace.at || 0) < 5000)) { r.lastPlace = { act: "PLACE", mode: "torch", ok: false, reason, item: "minecraft:torch", at: Date.now() }; commitLastAction(r, r.lastPlace); if (err) noteFail(bot, "place:torch_" + reason.toLowerCase(), err, {expDone: true}); } } catch {}
     return false;
   };
@@ -1472,11 +1475,12 @@ function placeTorch(bot, r, ctx) {
   try {
     feet.setType("minecraft:torch");
     let placed = false; try { const rb = bot.dimension.getBlock({ x: Math.floor(bot.location.x), y: Math.floor(bot.location.y), z: Math.floor(bot.location.z) }); placed = !!rb && rb.typeId === "minecraft:torch"; } catch {}
-    if (placed) { try { r.torchDone = { cell: `${Math.floor(bot.location.x)},${Math.floor(bot.location.y)},${Math.floor(bot.location.z)}`, dim: bot.dimension.id, at: Date.now() }; } catch {} try { r.lastPlace = { act: "PLACE", mode: "torch", ok: true, reason: null, item: "minecraft:torch", at: Date.now() }; commitLastAction(r, r.lastPlace); } catch {} try { sfxPlace(bot.dimension, { x: Math.floor(bot.location.x) + 0.5, y: Math.floor(bot.location.y) + 0.5, z: Math.floor(bot.location.z) + 0.5 }, "minecraft:torch"); } catch {} return true; } // 作り込み POLISH-SND-PLACE-01 (v0.4.90): 設置音の実配線 (表示層のみ)
+    if (placed) { try { if (r.torchGuard) noteTorchSuccess(r.torchGuard); } catch {} try { r.torchDone = { cell: `${Math.floor(bot.location.x)},${Math.floor(bot.location.y)},${Math.floor(bot.location.z)}`, dim: bot.dimension.id, at: Date.now() }; } catch {} try { r.lastPlace = { act: "PLACE", mode: "torch", ok: true, reason: null, item: "minecraft:torch", at: Date.now() }; commitLastAction(r, r.lastPlace); } catch {} try { sfxPlace(bot.dimension, { x: Math.floor(bot.location.x) + 0.5, y: Math.floor(bot.location.y) + 0.5, z: Math.floor(bot.location.z) + 0.5 }, "minecraft:torch"); } catch {} return true; } // 作り込み POLISH-SND-PLACE-01 (v0.4.90): 設置音の実配線 (表示層のみ)
     throw new Error("torch verify failed");
   } catch (err) {
     // Phase2 PLACE統一 (v0.4.9): station と同型に、消費後の設置失敗で松明を消失させない (ロールバック)
     try { const bc = invOf(bot); let rest = 1; if (bc) rest = addTo(bc, "minecraft:torch", 1); if (rest > 0) bot.dimension.spawnItem(new ItemStack("minecraft:torch", rest), bot.location); } catch {}
+    try { if (!r.torchGuard) r.torchGuard = createTorchGuardState(); noteTorchFailure(r.torchGuard, "SET_FAILED", Date.now()); } catch {} // TORCH-RETRY (cyc2500)
     try { r.lastPlace = { act: "PLACE", mode: "torch", ok: false, reason: "SET_FAILED", item: "minecraft:torch", at: Date.now() }; commitLastAction(r, r.lastPlace); } catch {}
     noteFail(bot, "place:torch_set_failed", err, {expDone: true});
   }

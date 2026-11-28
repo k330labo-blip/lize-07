@@ -203,12 +203,22 @@ function uPlaceTorchDark(c) {
 }
 
 // cycle2117 torchfix: place_torch_dark の実行可能性 (restViable と同型: 確定した不能だけを降ろし UNKNOWN は不可と読まない)
+// TORCH-SPACING-01 縮小形 (cyc2500): 同一セル完全一致を「前回設置セルから水平6セル未満」へ一般化 (定数は torch_guard_math.js の TORCH_SPACING_CELLS と同値に保つ)
+// TORCH-RETRY-NOBACKOFF-01 新形 (cyc2500): main が冷却中だけ射影する torchCooldownUntil がある間は落とす
+const TORCH_SPACING_CELLS = 6;
 function torchViable(c) {
   if (per(c, "torchPlaceable", undefined) === false) return false;
+  if (num(per(c, "torchCooldownUntil", 0), 0) > 0) return false;
   const doneAt = num(per(c, "torchDoneAt", -1), -1);
   if (doneAt >= 0) {
     const cell = per(c, "torchDoneCell", null), pos = per(c, "selfPos", null);
-    if (cell && pos && cell === `${Math.floor(pos.x)},${Math.floor(pos.y)},${Math.floor(pos.z)}`) return false;
+    if (cell && pos) {
+      const parts = String(cell).split(",").map((s) => Number(s));
+      if (parts.length === 3 && parts.every((n) => Number.isFinite(n)) && Number.isFinite(pos.x) && Number.isFinite(pos.z)) {
+        const dx = Math.floor(pos.x) - parts[0], dz = Math.floor(pos.z) - parts[2];
+        if (Math.sqrt(dx * dx + dz * dz) < TORCH_SPACING_CELLS) return false;
+      }
+    }
   }
   return true;
 }
