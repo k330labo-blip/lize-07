@@ -27,6 +27,7 @@ import createWorldMemory from "./world_memory.js";
 import { genSpeech } from "./gen_speech.js";
 import { parseOrder, resumeClarifyOrder, classifyClarifyUnmatched } from "./order_parser.js";
 import { orderAmountOrDefault } from "./qty_default_math.js"; // 0-N1 QTY-DEFAULT-01 (cyc2447): 数量省略時の対象別デフォルト (純粋核)
+import { isSmeltStationId } from "./station_math.js"; // SMELT-STATION-LIT-01 (cyc2477): 精錬設備集合の単一の正 (純粋核)
 import { shearDisclosureFor, shearForbidBlockFor, SHEAR_DISCLOSURE_NOTE, SHEAR_FORBID_BLOCK_NOTE } from "./shear_honest_math.js"; // 0-N5 SHEAR-HONEST-01 (cyc2452): 羊毛刈りの方式明示 (純粋核)。否定併記形の開始抑止 (cyc2458)
 import { resolveItem } from "./decomposer.js"; // 倉庫 W3-TEACH (cyc2355): 素材名→typeId の単一の正 (注文経路と共用)
 import { resolveRequestedTool, toolItemIdOf } from "./tool_request_math.js"; // 0-C4 R-C4-1 (cyc2375): 道具指定の実行側 reader 純粋核
@@ -801,7 +802,7 @@ function buildContext(bot, owner) {
       if (/flower/.test(tid) || tid === "minecraft:snow_layer" || tid === "minecraft:short_grass" || tid === "minecraft:tall_grass" || tid === "minecraft:fern" || tid === "minecraft:sugar_cane") pcOpps.push({ kind: "block", typeId: tid, pos: { x: b.location.x, y: b.location.y, z: b.location.z } }); // 基礎 N2 (v0.4.65): サトウキビも side 採取の機会に載せる (side_tasks の現行IDと対)
       if (tid === "minecraft:crafting_table") { pc.nearCraft = true; try { if (wm?.recordWorkstation) wm.recordWorkstation(b.location, dim.id, tid); } catch {} }
       if (tid === "minecraft:campfire" || tid === "minecraft:soul_campfire" || tid === "minecraft:lit_furnace" || tid === "minecraft:lit_blast_furnace" || tid === "minecraft:lit_smoker") pc.nearHeat = true; // cycle0740 WARMHANDS feeder: 点火中熱源のみ (分類1分岐・新規走査なし)
-      if (/furnace|smoker/.test(tid)) { pc.nearFurnace = true; try { if (wm?.recordWorkstation) wm.recordWorkstation(b.location, dim.id, tid); } catch {} }
+      if (isSmeltStationId(tid)) { pc.nearFurnace = true; try { if (wm?.recordWorkstation) wm.recordWorkstation(b.location, dim.id, tid); } catch {} }
       if (tid.startsWith("orbital_foundry:")) pc.nearMachine = true;
       if (tid.endsWith(":bed") || tid.endsWith("_bed")) { pc.nearBed = true; try { if (wm?.recordBed) wm.recordBed(b.location, dim.id); } catch {} }
       if (isContainerBlock(tid)) { try { if (wm?.recordContainer) wm.recordContainer(b.location, dim.id, { kind: tid, source: "scan", confidence: 0.9 }); } catch {} }
@@ -2979,10 +2980,11 @@ function pickUpPlacedStation(bot, r) {
 function ensureStation(bot, r, leg) {
   const need = leg.type === "smelt" ? "minecraft:furnace" : leg.station === "table" ? "minecraft:crafting_table" : null;
   if (!need) return true;
+  const present = leg.type === "smelt" ? isSmeltStationId : (id) => id === need; // SMELT-STATION-LIT-01 (cyc2477): 存在判定だけ設備集合へ広げる (設置・所持の need は furnace のまま)
   const pos = bot.location, dim = bot.dimension;
   for (let dx = -4; dx <= 4; dx++) for (let dy = -2; dy <= 2; dy++) for (let dz = -4; dz <= 4; dz++) {
     let b = null; try { b = dim.getBlock({ x: Math.floor(pos.x) + dx, y: Math.floor(pos.y) + dy, z: Math.floor(pos.z) + dz }); } catch {}
-    if (b && b.typeId === need) return true;
+    if (b && present(b.typeId)) return true;
   }
   if (!hasItem(bot, need)) return false;
   const fx = Math.floor(pos.x), fy = Math.floor(pos.y), fz = Math.floor(pos.z);
