@@ -437,6 +437,7 @@ export function createNav(probe, opts = {}) {
     stepsSinceRepath: 999,  // 再探索間隔の管理（2tickステップ数）
     repaths: 0,             // 同一ゴールでの再探索回数（スタック時）
     stuckSec: 0, lastPos: null,
+    partialGoal: false, // NAV-CLIFF-WINDOW-01 (cyc2490): 現経路が partial (到達不能) か
     openedDoors: [],        // 閉め待ちの扉 [{x,y,z}]
     forceRepath: true,
     destBlocked: false,     // BASICS-04案2: 直近tickで行き先が塞がっていたか (スタック降格の迂回防止)
@@ -460,6 +461,7 @@ export function navSetGoal(nav, goal, opts = {}) {
     if (!near) {
       nav.repaths = 0;
       nav.stuckSec = 0;
+      nav.partialGoal = false;
       nav.forceRepath = true;
       nav.mode = "path";
       walkerSetPath(nav.walker, [], null);
@@ -469,7 +471,7 @@ export function navSetGoal(nav, goal, opts = {}) {
 }
 
 export function navClearGoal(nav) {
-  nav.goal = null; nav.goalKey = ""; nav.mode = "idle";
+  nav.goal = null; nav.goalKey = ""; nav.mode = "idle"; nav.partialGoal = false;
   walkerSetPath(nav.walker, [], null);
 }
 
@@ -478,7 +480,7 @@ function dist2d(a, b) { return Math.hypot(a.x - b.x, a.z - b.z); }
 // 移動ループ1回ぶん。dtSec はループ間隔（現行は2tick=0.1秒）。
 // 戻り値: { mode, move:{x,y,z,yaw}|null, arrived, openDoors:[], closeDoors:[], repathed, gridReady }
 export function navTick(nav, pos, dtSec, opts = {}) {
-  const out = { mode: nav.mode, move: null, arrived: false, openDoors: [], closeDoors: [], repathed: false, gridReady: !!(nav.grid && nav.grid.done) };
+  const out = { mode: nav.mode, move: null, arrived: false, openDoors: [], closeDoors: [], repathed: false, gridReady: !!(nav.grid && nav.grid.done), partial: false };
   if (!nav.goal) { nav.mode = "idle"; out.mode = "idle"; return out; }
   nav.stepsSinceRepath++;
   const act = opts.act || "follow";
@@ -495,6 +497,7 @@ export function navTick(nav, pos, dtSec, opts = {}) {
     if (buildGridStep(nav.building, nav.probe, nav.budget)) { nav.grid = nav.building; nav.building = null; nav.forceRepath = true; }
   }
   out.gridReady = !!(nav.grid && nav.grid.done);
+  out.partial = !!nav.partialGoal;
   if (!nav.grid) { nav.mode = "direct"; out.mode = "direct"; return out; } // 構築中は現行方式
 
   // --- 深水チェック：足元・頭の両方が水なら泳ぎ＝フォールバック ---
@@ -521,9 +524,10 @@ export function navTick(nav, pos, dtSec, opts = {}) {
     nav.stepsSinceRepath = 0;
     nav.forceRepath = false;
     out.repathed = true;
-    if (!res || (!res.points.length && !res.reached)) {
-      nav.mode = "direct"; out.mode = "direct"; return out; // 引けない＝現行方式へ
+    if (!res || (!res.points.length && !res.reached && !res.partial)) {
+      nav.partialGoal = false; nav.mode = "direct"; out.mode = "direct"; return out; // 引けない＝現行方式へ
     }
+    nav.partialGoal = !!res.partial; out.partial = nav.partialGoal; // NAV-CLIFF-WINDOW-01 (cyc2490): partial を上位へ伝達 (終端=現在地で points が空の partial も保持する)
     walkerSetPath(w, res.points, pos);
     nav.mode = "path";
     if (res.reached && !res.points.length && dyGoal <= 2) { out.arrived = true; out.mode = "path"; return out; } // NAV-ARRIVE-YBLIND-01: findPath 到達経路も縦条件を通す
@@ -536,7 +540,7 @@ export function navTick(nav, pos, dtSec, opts = {}) {
   if (nav.destBlocked) nav.stuckSec = 0;
   if (nav.lastPos) {
     const moved = Math.hypot(pos.x - nav.lastPos.x, (typeof nav.lastPos.y === "number" ? pos.y - nav.lastPos.y : 0), pos.z - nav.lastPos.z); // queue0-A bug1 (cycle1728): 3D moved
-    if (moved < 0.05 && (typeof nav.goal?.y === "number" && nav.lastPos && typeof nav.lastPos.y === "number" ? Math.hypot(goalDist, pos.y - nav.goal.y) : goalDist) > 2) nav.stuckSec += dtSec; else nav.stuckSec = 0; // queue0-A bug1 (cycle1728): 3D goal distance
+    if (moved < 0.05 && ((typeof nav.goal?.y === "number" && nav.lastPos && typeof nav.lastPos.y === "number" ? Math.hypot(goalDist, pos.y - nav.goal.y) : goalDist) > 1.4 || (nav.partialGoal && !nav.destBlocked && !out.arrived))) nav.stuckSec += dtSec; else nav.stuckSec = 0; // queue0-A bug1 (cycle1728): 3D goal distance / NAV-NEAR-BAND-01 (cyc2490): 加算ゲート >1.4 へ統一し帯1.5-2.0の不発を解消、partial は距離によらず加算
   }
   nav.lastPos = { x: pos.x, y: pos.y, z: pos.z }; // queue0-A bug1 (cycle1728): keep y
   if (nav.stuckSec >= 1.0) {
@@ -546,6 +550,7 @@ export function navTick(nav, pos, dtSec, opts = {}) {
     nav.forceRepath = true;
     out.repathed = true;
     const res = findPath(nav.grid, pos, nav.goal, { arriveRadius: nav.arriveRadius });
+    nav.partialGoal = !!(res && res.partial); out.partial = nav.partialGoal;
     if (!res || (!res.points.length && !res.reached)) { nav.mode = "direct"; out.mode = "direct"; return out; }
     walkerSetPath(w, res.points, pos);
     nav.stepsSinceRepath = 0;

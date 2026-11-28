@@ -2,10 +2,10 @@
   "format_version": 2,
   "header": {
     "name": "リゼ (LIZE-07) / BP",
-    "description": "Companion LIZE-07 v0.5.228",
+    "description": "Companion LIZE-07 v0.5.229",
     "uuid": "c6df6526-2532-46f2-b843-dfa55efa1296",
     "version": [
-      0, 5, 228
+      0, 5, 229
     ],
     "min_engine_version": [
       1,
@@ -20,7 +20,7 @@
       "version": [
         0,
         5,
-        228
+        229
       ]
     },
     {
@@ -31,7 +31,7 @@
       "version": [
         0,
         5,
-        228
+        229
       ]
     }
   ],
@@ -41,7 +41,7 @@
       "version": [
         0,
         5,
-        228
+        229
       ]
     },
     {

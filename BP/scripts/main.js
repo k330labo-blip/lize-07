@@ -1675,7 +1675,7 @@ function moveDirect(bot, r) {
   let liftedY = ny; try { const lf = liftFeet(bot.dimension, { x: nx, y: ny, z: nz }); if (!lf || lf.y > p.y + 1.25) { r.stuckSec += 0.1; r.lastPos = { ...p }; return; } liftedY = lf.y; } catch {}
   try { if (hd > 0.5) bot.teleport({ x: nx, y: liftedY, z: nz }, { rotation: { x: 0, y: yawToward(dx, dz) } }); else bot.teleport({ x: nx, y: liftedY, z: nz }); } catch {} // heading H1: fly/nav 経路と同様に進行方向を向く
   // ハマり検出
-  if (r.lastPos && Math.hypot(p.x - r.lastPos.x, p.z - r.lastPos.z) < 0.05 && (typeof t.y === "number" ? Math.hypot(p.x - t.x, p.y - t.y, p.z - t.z) : hd) > 2) r.stuckSec += 0.1; else r.stuckSec = 0; // queue0-A bug1 (cycle1728): 3D distance (was horizontal-only, so targets below never accumulated stuck)
+  if (r.lastPos && Math.hypot(p.x - r.lastPos.x, p.z - r.lastPos.z) < 0.05 && (typeof t.y === "number" ? Math.hypot(p.x - t.x, p.y - t.y, p.z - t.z) : hd) > 1.4) r.stuckSec += 0.1; else r.stuckSec = 0; // queue0-A bug1 (cycle1728): 3D distance / NAV-NEAR-BAND-01 (cyc2490): 加算ゲート >1.4 へ統一
   r.lastPos = { ...p };
 }
 
@@ -1933,7 +1933,7 @@ system.runInterval(() => {
       if (fres.move) { try { bot.teleport(fres.move, { rotation: { x: 0, y: fres.move.yaw } }); } catch {} }
       else { try { clearPathAhead(bot, r, ["dest_blocked", "flight_blocked", "no_progress"].includes(fres.reason) || r.stuckSec >= 1); } catch {} } if (fres.move && r.stuckSec >= 1) { try { clearPathAhead(bot, r, true); } catch {} } // queue0-A bug1 (cycle1728): hover move issued but stuck -> still try digging rescue // v0.4.68: 塞がれて動けない時は掘って進む
       const t = r.target; const td = Math.hypot(t.x - pos0.x, t.y - pos0.y, t.z - pos0.z);
-      if (r.lastPos && Math.hypot(pos0.x - r.lastPos.x, pos0.y - r.lastPos.y, pos0.z - r.lastPos.z) < 0.05 && td > 2) r.stuckSec += 0.1; else r.stuckSec = 0;
+      if (r.lastPos && Math.hypot(pos0.x - r.lastPos.x, pos0.y - r.lastPos.y, pos0.z - r.lastPos.z) < 0.05 && td > 1.4) r.stuckSec += 0.1; else r.stuckSec = 0; // NAV-NEAR-BAND-01 (cyc2490): 加算ゲート >1.4 へ統一
       r.lastPos = { ...pos0 };
       r.flyMode = "fly";
       movementWatchdog(bot, r, pos0);
@@ -1946,13 +1946,14 @@ system.runInterval(() => {
     let res = null;
     try { res = navTick(navOf(bot, r), bot.location, 0.1, { act: r.moveAct }); } catch { try { recordMoveExp(r, { ok: false, reason: "API_ERROR" }, "nav"); } catch {} } // 6-ML U4: 従来無言だった例外を MOVE 失敗として記録のみ
     r.navMode = res?.mode || "direct";
+    r.navPartial = !!(res && res.partial); // NAV-CLIFF-WINDOW-01 (cyc2490): 到達不能 (partial) の事実を保持 (記録のみ・見切りは上位の進捗監視が受ける)
     if (res && res.arrived) { try { recordMoveExp(r, { ok: true }, res.mode === "path" ? "nav" : "direct"); } catch {} } // 6-ML U4: nav 到着は MOVE 成功として記録
     if (res && res.mode === "path" && res.move) {
       const p0 = bot.location;
       const lifted = liftFeet(bot.dimension, { x: res.move.x, y: res.move.y, z: res.move.z }); // v0.4.69: 段差で下半身が埋まらない
       if (lifted) { try { bot.teleport(lifted, { rotation: { x: 0, y: res.move.yaw } }); } catch {} } else { try { navClearGoal(navOf(bot, r)); } catch {} } // 体が入らないなら動かず経路を引き直す
       const t = r.target; const hd = Math.hypot(t.x - p0.x, t.z - p0.z);
-      if (r.lastPos && Math.hypot(p0.x - r.lastPos.x, p0.z - r.lastPos.z) < 0.05 && (typeof t.y === "number" ? Math.hypot(p0.x - t.x, p0.y - t.y, p0.z - t.z) : hd) > 2) r.stuckSec += 0.1; else r.stuckSec = 0; // queue0-A bug1 (cycle1728): 3D distance
+      if (r.lastPos && Math.hypot(p0.x - r.lastPos.x, p0.z - r.lastPos.z) < 0.05 && (typeof t.y === "number" ? Math.hypot(p0.x - t.x, p0.y - t.y, p0.z - t.z) : hd) > 1.4) r.stuckSec += 0.1; else r.stuckSec = 0; // queue0-A bug1 (cycle1728): 3D distance / NAV-NEAR-BAND-01 (cyc2490): 加算ゲート >1.4 へ統一
       r.lastPos = { ...p0 };
     } else {
       moveDirect(bot, r);
