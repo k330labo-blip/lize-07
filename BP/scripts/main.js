@@ -3321,6 +3321,17 @@ function tickToolPrepPromote(bot, owner, r) {
     return true;
   } catch { return false; }
 }
+// CRAFT/SMELT-PARTIAL-01: leg 実行前に既所持分を差し引いた残量へ縮小する (gather 分岐の remain 換算と同型)
+function shrinkLegToRemain(leg, have) {
+  const need = leg.need || 1, remain = need - have;
+  if (remain <= 0) return null;
+  const craftsTotal = leg.crafts > 0 ? leg.crafts : null;
+  const outPer = craftsTotal ? need / craftsTotal : 1;
+  const crafts = Math.ceil(remain / outPer);
+  const scale = craftsTotal ? crafts / craftsTotal : 1;
+  const needs = {}; for (const [k, v] of Object.entries(leg.needs || {})) needs[k] = Math.round(v * scale);
+  return { ...leg, need: crafts * outPer, crafts, needs };
+}
 function tickLongTask(bot, owner, r, ctx) {
   const lt = r.longtask; if (!lt) return false;
   // R-C4-1 (cyc2375): leg が切り替わるたびに指定道具の装備を再適用する読み手 (工程中の持ち替えで外れた場合の復帰)
@@ -3449,10 +3460,11 @@ function tickLongTask(bot, owner, r, ctx) {
         if (ins) { lt.legs.splice(lt.legIdx, 0, ...ins); saveLongTask(bot, r); continue; }
         say(owner, bot, `長期タスクを中断しました。${leg.type === "smelt" ? "かまど" : "作業台"}を用意できませんでした`, true); return abortLongTask(bot, owner, r);
       }
-      const res = leg.type === "craft" ? executeCraftLeg(invOf(bot), leg) : executeSmeltLeg(invOf(bot), leg);
+      const execLeg = shrinkLegToRemain(leg, countOfGroup(countInv(bot), leg.item)) || leg;
+      const res = leg.type === "craft" ? executeCraftLeg(invOf(bot), execLeg) : executeSmeltLeg(invOf(bot), execLeg);
       // 6-ML ML-H01/H02 (cycle1322, a02): CRAFT/SMELT の実行結果を result 軸へ記録する (記録のみ・分岐不変)。
       // fromCraftResult は act を持たないため、rec 形へ射影してから commit する (そのままでは EXP 化されない)。
-      try { const norm = fromCraftResult(res); const rec = { act: leg.type === "craft" ? "CRAFT" : "SMELT", ok: !!norm?.ok, reason: norm?.reason || null, item: res?.produced || leg.item || null, gained: res?.ok ? (leg.need || 0) : 0, at: Date.now() }; if (leg.type === "craft") r.lastCraft = rec; else r.lastSmelt = rec; commitLastAction(r, rec); } catch {}
+      try { const norm = fromCraftResult(res); const rec = { act: leg.type === "craft" ? "CRAFT" : "SMELT", ok: !!norm?.ok, reason: norm?.reason || null, item: res?.produced || leg.item || null, gained: res?.ok ? (execLeg.need || 0) : 0, at: Date.now() }; if (leg.type === "craft") r.lastCraft = rec; else r.lastSmelt = rec; commitLastAction(r, rec); } catch {}
       pickUpPlacedStation(bot, r); // v0.4.67: 自分で置いた作業台・かまどは持ち歩く (置きっぱなしだと、遠くで次の工程を始めた時に用意できず中断していた)
       if (res.bucketPending > 0) { // SMELT P2: 空バケツ返却の残数は足元へ16個ずつ落とし、失敗は記録する (drink_milk と同型)
         let rest = res.bucketPending, dropFailed = false;
