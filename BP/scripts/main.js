@@ -38,6 +38,7 @@ import { resolveWorkAccess, ACCESS } from "./work_access.js"; // 基礎 遮蔽�
 import { evaluateDig } from "./dig_gate.js"; // 要望バッチA (v0.4.88): 掘削の統一ゲート
 import { evaluatePlace, placeHoldRecord } from "./place_gate.js"; // PLACE-GATE段2 (cycle0522): 設置側ゲート (build配線のみ、station/torchは段3)
 import { canObserve, gateScanResults, canObserveEntity } from "./observability.js"; // 0-P (cyc2483 S0/S1): 観測可能性ゲート (純粋核)。生走査を意味情報へ出す入口をここへ一本化する (X-ray防止)
+import { arriveRadiusFor, mainStuckCounts } from "./nav_radius_math.js"; // NAV-RADIUS-BRAINACT-01 (cyc2499): act→nav到達半径の単一の正 (純粋核) + R4 main stuck 判定
 import { gazeRotation } from "./gaze_math.js"; // POLISH-ANIM-LOOK-01 (cycle0821): 視線ピッチ連動の純粋計算
 import { applyInspectPitch, isInspectActive, shouldInspect } from "./inspect_math.js"; // POLISH-ANIM-INSPECT-01 (cycle1003): 依頼品入手時の検分 (表示層のみ)
 import { applyNodPitch, isNodActive, shouldNod } from "./nod_math.js";
@@ -1578,7 +1579,7 @@ function syncNavGoal(bot, r) {
   try {
     const nav = navOf(bot, r);
     if (!r.target) { navClearGoal(nav); return; }
-    const arriveRadius = (r.moveAct === "follow" || r.moveAct === "stay_anchor") ? 1 : 0;
+    const arriveRadius = arriveRadiusFor(r.moveAct); // NAV-RADIUS-BRAINACT-01: 単一純粋表へ委譲 (脳経路の生 act も follow/帰還系は半径1、作業系は0維持)
     navSetGoal(nav, r.target, { arriveRadius });
   } catch {}
 }
@@ -1692,7 +1693,7 @@ function moveDirect(bot, r) {
   let liftedY = ny; try { const lf = liftFeet(bot.dimension, { x: nx, y: ny, z: nz }); if (!lf || lf.y > p.y + 1.25) { r.stuckSec += 0.1; r.lastPos = { ...p }; return; } liftedY = lf.y; } catch {}
   try { if (hd > 0.5) bot.teleport({ x: nx, y: liftedY, z: nz }, { rotation: { x: 0, y: yawToward(dx, dz) } }); else bot.teleport({ x: nx, y: liftedY, z: nz }); } catch {} // heading H1: fly/nav 経路と同様に進行方向を向く
   // ハマり検出
-  if (r.lastPos && Math.hypot(p.x - r.lastPos.x, p.z - r.lastPos.z) < 0.05 && (typeof t.y === "number" ? Math.hypot(p.x - t.x, p.y - t.y, p.z - t.z) : hd) > 1.4) r.stuckSec += 0.1; else r.stuckSec = 0; // queue0-A bug1 (cycle1728): 3D distance / NAV-NEAR-BAND-01 (cyc2490): 加算ゲート >1.4 へ統一
+  if (r.lastPos && Math.hypot(p.x - r.lastPos.x, p.z - r.lastPos.z) < 0.05 && mainStuckCounts((typeof t.y === "number" ? Math.hypot(p.x - t.x, p.y - t.y, p.z - t.z) : hd), r.moveAct, r.navPartial)) r.stuckSec += 0.1; else r.stuckSec = 0; // queue0-A bug1 (cycle1728): 3D distance / NAV-RADIUS-BRAINACT-01 R4 (cyc2499): direct 降格後も partial が立っている間は ≦1.4 静止を数える
   r.lastPos = { ...p };
 }
 
@@ -1950,7 +1951,7 @@ system.runInterval(() => {
       if (fres.move) { try { bot.teleport(fres.move, { rotation: { x: 0, y: fres.move.yaw } }); } catch {} }
       else { try { clearPathAhead(bot, r, ["dest_blocked", "flight_blocked", "no_progress"].includes(fres.reason) || r.stuckSec >= 1); } catch {} } if (fres.move && r.stuckSec >= 1) { try { clearPathAhead(bot, r, true); } catch {} } // queue0-A bug1 (cycle1728): hover move issued but stuck -> still try digging rescue // v0.4.68: 塞がれて動けない時は掘って進む
       const t = r.target; const td = Math.hypot(t.x - pos0.x, t.y - pos0.y, t.z - pos0.z);
-      if (r.lastPos && Math.hypot(pos0.x - r.lastPos.x, pos0.y - r.lastPos.y, pos0.z - r.lastPos.z) < 0.05 && td > 1.4) r.stuckSec += 0.1; else r.stuckSec = 0; // NAV-NEAR-BAND-01 (cyc2490): 加算ゲート >1.4 へ統一
+      if (r.lastPos && Math.hypot(pos0.x - r.lastPos.x, pos0.y - r.lastPos.y, pos0.z - r.lastPos.z) < 0.05 && mainStuckCounts(td, r.moveAct, false)) r.stuckSec += 0.1; else r.stuckSec = 0; // NAV-NEAR-BAND-01 (cyc2490) / NAV-RADIUS-BRAINACT-01 R4 (cyc2499): partial は nav 概念のため fly では false 固定 = 従来と完全同値。式の統一のみ
       r.lastPos = { ...pos0 };
       r.flyMode = "fly";
       movementWatchdog(bot, r, pos0);
@@ -1970,7 +1971,7 @@ system.runInterval(() => {
       const lifted = liftFeet(bot.dimension, { x: res.move.x, y: res.move.y, z: res.move.z }); // v0.4.69: 段差で下半身が埋まらない
       if (lifted) { try { bot.teleport(lifted, { rotation: { x: 0, y: res.move.yaw } }); } catch {} } else { try { navClearGoal(navOf(bot, r)); } catch {} } // 体が入らないなら動かず経路を引き直す
       const t = r.target; const hd = Math.hypot(t.x - p0.x, t.z - p0.z);
-      if (r.lastPos && Math.hypot(p0.x - r.lastPos.x, p0.z - r.lastPos.z) < 0.05 && (typeof t.y === "number" ? Math.hypot(p0.x - t.x, p0.y - t.y, p0.z - t.z) : hd) > 1.4) r.stuckSec += 0.1; else r.stuckSec = 0; // queue0-A bug1 (cycle1728): 3D distance / NAV-NEAR-BAND-01 (cyc2490): 加算ゲート >1.4 へ統一
+      if (r.lastPos && Math.hypot(p0.x - r.lastPos.x, p0.z - r.lastPos.z) < 0.05 && mainStuckCounts((typeof t.y === "number" ? Math.hypot(p0.x - t.x, p0.y - t.y, p0.z - t.z) : hd), r.moveAct, r.navPartial)) r.stuckSec += 0.1; else r.stuckSec = 0; // queue0-A bug1 (cycle1728): 3D distance / NAV-RADIUS-BRAINACT-01 R4 (cyc2499): partial 時は到達成立距離の外側なら ≦1.4 でも加算 (盲点解消)、非 partial は従来 >1.4 のみ
       r.lastPos = { ...p0 };
     } else {
       moveDirect(bot, r);
