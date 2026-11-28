@@ -16,7 +16,10 @@ export const FOLLOW_FAIL_GAP_GRACE_MS = 10000; // signal/eligible 一過性 fals
 // state: { followFailSince, followFailKey, followFailAnchor, followFail, followNotifiedKey,
 //          followTrackId, followStartDist, followNotifiedAnchorKey, followFailGapSince, followFailGapKind } (rt の部分集合)
 // input: { eligible, signal, targetKey, dist, pos:{x,y,z}|null, partial, stuckSec, trackId?, dim? }
-// 戻り: { action: "none"|"tracking"|"fire"|"reset"|"suppressed", reason }
+// 戻り: { action: "none"|"tracking"|"fire"|"reset"|"suppressed"|"exit_silent", reason }
+// exit_silent (FOLLOW-SUPPRESSED-NOEXIT-01): 通知済みアンカーでの再未到達。通知は出さないが
+// 出口 (stay格下げ) はエピソードごとに必要なので、時計を畳んで呼び出し側の出口へ接続する。
+// "suppressed" は後方互換のため型に残すが、現行の resumeCheck は返さない。
 export function noteFollowFail(state, input, nowMs) {
   try {
     if (!state || typeof state !== "object") return { action: "none", reason: "invalid" };
@@ -84,11 +87,18 @@ export function noteFollowFail(state, input, nowMs) {
 function resumeCheck(state, input, now, identity, key, anchorKeyOf, distOk) {
   if (now - state.followFailSince < FOLLOW_FAIL_LIMIT_MS) return { action: "tracking", reason: "waiting" };
   const aKey = anchorKeyOf();
-  if (aKey) { if (state.followNotifiedAnchorKey === aKey) return { action: "suppressed", reason: "already_notified" }; }
-  else if (state.followNotifiedKey && state.followNotifiedKey === key) return { action: "suppressed", reason: "already_notified" };
+  const foldTrack = () => { state.followFailSince = 0; state.followFailKey = ""; state.followFailAnchor = null; state.followTrackId = ""; state.followStartDist = null; state.followFailGapSince = 0; state.followFailGapKind = ""; };
+  const notified = aKey ? (state.followNotifiedAnchorKey === aKey) : !!(state.followNotifiedKey && state.followNotifiedKey === key);
+  if (notified) {
+    // FOLLOW-SUPPRESSED-NOEXIT-01: 通知の抑止と出口の抑止を分離する。通知済みキーは保持し
+    // (再通知はしない)、記録と時計の畳みは fire と同じに行い、発話なし出口として返す。
+    state.followFail = { at: now, key, partial: !!input.partial, stuckSec: (typeof input.stuckSec === "number" ? input.stuckSec : null), trackId: identity, anchorKey: aKey, silent: true };
+    foldTrack();
+    return { action: "exit_silent", reason: "already_notified" };
+  }
   state.followFail = { at: now, key, partial: !!input.partial, stuckSec: (typeof input.stuckSec === "number" ? input.stuckSec : null), trackId: identity, anchorKey: aKey };
   state.followNotifiedKey = key;
   if (aKey) state.followNotifiedAnchorKey = aKey;
-  state.followFailSince = 0; state.followFailKey = ""; state.followFailAnchor = null; state.followTrackId = ""; state.followStartDist = null; state.followFailGapSince = 0; state.followFailGapKind = "";
+  foldTrack();
   return { action: "fire", reason: "timeout" };
 }

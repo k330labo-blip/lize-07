@@ -5075,8 +5075,10 @@ system.runInterval(() => {
         const ffKey = ffTarget ? `${bot.dimension.id}:${Math.floor(ffTarget.x)},${Math.floor(ffTarget.y)},${Math.floor(ffTarget.z)}` : "";
         const ffDist = ffTarget ? Math.hypot(bot.location.x - ffTarget.x, bot.location.y - ffTarget.y, bot.location.z - ffTarget.z) : null;
         const ff = noteFollowFail(r, { eligible: ffEligible && !!ffTarget, signal: r.stuckSec >= 3 || r.navPartial === true, targetKey: ffKey, dist: ffDist, pos: bot.location, partial: !!r.navPartial, stuckSec: r.stuckSec, trackId: `${p.id}|${bot.dimension.id}`, dim: bot.dimension.id }, Date.now());
-        if (ff.action === "fire") {
-          say(p, bot, "そちらへは歩いて行けませんでした。ここで待っています", true);
+        if (ff.action === "fire" || ff.action === "exit_silent") {
+          // FOLLOW-SUPPRESSED-NOEXIT-01: exit_silent は通知済みアンカーでの再未到達。
+          // 発話はしない (通知は同一アンカーで1回) が、stay格下げとアンカー設定は毎エピソード行う。
+          if (ff.action === "fire") say(p, bot, "そちらへは歩いて行けませんでした。ここで待っています", true);
           dps(bot, "cb_mode", "stay");
           try { const bl = bot.location; setAnchor(bot, r, { x: bl.x, y: groundY(bot.dimension, bl.x, bl.z, bl.y, bl.y), z: bl.z }, bot.dimension.id); } catch { setAnchor(bot, r, { ...bot.location }, bot.dimension.id); }
         }
